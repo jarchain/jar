@@ -1,0 +1,36 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/ubuntu
+{
+	"name": "Ubuntu",
+	"build": {
+		"dockerfile": "Dockerfile"
+	},
+
+	// Podman rootless fix.
+	"runArgs": [
+		"--userns=keep-id:uid=1000,gid=1000"
+	],
+	"containerUser": "vscode",
+
+	// Mount for Claude.
+	"mounts": [
+		// State mounts
+		"source=dev-grey-claude-state,target=/home/vscode/.claude,type=volume",
+		"source=dev-grey-cline-state,target=/home/vscode/.cline,type=volume",
+		"source=dev-grey-gh-config,target=/home/vscode/.config/gh,type=volume",
+	],
+
+	// Configure tool-specific properties.
+	"customizations": {
+		"vscode": {
+			"settings": {
+				"remote.GPG.useSocketPath": false
+			},
+			"extensions": [
+				"anthropic.claude-code",
+				"saoudrizwan.claude-dev",
+				"rust-lang.rust-analyzer"
+			]
+		}
+	}
+}

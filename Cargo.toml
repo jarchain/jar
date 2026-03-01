@@ -1,0 +1,8 @@
+[package]
+name = "grey"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "LLM-written JAM implementation in Rust."
+
+[dependencies]
