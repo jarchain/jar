@@ -8,6 +8,11 @@
 
 pub mod safrole;
 
+pub use safrole::{
+    accumulate_entropy, apply_safrole, fallback_key_sequence, filter_offenders,
+    is_ticket_sealed, merge_tickets, outside_in_sequence, SafroleError, SafroleOutput,
+};
+
 /// Compute the epoch index for a given timeslot (eq 4.8).
 pub fn epoch_index(timeslot: grey_types::Timeslot) -> u32 {
     timeslot / grey_types::constants::EPOCH_LENGTH
@@ -26,6 +31,13 @@ pub fn is_ticket_submission_open(timeslot: grey_types::Timeslot) -> bool {
 /// Compute the rotation index for validator-core assignments.
 pub fn rotation_index(timeslot: grey_types::Timeslot) -> u32 {
     timeslot / grey_types::constants::ROTATION_PERIOD
+}
+
+/// Best-chain scoring: count of ticket-sealed blocks (eq 19.4).
+///
+/// Prefers chains with more ticket-sealed blocks over fallback-sealed blocks.
+pub fn chain_ticket_score(sealed_with_tickets: &[bool]) -> u32 {
+    sealed_with_tickets.iter().filter(|&&t| t).count() as u32
 }
 
 #[cfg(test)]
@@ -54,5 +66,12 @@ mod tests {
         assert!(is_ticket_submission_open(499));
         assert!(!is_ticket_submission_open(500));
         assert!(!is_ticket_submission_open(599));
+    }
+
+    #[test]
+    fn test_chain_ticket_score() {
+        assert_eq!(chain_ticket_score(&[true, true, false, true]), 3);
+        assert_eq!(chain_ticket_score(&[false, false, false]), 0);
+        assert_eq!(chain_ticket_score(&[]), 0);
     }
 }
