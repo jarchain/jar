@@ -8,3 +8,8 @@ description = "State Merklization, Merkle tries, and Merkle Mountain Ranges for 
 [dependencies]
 grey-types = { workspace = true }
 grey-crypto = { workspace = true }
+
+[dev-dependencies]
+hex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

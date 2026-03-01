@@ -4,15 +4,22 @@ use grey_types::Hash;
 
 /// Fisher-Yates shuffle of a sequence using a sequence of random naturals (eq F.1).
 ///
-/// F: (⟦T⟧_l, ⟦N⟧_l) → ⟦T⟧_l
+/// F(s, r): selects s[r[0] % |s|] as the first output element, replaces it
+/// with the last element, then recurses on the shortened sequence (Gray Paper eq 329).
 pub fn fisher_yates_shuffle<T: Clone>(sequence: &mut [T], entropy: &[u32]) {
     let n = sequence.len();
-    if n <= 1 {
+    if n == 0 {
         return;
     }
-    for i in (1..n).rev() {
-        let j = entropy[n - 1 - i] as usize % (i + 1);
-        sequence.swap(i, j);
+
+    // Build the result front-to-back matching the recursive spec:
+    //   output[i] = pick from remaining, fill gap with last remaining element
+    let mut working = sequence.to_vec();
+    for i in 0..n {
+        let remaining = n - i;
+        let j = entropy[i] as usize % remaining;
+        sequence[i] = working[j].clone();
+        working[j] = working[remaining - 1].clone();
     }
 }
 
@@ -84,5 +91,31 @@ mod tests {
         let mut seq: Vec<u32> = vec![];
         shuffle_with_hash(&mut seq, &hash);
         assert!(seq.is_empty());
+    }
+
+    #[test]
+    fn test_shuffle_vectors() {
+        #[derive(serde::Deserialize)]
+        struct ShuffleTestCase {
+            input: usize,
+            entropy: String,
+            output: Vec<usize>,
+        }
+
+        let data = include_str!("../../../test-vectors/shuffle/shuffle_tests.json");
+        let cases: Vec<ShuffleTestCase> =
+            serde_json::from_str(data).expect("failed to parse shuffle test vectors");
+
+        for (i, case) in cases.iter().enumerate() {
+            let entropy_bytes =
+                hex::decode(&case.entropy).unwrap_or_else(|e| panic!("case {i}: bad hex: {e}"));
+            let mut hash_bytes = [0u8; 32];
+            hash_bytes.copy_from_slice(&entropy_bytes);
+            let hash = Hash(hash_bytes);
+
+            let mut seq: Vec<usize> = (0..case.input).collect();
+            shuffle_with_hash(&mut seq, &hash);
+            assert_eq!(seq, case.output, "case {i}: shuffle mismatch (input={})", case.input);
+        }
     }
 }
