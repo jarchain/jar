@@ -294,7 +294,6 @@ fn accumulate_single_service(
         .saturating_add(transfer_gas)
         .saturating_add(operand_gas);
 
-    eprintln!("[acc_single] service={service_id} free_gas={free_gas} transfer_gas={transfer_gas} operand_gas={operand_gas} total_gas={total_gas}");
     if total_gas == 0 && transfers.iter().all(|t| t.destination != service_id) {
         return ServiceAccResult {
             accounts: accounts.clone(),
@@ -308,7 +307,6 @@ fn accumulate_single_service(
     // Look up code blob from preimage_lookup using code_hash
     let code_blob = account.preimage_lookup.get(&account.code_hash).cloned();
 
-    eprintln!("[acc_single] service={service_id} code_blob found={}", code_blob.is_some());
     if code_blob.is_none() {
         // No code available: no-op
         return ServiceAccResult {
@@ -526,17 +524,9 @@ fn run_accumulate_pvm(
     fetch_ctx: &FetchContext,
 ) -> (AccContext, Gas) {
     // Initialize PVM
-    let mut hc_count = 0u32;
-    eprintln!("[pvm_init] code_blob len={} args len={} gas={gas}", code_blob.len(), args.len());
     let mut pvm = match PvmInstance::initialize(code_blob, args, gas) {
-        Some(p) => {
-            eprintln!("[pvm_init] OK, pc={}", p.pc());
-            p
-        }
-        None => {
-            eprintln!("[pvm_init] FAILED - initialize returned None");
-            return (exceptional, 0);
-        }
+        Some(p) => p,
+        None => return (exceptional, 0),
     };
 
     // Set entry point: ΨM(c, 5, ...) starts at instruction counter 5 for accumulate
@@ -546,29 +536,16 @@ fn run_accumulate_pvm(
 
     loop {
         let exit_reason = pvm.run();
-        eprintln!("[pvm_run] exit={exit_reason:?} gas_remaining={} pc={}", pvm.gas(), pvm.pc());
         match exit_reason {
             ExitReason::Halt => {
                 let gas_used = initial_gas - pvm.gas();
-                eprintln!("[pvm_run] HALT gas_used={gas_used}");
                 return (regular, gas_used);
             }
-            ExitReason::Panic | ExitReason::OutOfGas => {
+            ExitReason::Panic | ExitReason::OutOfGas | ExitReason::PageFault(_) => {
                 let gas_used = initial_gas - pvm.gas();
-                eprintln!("[pvm_run] PANIC/OOG gas_used={gas_used}");
-                for r in 0..13 {
-                    eprintln!("  reg[{r}] = 0x{:016x}", pvm.reg(r));
-                }
-                return (exceptional, gas_used);
-            }
-            ExitReason::PageFault(addr) => {
-                let gas_used = initial_gas - pvm.gas();
-                eprintln!("[pvm_run] PAGE_FAULT addr=0x{addr:08x} gas_used={gas_used}");
                 return (exceptional, gas_used);
             }
             ExitReason::HostCall(id) => {
-                let gas_before_hc = pvm.gas();
-                let pc_at_hc = pvm.pc();
                 let ok = handle_host_call(
                     id,
                     &mut pvm,
@@ -578,20 +555,6 @@ fn run_accumulate_pvm(
                     entropy,
                     fetch_ctx,
                 );
-                let gas_after_hc = pvm.gas();
-                let hc_cost = gas_before_hc as i64 - gas_after_hc as i64;
-                let phi7 = pvm.reg(7);
-                eprintln!(
-                    "[host_call] id={id} pc={pc_at_hc} gas_before={gas_before_hc} gas_after={gas_after_hc} cost={hc_cost} ok={ok} φ7={phi7}"
-                );
-                // Debug: dump registers after first host call
-                if hc_count == 0 {
-                    hc_count += 1;
-                    eprintln!("[after_hc1] registers:");
-                    for r in 0..13 {
-                        eprintln!("  reg[{r}] = 0x{:016x}", pvm.reg(r));
-                    }
-                }
                 if !ok {
                     let gas_used = initial_gas - pvm.gas();
                     return (exceptional, gas_used);
@@ -675,8 +638,6 @@ fn host_fetch(pvm: &mut PvmInstance, fetch_ctx: &FetchContext) -> bool {
     let mode = pvm.reg(10);
     let sub1 = pvm.reg(11) as usize;
 
-    eprintln!("[fetch] mode={mode} offset={offset} max_len={max_len} sub1={sub1} buf_ptr=0x{buf_ptr:08x}");
-
     // Select data based on mode (accumulate context: modes 0, 1, 14, 15)
     let owned_data: Option<Vec<u8>>;
     let data: Option<&[u8]> = match mode {
@@ -714,10 +675,6 @@ fn host_fetch(pvm: &mut PvmInstance, fetch_ctx: &FetchContext) -> bool {
 
     // Return total length of the data
     pvm.set_reg(7, data_len);
-    eprintln!("[fetch] mode={mode} data_len={data_len} wrote {} bytes at offset {f}", l);
-    if mode == 14 || mode == 15 {
-        eprintln!("[fetch] full_data[0..{}]={:02x?}", data.len(), data);
-    }
     true
 }
 
@@ -1135,8 +1092,6 @@ pub fn process_accumulate(
 
     // Step 1: Partition input reports into immediate and queued
     let (immediate, new_queued) = partition_reports(&input.reports);
-    eprintln!("[accumulate] input reports: {}, immediate: {}, queued: {}", input.reports.len(), immediate.len(), new_queued.len());
-
     // Step 2: Compute R* (all accumulatable reports)
     let accumulatable = compute_accumulatable_with_new(
         &immediate,
@@ -1150,8 +1105,6 @@ pub fn process_accumulate(
     let always_gas: Gas = state.privileges.always_acc.iter().map(|(_, g)| *g).sum();
     let gas_budget = (config.gas_total_accumulation + always_gas)
         .max(config.gas_total_accumulation);
-
-    eprintln!("[accumulate] accumulatable reports: {}, gas_budget: {}", accumulatable.len(), gas_budget);
 
     // Build shared fetch context (items are per-service, built in accumulate_single_service)
     let fetch_ctx = FetchContext {
@@ -1332,17 +1285,44 @@ fn update_statistics(
     *stats = stat_map.into_iter().collect();
 }
 
-/// Compute output hash from accumulation outputs.
+/// Compute the accumulate output hash (M_K over per-service yields, eq 12.17).
+///
+/// Each service that calls yield produces a (service_id, output_hash) pair.
+/// The output commitment is the balanced Keccak-256 Merkle root (M_K) over the
+/// list of encoded pairs `E4(service_id) ⌢ output_hash`, sorted by service_id.
 fn compute_output_hash(outputs: &[(ServiceId, Hash)]) -> Hash {
     if outputs.is_empty() {
         return Hash([0u8; 32]);
     }
-    // Keccak Merkle root of the outputs
-    // For now, simple hash of all outputs
-    let mut data = Vec::new();
-    for (sid, hash) in outputs {
-        data.extend_from_slice(&sid.to_le_bytes());
-        data.extend_from_slice(&hash.0);
+    // Encode each (service_id, yield_hash) pair as 36 bytes
+    let mut leaves: Vec<Vec<u8>> = outputs
+        .iter()
+        .map(|(sid, hash)| {
+            let mut leaf = Vec::with_capacity(36);
+            leaf.extend_from_slice(&sid.to_le_bytes());
+            leaf.extend_from_slice(&hash.0);
+            leaf
+        })
+        .collect();
+    // Sort by service_id (already encoded LE, so sorting by first 4 bytes = sorting by sid)
+    leaves.sort();
+    // Balanced Keccak-256 Merkle tree M_K (eq E.4)
+    keccak_merkle_root(leaves)
+}
+
+/// Balanced Keccak-256 Merkle tree M_K(L) (eq E.4).
+fn keccak_merkle_root(leaves: Vec<Vec<u8>>) -> Hash {
+    match leaves.len() {
+        0 => Hash([0u8; 32]),
+        1 => grey_crypto::keccak_256(&leaves[0]),
+        n => {
+            let mid = (n + 1) / 2;
+            let left = keccak_merkle_root(leaves[..mid].to_vec());
+            let right = keccak_merkle_root(leaves[mid..].to_vec());
+            let mut combined = [0u8; 64];
+            combined[..32].copy_from_slice(&left.0);
+            combined[32..].copy_from_slice(&right.0);
+            grey_crypto::keccak_256(&combined)
+        }
     }
-    grey_crypto::blake2b_256(&data)
 }
