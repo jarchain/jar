@@ -23,11 +23,14 @@ const MINIMUM_GUARANTORS: usize = 2; // Minimum credential count for guarantees
 /// 7. Statistics: π' from block activity
 /// 8. Authorization: α' from ϕ'
 pub fn apply(state: &State, block: &Block) -> Result<State, TransitionError> {
-    apply_with_config(state, block, &Config::full(), &[])
+    let (new_state, _opaque) = apply_with_config(state, block, &Config::full(), &[])?;
+    Ok(new_state)
 }
 
 /// Apply a block with a specific configuration (for testing with tiny constants).
-pub fn apply_with_config(state: &State, block: &Block, config: &Config, opaque_data: &[([u8; 31], Vec<u8>)]) -> Result<State, TransitionError> {
+/// Returns (new_state, remaining_opaque_data) where remaining_opaque_data is the
+/// opaque service data after consuming entries accessed during accumulation.
+pub fn apply_with_config(state: &State, block: &Block, config: &Config, opaque_data: &[([u8; 31], Vec<u8>)]) -> Result<(State, Vec<([u8; 31], Vec<u8>)>), TransitionError> {
     let header = &block.header;
     let extrinsic = &block.extrinsic;
 
@@ -36,6 +39,7 @@ pub fn apply_with_config(state: &State, block: &Block, config: &Config, opaque_d
 
     // Clone state for mutation
     let mut new_state = state.clone();
+    let prior_timeslot = state.timeslot;
 
     // Step 1: Timekeeping (eq 6.1)
     new_state.timeslot = header.timeslot;
@@ -47,7 +51,7 @@ pub fn apply_with_config(state: &State, block: &Block, config: &Config, opaque_d
     clear_disputed_reports(&mut new_state, &extrinsic.disputes, config);
 
     // Step 4: Safrole sub-transition (Section 6)
-    apply_safrole(&mut new_state, header, config);
+    apply_safrole(&mut new_state, header, config, prior_timeslot);
 
     // Step 5: Process availability assurances (Section 11.2)
     let available_reports = process_assurances(&mut new_state, &extrinsic.assurances, header.timeslot, config);
@@ -58,7 +62,7 @@ pub fn apply_with_config(state: &State, block: &Block, config: &Config, opaque_d
     process_guarantees(&mut new_state, &extrinsic.guarantees, header.timeslot)?;
 
     // Step 7: Accumulation (Section 12)
-    let (accumulate_root, accumulation_stats) = crate::accumulate::run_accumulation(
+    let (accumulate_root, accumulation_stats, remaining_opaque) = crate::accumulate::run_accumulation(
         config,
         &mut new_state,
         state.timeslot,
@@ -67,6 +71,7 @@ pub fn apply_with_config(state: &State, block: &Block, config: &Config, opaque_d
     );
 
     // Step 8: Update recent block history β' (Section 7)
+    tracing::info!("  transition step 8: timeslot={}, accumulate_root={}", header.timeslot, accumulate_root);
     {
         let header_hash = compute_header_hash(header);
         let work_packages: Vec<(Hash, Hash)> = extrinsic.guarantees.iter().map(|g| {
@@ -95,12 +100,12 @@ pub fn apply_with_config(state: &State, block: &Block, config: &Config, opaque_d
     );
 
     // Step 10: Process preimages (Section 12.4)
-    process_preimages(&mut new_state, &extrinsic.preimages, header.timeslot);
+    process_preimages(&mut new_state, &extrinsic.preimages, header.timeslot, &remaining_opaque);
 
     // Step 11: Authorization pool rotation (Section 8)
     rotate_auth_pool(&mut new_state, &extrinsic.guarantees, config);
 
-    Ok(new_state)
+    Ok((new_state, remaining_opaque))
 }
 
 /// Validate block header against current state.
@@ -196,19 +201,21 @@ fn clear_disputed_reports(
 /// Apply Safrole sub-transition (Section 6).
 ///
 /// Updates entropy, and on epoch boundaries: key rotation, seal-key series.
+/// `prior_timeslot` is the pre-state timeslot τ (before τ' = H_T update).
 fn apply_safrole(
     state: &mut State,
     header: &grey_types::header::Header,
     config: &Config,
+    prior_timeslot: u32,
 ) {
     // Extract VRF output Y(H_V) from the entropy source signature
     let vrf_output = grey_crypto::bandersnatch::vrf_output_hash(&header.vrf_signature.0)
         .map(Hash)
         .unwrap_or(Hash::ZERO);
 
-    // Build Safrole state from the main state
+    // Build Safrole state from the main state, using prior timeslot (not already-updated τ')
     let safrole_pre = crate::safrole::SafroleState {
-        tau: state.timeslot,
+        tau: prior_timeslot,
         eta: state.entropy,
         lambda: state.previous_validators.clone(),
         kappa: state.current_validators.clone(),
@@ -226,8 +233,20 @@ fn apply_safrole(
         extrinsic: vec![], // Ticket processing handled separately for now
     };
 
+    tracing::warn!(
+        "  safrole: slot={}, prior_tau={}, vrf_output={}, pre_eta0={}",
+        header.timeslot, prior_timeslot,
+        vrf_output,
+        state.entropy[0],
+    );
+
     match crate::safrole::process_safrole(config, &input, &safrole_pre, None) {
         Ok(output) => {
+            tracing::warn!(
+                "  safrole OK: eta0'={}, eta0_changed={}",
+                output.state.eta[0],
+                output.state.eta[0] != state.entropy[0],
+            );
             state.entropy = output.state.eta;
             state.previous_validators = output.state.lambda;
             state.current_validators = output.state.kappa;
@@ -236,12 +255,14 @@ fn apply_safrole(
             state.safrole.seal_key_series = output.state.gamma_s;
             state.safrole.ticket_accumulator = output.state.gamma_a;
         }
-        Err(_e) => {
+        Err(e) => {
+            tracing::warn!("  safrole FAIL: {:?}", e);
             // If Safrole fails, still update entropy: η₀' = H(η₀ ⌢ Y(H_V))
             let mut data = Vec::with_capacity(64);
             data.extend_from_slice(&state.entropy[0].0);
             data.extend_from_slice(&vrf_output.0);
             state.entropy[0] = grey_crypto::blake2b_256(&data);
+            tracing::warn!("  safrole FAIL: eta0'={}", state.entropy[0]);
         }
     }
 }
@@ -259,6 +280,27 @@ fn process_assurances(
     let num_cores = state.pending_reports.len();
     let mut assurance_counts = vec![0u32; num_cores];
 
+    // Log pending reports state before processing
+    if current_timeslot >= 58 {
+        for (core, slot) in state.pending_reports.iter().enumerate() {
+            if let Some(pending) = slot {
+                tracing::warn!(
+                    "  assurances slot={}: core {} has pending report from timeslot {}, pkg=0x{}",
+                    current_timeslot,
+                    core,
+                    pending.timeslot,
+                    pending.report.package_spec.package_hash.0[..8].iter().map(|b| format!("{:02x}", b)).collect::<String>()
+                );
+            } else {
+                tracing::warn!(
+                    "  assurances slot={}: core {} is empty",
+                    current_timeslot,
+                    core,
+                );
+            }
+        }
+    }
+
     for assurance in assurances {
         for core in 0..num_cores {
             let byte_idx = core / 8;
@@ -271,9 +313,25 @@ fn process_assurances(
         }
     }
 
+    if current_timeslot >= 58 {
+        tracing::warn!(
+            "  assurances slot={}: counts={:?}, threshold={}",
+            current_timeslot,
+            assurance_counts,
+            threshold,
+        );
+    }
+
     for (core, count) in assurance_counts.iter().enumerate() {
         if *count >= threshold {
             if let Some(pending) = &state.pending_reports[core] {
+                tracing::warn!(
+                    "  assurances slot={}: core {} report AVAILABLE (count={} >= threshold={})",
+                    current_timeslot,
+                    core,
+                    count,
+                    threshold,
+                );
                 available.push(pending.report.clone());
             }
         }
@@ -285,10 +343,23 @@ fn process_assurances(
             let is_timed_out = current_timeslot >= pending.timeslot + config.availability_timeout;
 
             if is_available || is_timed_out {
+                tracing::warn!(
+                    "  assurances slot={}: core {} CLEARED (available={}, timed_out={})",
+                    current_timeslot,
+                    core,
+                    is_available,
+                    is_timed_out,
+                );
                 *slot = None;
             }
         }
     }
+
+    tracing::warn!(
+        "  assurances slot={}: returning {} available reports",
+        current_timeslot,
+        available.len(),
+    );
 
     available
 }
@@ -329,6 +400,14 @@ fn process_guarantees(
         }
 
         // Place report in pending slot
+        if current_timeslot >= 58 {
+            tracing::warn!(
+                "  guarantees slot={}: placing report on core {}, pkg=0x{}",
+                current_timeslot,
+                core,
+                report.package_spec.package_hash.0[..8].iter().map(|b| format!("{:02x}", b)).collect::<String>(),
+            );
+        }
         state.pending_reports[core] = Some(PendingReport {
             report: report.clone(),
             timeslot: current_timeslot,
@@ -339,25 +418,55 @@ fn process_guarantees(
 }
 
 
-/// Process preimage submissions (Section 12.4, eq 12.35-12.38).
+/// Process preimage submissions — preimage integration function I (GP section 12.4).
+///
+/// δ' = I(δ‡, E_P) where:
+/// - Y(d, s, i) checks d[s].l[(H(i), |i|)] == [] (requested state with empty timeslots)
+/// - For valid preimages: d'[s].l[(H(i), |i|)] = [τ'], d'[s].p[H(i)] = i
 fn process_preimages(
     state: &mut State,
     preimages: &grey_types::header::PreimagesExtrinsic,
     current_timeslot: grey_types::Timeslot,
+    opaque_data: &[([u8; 31], Vec<u8>)],
 ) {
     for (service_id, data) in preimages {
         if let Some(account) = state.services.get_mut(service_id) {
             let hash = grey_crypto::blake2b_256(data);
-            // Store the preimage if not already present
-            account.preimage_lookup.entry(hash).or_insert_with(|| data.clone());
-            // Update preimage info with current timeslot
-            account
+            let key = (hash, data.len() as u32);
+
+            // Promote from opaque data if not in structured preimage_info
+            if !account.preimage_info.contains_key(&key) {
+                let state_key = grey_merkle::state_serial::compute_preimage_info_state_key(
+                    *service_id, &hash, data.len() as u32,
+                );
+                if let Some(opaque_entry) = opaque_data.iter().find(|(k, _)| *k == state_key) {
+                    let timeslots: Vec<grey_types::Timeslot> = opaque_entry.1
+                        .chunks_exact(4)
+                        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                        .collect();
+                    account.preimage_info.insert(key, timeslots);
+                }
+            }
+
+            // Y validity check: preimage_info entry must exist with empty timeslots (= requested)
+            let is_requested = account
                 .preimage_info
-                .entry((hash, data.len() as u32))
-                .or_default()
-                .push(current_timeslot);
-            account.preimage_count += 1;
-            account.last_activity = current_timeslot;
+                .get(&key)
+                .map_or(false, |ts| ts.is_empty());
+
+            if !is_requested {
+                // Disregard preimages that weren't solicited or are already provided
+                continue;
+            }
+
+            // Store the preimage blob: d'[s].p[H(i)] = i
+            account.preimage_lookup.insert(hash, data.clone());
+
+            // Set timeslots to [τ']: d'[s].l[(H(i), |i|)] = [τ']
+            account.preimage_info.insert(key, vec![current_timeslot]);
+
+            // items (a_i) and footprint (a_o) don't change: the preimage_info entry
+            // already existed (same |l| and K(l)), only its timeslots changed.
         }
     }
 }
@@ -414,8 +523,9 @@ pub fn debug_apply_safrole(
     state: &mut State,
     header: &grey_types::header::Header,
     config: &Config,
+    prior_timeslot: u32,
 ) {
-    apply_safrole(state, header, config);
+    apply_safrole(state, header, config, prior_timeslot);
 }
 
 pub fn debug_process_assurances(
@@ -630,6 +740,13 @@ mod tests {
     fn test_preimage_processing() {
         let mut state = make_default_state();
         let service_id: ServiceId = 1;
+        let preimage_data = b"hello world".to_vec();
+        let hash = grey_crypto::blake2b_256(&preimage_data);
+        let key = (hash, preimage_data.len() as u32);
+
+        // Create service with a solicited preimage_info entry (empty timeslots = requested)
+        let mut preimage_info = BTreeMap::new();
+        preimage_info.insert(key, vec![]); // empty timeslots = solicited
         state.services.insert(
             service_id,
             ServiceAccount {
@@ -639,7 +756,7 @@ mod tests {
                 min_on_transfer_gas: 0,
                 storage: BTreeMap::new(),
                 preimage_lookup: BTreeMap::new(),
-                preimage_info: BTreeMap::new(),
+                preimage_info,
                 free_storage_offset: 0,
                 total_footprint: 0,
                 accumulation_counter: 0,
@@ -650,13 +767,13 @@ mod tests {
         );
 
         let mut block = make_empty_block(1);
-        let preimage_data = b"hello world".to_vec();
         block.extrinsic.preimages.push((service_id, preimage_data.clone()));
 
         let new_state = apply(&state, &block).unwrap();
         let account = new_state.services.get(&service_id).unwrap();
-        assert_eq!(account.preimage_count, 1);
-        let hash = grey_crypto::blake2b_256(&preimage_data);
+        // After providing the preimage, preimage_lookup should contain it
         assert!(account.preimage_lookup.contains_key(&hash));
+        // preimage_info should be updated with the current timeslot
+        assert_eq!(account.preimage_info.get(&key), Some(&vec![1u32]));
     }
 }

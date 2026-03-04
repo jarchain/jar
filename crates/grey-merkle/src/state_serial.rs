@@ -22,6 +22,11 @@ fn key_from_index(index: u8) -> [u8; 31] {
     key
 }
 
+/// Construct state key C(i, s) for a service-indexed state component (public alias).
+pub fn key_for_service_pub(index: u8, service_id: ServiceId) -> [u8; 31] {
+    key_for_service(index, service_id)
+}
+
 /// Construct state key C(i, s) for a service-indexed state component.
 fn key_for_service(index: u8, service_id: ServiceId) -> [u8; 31] {
     let mut key = [0u8; 31];
@@ -77,6 +82,31 @@ fn preimage_info_hash_arg(length: u32, hash: &Hash) -> Vec<u8> {
     h.extend_from_slice(&length.to_le_bytes());
     h.extend_from_slice(&hash.0);
     h
+}
+
+/// Extract service_id from an opaque service data key C(s, h).
+/// The service_id bytes are interleaved at positions 0, 2, 4, 6.
+pub fn extract_service_id_from_data_key(key: &[u8; 31]) -> ServiceId {
+    u32::from_le_bytes([key[0], key[2], key[4], key[6]])
+}
+
+/// Compute the state key for a storage entry: C(s, E_4(2^32-1) ++ k).
+pub fn compute_storage_state_key(service_id: ServiceId, storage_key: &[u8]) -> [u8; 31] {
+    key_for_service_data(service_id, &storage_hash_arg(storage_key))
+}
+
+/// Compute the state key for a preimage lookup entry: C(s, E_4(2^32-2) ++ hash).
+pub fn compute_preimage_lookup_state_key(service_id: ServiceId, hash: &Hash) -> [u8; 31] {
+    key_for_service_data(service_id, &preimage_hash_arg(hash))
+}
+
+/// Compute the state key for a preimage info entry: C(s, E_4(l) ++ hash).
+pub fn compute_preimage_info_state_key(
+    service_id: ServiceId,
+    hash: &Hash,
+    length: u32,
+) -> [u8; 31] {
+    key_for_service_data(service_id, &preimage_info_hash_arg(length, hash))
 }
 
 /// Serialize the full state T(σ) into a sorted vector of (key, value) pairs.
@@ -154,7 +184,7 @@ pub fn serialize_state(state: &State, config: &Config) -> Vec<([u8; 31], Vec<u8>
         // C(255, s) → service account metadata
         kvs.push((
             key_for_service(255, service_id),
-            serialize_service_account(account),
+            serialize_service_account_with_id(account, service_id),
         ));
 
         // C(s, E_4(2^32-1) ++ k) → storage entries
@@ -534,23 +564,49 @@ fn serialize_accumulation_outputs(outputs: &[(ServiceId, Hash)]) -> Vec<u8> {
 /// C(255, s): service account metadata.
 /// E(0, a_c, E_8(a_b, a_g, a_m, a_o, a_f), E_4(a_i, a_r, a_a, a_p))
 pub fn serialize_single_service(account: &ServiceAccount) -> Vec<u8> {
-    serialize_service_account(account)
+    serialize_service_account_with_id(account, 0)
 }
 
-fn serialize_service_account(account: &ServiceAccount) -> Vec<u8> {
+fn serialize_service_account_with_id(account: &ServiceAccount, sid: u32) -> Vec<u8> {
     let mut buf = Vec::with_capacity(89);
+
+    // Compute dependent values i and o from actual storage (GP eq 9.4 / line 1036-1040)
+    // a_i = 2·|a_l| + |a_s|
+    let computed_i = 2 * account.preimage_info.len() as u32 + account.storage.len() as u32;
+    // a_o = Σ_{(h,z) ∈ K(a_l)} (81 + z) + Σ_{(x,y) ∈ a_s} (34 + |y| + |x|)
+    let computed_o: u64 = account.preimage_info.keys()
+        .map(|&(_hash, length)| 81u64 + length as u64)
+        .sum::<u64>()
+        + account.storage.iter()
+            .map(|(k, v)| 34u64 + k.len() as u64 + v.len() as u64)
+            .sum::<u64>();
+
+    if computed_i != account.accumulation_counter {
+        eprintln!(
+            "SERVICE ACCOUNT i mismatch for svc {}: stored={}, computed={} (storage={}, preimage_info={})",
+            sid, account.accumulation_counter, computed_i,
+            account.storage.len(), account.preimage_info.len()
+        );
+    }
+    if computed_o != account.total_footprint {
+        eprintln!(
+            "SERVICE ACCOUNT o mismatch for svc {}: stored={}, computed={} (storage entries: {:?})",
+            sid, account.total_footprint, computed_o,
+            account.storage.iter().map(|(k, v)| (k.len(), v.len())).collect::<Vec<_>>()
+        );
+    }
 
     // version = 0
     buf.push(0);
     // a_c: code_hash
     buf.extend_from_slice(&account.code_hash.0);
-    // E_8 fields
+    // E_8 fields: b, g, m, o, f
     buf.extend_from_slice(&account.balance.to_le_bytes());
     buf.extend_from_slice(&account.min_accumulate_gas.to_le_bytes());
     buf.extend_from_slice(&account.min_on_transfer_gas.to_le_bytes());
     buf.extend_from_slice(&account.total_footprint.to_le_bytes());
     buf.extend_from_slice(&account.free_storage_offset.to_le_bytes());
-    // E_4 fields
+    // E_4 fields: i, r, a, p
     buf.extend_from_slice(&account.accumulation_counter.to_le_bytes());
     buf.extend_from_slice(&account.last_accumulation.to_le_bytes());
     buf.extend_from_slice(&account.last_activity.to_le_bytes());

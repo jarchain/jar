@@ -81,3 +81,11 @@ pub fn compute_header_hash(header: &Header) -> grey_types::Hash {
     let encoded = encode_header(header);
     grey_crypto::blake2b_256(&encoded)
 }
+
+/// Compute unsigned header hash H(EU(H)) — blake2b-256 of the unsigned header encoding.
+///
+/// Used by the fuzz-proto GetState lookup.
+pub fn compute_unsigned_header_hash(header: &Header) -> grey_types::Hash {
+    let encoded = encode_header_unsigned(header);
+    grey_crypto::blake2b_256(&encoded)
+}

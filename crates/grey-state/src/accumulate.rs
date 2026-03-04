@@ -10,6 +10,21 @@ use grey_types::{Gas, Hash, ServiceId, Timeslot};
 use std::collections::{BTreeMap, BTreeSet};
 
 // ---------------------------------------------------------------------------
+// Host-call return sentinels (GP Section B.4)
+// ---------------------------------------------------------------------------
+
+const OK: u64 = 0;
+const NONE: u64 = u64::MAX;       // 2^64 - 1
+const WHAT: u64 = u64::MAX - 1;   // 2^64 - 2
+const OOB: u64 = u64::MAX - 2;    // 2^64 - 3
+const WHO: u64 = u64::MAX - 3;    // 2^64 - 4
+const FULL: u64 = u64::MAX - 4;   // 2^64 - 5
+const CORE: u64 = u64::MAX - 5;   // 2^64 - 6
+const CASH: u64 = u64::MAX - 6;   // 2^64 - 7
+const LOW: u64 = u64::MAX - 7;    // 2^64 - 8
+const HUH: u64 = u64::MAX - 8;    // 2^64 - 9
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -41,6 +56,9 @@ pub struct AccServiceAccount {
     pub preimage_lookup: BTreeMap<Hash, Vec<u8>>,
     /// Preimage info/requests ((hash, length) -> timeslots).
     pub preimage_info: BTreeMap<(Hash, u32), Vec<Timeslot>>,
+    /// Opaque service data entries (state key -> value) from initial deserialization.
+    /// Used for fallback lookups when storage/preimage maps are incomplete.
+    pub opaque_data: BTreeMap<[u8; 31], Vec<u8>>,
 }
 
 /// Privileged service indices (eq 9.9), matching test vector format.
@@ -80,6 +98,11 @@ pub struct AccumulateState {
     pub privileges: AccPrivileges,
     pub statistics: Vec<(ServiceId, AccServiceStats)>,
     pub accounts: BTreeMap<ServiceId, AccServiceAccount>,
+    /// φ: Auth queue changes from assign host call.
+    /// Per-core: core_index -> (Q auth hashes, new assigner service ID).
+    pub auth_queues: Option<BTreeMap<u16, (Vec<Hash>, ServiceId)>>,
+    /// ι: Pending validators from designate host call.
+    pub pending_validators: Option<Vec<Vec<u8>>>,
 }
 
 /// Input to the accumulate sub-transition.
@@ -120,6 +143,12 @@ struct ServiceAccResult {
     output: Option<Hash>,
     gas_used: Gas,
     privileges: AccPrivileges,
+    /// Auth queues per core set by assign host call: core -> (Q hashes, new assigner SID).
+    /// GP: (x'_e)_q[c] and (x'_e)_a[c] from ΩA (assign).
+    auth_queues: Option<BTreeMap<u16, (Vec<Hash>, ServiceId)>>,
+    /// Pending validator keys set by designate host call.
+    /// GP: (x'_e)_i from ΩD (designate).
+    pending_validators: Option<Vec<Vec<u8>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -148,14 +177,17 @@ fn partition_reports(reports: &[WorkReport]) -> (Vec<WorkReport>, Vec<ReadyRecor
     for r in reports {
         let deps = compute_dependencies(r);
         if deps.is_empty() {
+            tracing::warn!("  partition: pkg={} -> IMMEDIATE (no deps)", r.package_spec.package_hash);
             immediate.push(r.clone());
         } else {
+            tracing::warn!("  partition: pkg={} -> QUEUED ({} deps: {:?})", r.package_spec.package_hash, deps.len(), deps.iter().take(3).collect::<Vec<_>>());
             queued.push(ReadyRecord {
                 report: r.clone(),
                 dependencies: deps,
             });
         }
     }
+    tracing::warn!("  partition result: {} immediate, {} queued", immediate.len(), queued.len());
     (immediate, queued)
 }
 
@@ -233,7 +265,16 @@ fn compute_accumulatable_with_new(
     let edited = edit_queue(&all_queued, &immediate_hashes);
 
     let mut result = immediate.to_vec();
-    result.extend(resolve_queue(&edited));
+    let queue_resolved = resolve_queue(&edited);
+    tracing::warn!("  accumulatable: {} immediate + {} queue_resolved = {} total",
+        immediate.len(), queue_resolved.len(), immediate.len() + queue_resolved.len());
+    for (i, r) in result.iter().enumerate() {
+        tracing::warn!("    R*[{}]: pkg={} (immediate)", i, r.package_spec.package_hash);
+    }
+    for (i, r) in queue_resolved.iter().enumerate() {
+        tracing::warn!("    R*[{}]: pkg={} (from queue)", immediate.len() + i, r.package_spec.package_hash);
+    }
+    result.extend(queue_resolved);
     result
 }
 
@@ -246,15 +287,20 @@ fn compute_accumulatable_with_new(
 struct AccContext {
     service_id: ServiceId,
     accounts: BTreeMap<ServiceId, AccServiceAccount>,
-    _next_service_id: ServiceId,
+    next_service_id: ServiceId,
     transfers: Vec<DeferredTransfer>,
     output: Option<Hash>,
     _preimage_provisions: Vec<(ServiceId, Vec<u8>)>,
     privileges: AccPrivileges,
+    /// Pending validator keys set by designate host call (ι).
+    pending_validators: Option<Vec<Vec<u8>>>,
+    /// Auth queues per core set by assign host call.
+    auth_queues: Option<BTreeMap<u16, (Vec<Hash>, ServiceId)>>,
 }
 
 /// Run PVM accumulation for a single service (Δ1, eq 12.24).
 fn accumulate_single_service(
+    config: &Config,
     accounts: &BTreeMap<ServiceId, AccServiceAccount>,
     transfers: &[DeferredTransfer],
     reports: &[WorkReport],
@@ -273,6 +319,8 @@ fn accumulate_single_service(
                 output: None,
                 gas_used: 0,
                 privileges: privileges.clone(),
+                auth_queues: None,
+                pending_validators: None,
             };
         }
     };
@@ -309,23 +357,10 @@ fn accumulate_single_service(
             output: None,
             gas_used: 0,
             privileges: privileges.clone(),
+            auth_queues: None,
+            pending_validators: None,
         };
     }
-
-    // Look up code blob from preimage_lookup using code_hash
-    let code_blob = account.preimage_lookup.get(&account.code_hash).cloned();
-
-    if code_blob.is_none() {
-        // No code available: no-op
-        return ServiceAccResult {
-            accounts: accounts.clone(),
-            transfers: vec![],
-            output: None,
-            gas_used: 0,
-            privileges: privileges.clone(),
-        };
-    }
-    let code_blob = code_blob.unwrap();
 
     // Initialize accumulation context (regular dimension x)
     // Credit incoming transfers to balance first (eq B.9)
@@ -336,25 +371,42 @@ fn accumulate_single_service(
         .map(|t| t.amount)
         .sum();
     if let Some(acc) = initial_accounts.get_mut(&service_id) {
+        if transfer_balance > 0 {
+            tracing::warn!("crediting transfer_balance={} to service={}, old_balance={}, new_balance={}",
+                transfer_balance, service_id, acc.balance, acc.balance.saturating_add(transfer_balance));
+        }
         acc.balance = acc.balance.saturating_add(transfer_balance);
     }
 
     // Compute next available service ID (eq B.10)
-    let max_existing = initial_accounts.keys().max().copied().unwrap_or(0);
+    // i = S + (H(E_4(s) ++ η'_0 ++ E_4(τ')) mod (2^32 - S - 2^8))
+    let s_threshold = grey_types::constants::MIN_PUBLIC_SERVICE_INDEX; // S = 2^16 (GP I.4.4)
     let hash_input = encode_new_service_hash(service_id, entropy, timeslot);
     let hash_bytes = grey_crypto::blake2b_256(&hash_input);
-    let _hash_val = u32::from_le_bytes([hash_bytes.0[0], hash_bytes.0[1], hash_bytes.0[2], hash_bytes.0[3]]);
-    // Simplified: next_service_id computation
-    let next_service_id = max_existing.saturating_add(1).max(256);
+    let range = u32::MAX - s_threshold - 255; // 2^32 - S - 2^8
+    // E^{-1}_4(H(...)): first 4 bytes as LE u32
+    let hash_val = u32::from_le_bytes([hash_bytes.0[0], hash_bytes.0[1], hash_bytes.0[2], hash_bytes.0[3]]);
+    let next_service_id = s_threshold + (hash_val % range);
+    tracing::warn!(
+        "next_service_id: s={}, entropy_0_8={:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}, timeslot={}, hash_val={}, range={}, raw={}",
+        service_id, entropy.0[0], entropy.0[1], entropy.0[2], entropy.0[3],
+        entropy.0[4], entropy.0[5], entropy.0[6], entropy.0[7],
+        timeslot, hash_val, range, next_service_id
+    );
+    // check(): ensure not already in use, advance if needed
+    let next_service_id = find_free_service_id(next_service_id, &initial_accounts, s_threshold);
+    tracing::warn!("  -> final next_service_id={}", next_service_id);
 
     let regular = AccContext {
         service_id,
         accounts: initial_accounts.clone(),
-        _next_service_id: next_service_id,
+        next_service_id,
         transfers: vec![],
         output: None,
         _preimage_provisions: vec![],
         privileges: privileges.clone(),
+        pending_validators: None,
+        auth_queues: None,
     };
     let exceptional = regular.clone();
 
@@ -365,6 +417,7 @@ fn accumulate_single_service(
 
     // Encode minimal argument blob: varint(timeslot, service_id, item_count)
     let args = encode_accumulate_args(timeslot, service_id, item_count);
+    tracing::warn!("  args hex: {}", args.iter().map(|b| format!("{:02x}", b)).collect::<String>());
 
     // Build per-service fetch context with encoded items
     let items_blob = build_items_blob(transfers, service_id, reports);
@@ -386,6 +439,11 @@ fn accumulate_single_service(
     }
 
 
+    tracing::warn!("  items_blob for svc {}: {} bytes, {} individual items, args={} bytes",
+        service_id, items_blob.len(), individual_items.len(), args.len());
+    for (i, item) in individual_items.iter().enumerate() {
+        tracing::warn!("    item[{}]: disc={}, total_len={}", i, item[0], item.len());
+    }
     let service_fetch_ctx = FetchContext {
         config_blob: fetch_ctx.config_blob.clone(),
         entropy: fetch_ctx.entropy,
@@ -393,9 +451,29 @@ fn accumulate_single_service(
         items: individual_items,
     };
 
+    // Look up code blob from preimage_lookup using code_hash
+    let code_blob = initial_accounts
+        .get(&service_id)
+        .and_then(|a| a.preimage_lookup.get(&a.code_hash).cloned());
+
+    if code_blob.is_none() {
+        // No code available: credit transfers but skip PVM execution.
+        // Return accounts with credited transfer balances.
+        return ServiceAccResult {
+            accounts: initial_accounts,
+            transfers: vec![],
+            output: None,
+            gas_used: 0,
+            privileges: privileges.clone(),
+            auth_queues: None,
+            pending_validators: None,
+        };
+    }
+    let code_blob = code_blob.unwrap();
+
     // Run PVM
     let (final_context, gas_used) =
-        run_accumulate_pvm(&code_blob, total_gas, &args, regular, exceptional, timeslot, entropy, &service_fetch_ctx);
+        run_accumulate_pvm(config, &code_blob, total_gas, &args, regular, exceptional, timeslot, entropy, &service_fetch_ctx);
 
     ServiceAccResult {
         accounts: final_context.accounts,
@@ -403,6 +481,8 @@ fn accumulate_single_service(
         output: final_context.output,
         gas_used,
         privileges: final_context.privileges,
+        auth_queues: final_context.auth_queues,
+        pending_validators: final_context.pending_validators,
     }
 }
 
@@ -421,7 +501,7 @@ fn encode_accumulate_args(
     args
 }
 
-/// Encode a single work-item operand (type U, eq C.29).
+/// Encode a single work-item operand (type U, eq:operandtuple).
 /// EU(x) ≡ E(xp, xe, xa, xy, xg, O(xl), ↕xt)
 fn encode_operand(
     report: &WorkReport,
@@ -433,7 +513,7 @@ fn encode_operand(
     buf.extend_from_slice(&report.authorizer_hash.0);           // a: 32 bytes
     buf.extend_from_slice(&digest.payload_hash.0);              // y: 32 bytes
     grey_codec::encode::encode_natural(digest.accumulate_gas as usize, &mut buf); // g: varint
-    // O(xl) - result encoding (eq C.34)
+    // O(xl) - result encoding
     match &digest.result {
         WorkResult::Ok(data) => {
             buf.push(0); // success discriminator
@@ -502,10 +582,11 @@ fn build_items_blob(
 
 /// Encode hash input for new service ID computation.
 fn encode_new_service_hash(service_id: ServiceId, entropy: &Hash, timeslot: Timeslot) -> Vec<u8> {
+    // GP eq: E(s, η'_0, H_T) — uses JAM general encoding (compact naturals for numbers)
     let mut buf = Vec::new();
-    buf.extend_from_slice(&service_id.to_le_bytes());
+    grey_codec::encode::encode_compact(service_id as u64, &mut buf);
     buf.extend_from_slice(&entropy.0);
-    buf.extend_from_slice(&timeslot.to_le_bytes());
+    grey_codec::encode::encode_compact(timeslot as u64, &mut buf);
     buf
 }
 
@@ -523,6 +604,7 @@ struct FetchContext {
 
 /// Run PVM accumulation with host-call loop.
 fn run_accumulate_pvm(
+    config: &Config,
     code_blob: &[u8],
     gas: Gas,
     args: &[u8],
@@ -563,11 +645,35 @@ fn run_accumulate_pvm(
         match exit_reason {
             ExitReason::Halt => {
                 let gas_used = initial_gas - pvm.gas();
+
+                // GP Ψ_M (eq A.36): On halt, o = μ'[φ'_7..φ'_7+φ'_8] if
+                // N_{φ'_7 ..+ φ'_8} ⊆ V_{μ'}.  Registers are 64-bit, addresses
+                // are 32-bit, so the full u64 range must fit in [0, 2^32).
+                // GP completion function C: If o ∈ H (|o| = 32), yield = o.
+                let out_ptr = pvm.reg(7);
+                let out_len = pvm.reg(8);
+                if out_len == 32
+                    && out_ptr.checked_add(32).map_or(false, |end| end <= (1u64 << 32))
+                {
+                    let ptr32 = out_ptr as u32;
+                    let mut bytes = [0u8; 32];
+                    let mut accessible = true;
+                    for i in 0..32u32 {
+                        match pvm.read_byte(ptr32 + i) {
+                            Some(b) => bytes[i as usize] = b,
+                            None => { accessible = false; break; }
+                        }
+                    }
+                    if accessible {
+                        regular.output = Some(grey_types::Hash(bytes));
+                    }
+                }
+
                 tracing::info!(
                     "PVM HALT: service={}, gas_used={}, remaining={}, host_calls={}, \
-                     total_inst_gas={}, total_host_gas={}",
+                     total_inst_gas={}, total_host_gas={}, ω7=0x{:x}, ω8={}, output={:?}",
                     regular.service_id, gas_used, pvm.gas(), host_call_count,
-                    total_instruction_gas, total_host_gas
+                    total_instruction_gas, total_host_gas, out_ptr, out_len, regular.output
                 );
                 return (regular, gas_used);
             }
@@ -603,6 +709,7 @@ fn run_accumulate_pvm(
                     host_call_count, id, gas_before_host, inst_gas, pvm.pc()
                 );
                 let ok = handle_host_call(
+                    config,
                     id,
                     &mut pvm,
                     &mut regular,
@@ -633,6 +740,7 @@ fn run_accumulate_pvm(
 /// Handle a host call from the PVM during accumulation.
 /// Returns true to continue, false to abort.
 fn handle_host_call(
+    config: &Config,
     id: u32,
     pvm: &mut PvmInstance,
     regular: &mut AccContext,
@@ -653,8 +761,11 @@ fn handle_host_call(
     pvm.set_gas(pvm.gas() - host_gas_cost);
 
     let name = match id {
-        0 => "gas", 1 => "fetch", 3 => "read", 4 => "write", 5 => "info",
-        17 => "checkpoint", 20 => "transfer", 21 => "eject", 25 => "yield", 100 => "log",
+        0 => "gas", 1 => "fetch", 2 => "lookup", 3 => "read", 4 => "write", 5 => "info",
+        14 => "bless", 15 => "assign", 16 => "designate", 17 => "checkpoint",
+        18 => "new", 19 => "upgrade", 20 => "transfer", 21 => "eject",
+        22 => "query", 23 => "solicit", 24 => "forget", 25 => "yield", 26 => "provide",
+        100 => "log",
         _ => "unknown",
     };
     tracing::info!(
@@ -665,23 +776,31 @@ fn handle_host_call(
     let result = match id {
         0 => host_gas(pvm, regular),
         1 => host_fetch(pvm, fetch_ctx),
+        2 => host_lookup(pvm, regular),
         3 => host_read(pvm, regular),
         4 => host_write(pvm, regular),
         5 => host_info(pvm, regular),
+        14 => host_bless(pvm, regular, exceptional, config),
+        15 => host_assign(pvm, regular, exceptional, config),
+        16 => host_designate(pvm, regular, exceptional, config),
         17 => host_checkpoint(pvm, regular, exceptional),
+        18 => host_new(pvm, regular, timeslot),
+        19 => host_upgrade(pvm, regular),
         20 => host_transfer(pvm, regular),
         21 => host_eject(pvm, regular, timeslot),
+        22 => host_query(pvm, regular),
+        23 => host_solicit(pvm, regular, timeslot),
+        24 => host_forget(pvm, regular, timeslot, config),
         25 => host_yield(pvm, regular),
+        26 => host_provide(pvm, regular),
         100 => {
-            // log (JIP-1): Return WHAT (2^64-2) per JAM docs spec.
-            // Reads target from μ[φ8..+φ9] and message from μ[φ10..+φ11]
-            // but we don't need to act on them.
-            pvm.set_reg(7, u64::MAX - 1); // WHAT
+            // log (JIP-1): Return WHAT per JAM docs spec.
+            pvm.set_reg(7, WHAT);
             true
         }
         _ => {
-            // Unknown host call: return WHAT (2^64-2), cost g=10 (GP catch-all)
-            pvm.set_reg(7, u64::MAX - 1); // WHAT
+            // Unknown host call: return WHAT, cost g=10 (GP catch-all)
+            pvm.set_reg(7, WHAT);
             true
         }
     };
@@ -708,6 +827,9 @@ fn host_fetch(pvm: &mut PvmInstance, fetch_ctx: &FetchContext) -> bool {
     let mode = pvm.reg(10);
     let sub1 = pvm.reg(11) as usize;
     // Select data based on mode (accumulate context: modes 0, 1, 14, 15)
+    // GP line 3943: Ω_Y(ρ, φ, μ, ∅, η_0', ∅, ∅, ∅, ∅, i, (x, y))
+    // Position 5 = η_0' maps to mode 1 (n).
+    // Modes 2-13 NONE (r, p, x̄, ī all ∅ in accumulate context).
     let owned_data: Option<Vec<u8>>;
     let data: Option<&[u8]> = match mode {
         0 => Some(&fetch_ctx.config_blob),        // Protocol configuration
@@ -727,6 +849,7 @@ fn host_fetch(pvm: &mut PvmInstance, fetch_ctx: &FetchContext) -> bool {
     let data = match data {
         Some(d) => d,
         None => {
+            tracing::warn!("  fetch mode={} -> NONE (not available in accumulate context)", mode);
             pvm.set_reg(7, u64::MAX); // NONE
             return true;
         }
@@ -736,12 +859,23 @@ fn host_fetch(pvm: &mut PvmInstance, fetch_ctx: &FetchContext) -> bool {
     let f = offset.min(data_len);
     let l = max_len.min(data_len - f);
 
-    tracing::debug!("  fetch mode={} data_len={}", mode, data.len());
+    tracing::warn!("  fetch mode={} offset={} max_len={} data_len={} writing={} bytes", mode, f, max_len, data.len(), l);
+
+    // Dump hex for debugging
+    if mode == 0 {
+        tracing::warn!("  fetch config hex: {}", data.iter().map(|b| format!("{:02x}", b)).collect::<String>());
+    } else if mode == 1 {
+        tracing::warn!("  fetch entropy hex: {}", data.iter().map(|b| format!("{:02x}", b)).collect::<String>());
+    } else if mode == 14 && data.len() <= 512 {
+        tracing::warn!("  fetch items hex: {}", data.iter().map(|b| format!("{:02x}", b)).collect::<String>());
+    }
 
     // Write data[f..f+l] to memory at buf_ptr
     if l > 0 {
         let src = &data[f as usize..(f + l) as usize];
-        pvm.write_bytes(buf_ptr, src);
+        if pvm.try_write_bytes(buf_ptr, src).is_none() {
+            return false; // page fault → PANIC
+        }
     }
 
     // Return total length of the data
@@ -770,18 +904,47 @@ fn host_read(pvm: &mut PvmInstance, ctx: &mut AccContext) -> bool {
     let offset = pvm.reg(11);
     let max_len = pvm.reg(12);
 
-    let key = pvm.read_bytes(key_ptr, key_len);
+    let key = match pvm.try_read_bytes(key_ptr, key_len) {
+        Some(k) => k,
+        None => return false, // page fault → PANIC
+    };
 
-    if let Some(account) = ctx.accounts.get(&service_id) {
-        if let Some(value) = account.storage.get(&key) {
+    if let Some(account) = ctx.accounts.get_mut(&service_id) {
+        // Check structured storage first, then fall back to opaque data
+        let value = if let Some(v) = account.storage.get(&key) {
+            Some(v.clone())
+        } else {
+            // Look up in opaque data by computing expected state key
+            let state_key =
+                grey_merkle::state_serial::compute_storage_state_key(service_id, &key);
+            if let Some(v) = account.opaque_data.remove(&state_key) {
+                // Promote from opaque to structured storage
+                account.storage.insert(key.clone(), v.clone());
+                Some(v)
+            } else {
+                None
+            }
+        };
+
+        if let Some(value) = value {
             let v_len = value.len() as u64;
             let f = offset.min(v_len) as usize;
             let l = max_len.min(v_len - f as u64) as usize;
+            tracing::warn!("    read svc={} key={} val_len={} offset={} out_len={}",
+                service_id, key.iter().map(|b| format!("{:02x}", b)).collect::<String>(), v_len, f, l);
+            if v_len <= 64 {
+                tracing::warn!("    read value hex: {}", value.iter().map(|b| format!("{:02x}", b)).collect::<String>());
+            } else {
+                tracing::warn!("    read value first 32 hex: {}", value[..32].iter().map(|b| format!("{:02x}", b)).collect::<String>());
+            }
             if l > 0 {
-                pvm.write_bytes(out_ptr, &value[f..f + l]);
+                if pvm.try_write_bytes(out_ptr, &value[f..f + l]).is_none() {
+                    return false; // page fault → PANIC
+                }
             }
             pvm.set_reg(7, v_len);
         } else {
+            tracing::warn!("    read svc={} key={} -> NONE", service_id, key.iter().map(|b| format!("{:02x}", b)).collect::<String>());
             pvm.set_reg(7, u64::MAX); // NONE
         }
     } else {
@@ -795,17 +958,32 @@ fn host_read(pvm: &mut PvmInstance, ctx: &mut AccContext) -> bool {
 /// φ[7] = key_ptr, φ[8] = key_len, φ[9] = value_ptr, φ[10] = value_len
 /// Returns: φ[7] = OK(0) or error
 fn host_write(pvm: &mut PvmInstance, ctx: &mut AccContext) -> bool {
-    const FULL: u64 = u64::MAX - 4;
 
     let key_ptr = pvm.reg(7) as u32;
     let key_len = pvm.reg(8) as u32;
     let value_ptr = pvm.reg(9) as u32;
     let value_len = pvm.reg(10) as u32;
 
-    let key = pvm.read_bytes(key_ptr, key_len);
-    let value = pvm.read_bytes(value_ptr, value_len);
+    let key = match pvm.try_read_bytes(key_ptr, key_len) {
+        Some(k) => k,
+        None => return false, // page fault → PANIC
+    };
+    let value = match pvm.try_read_bytes(value_ptr, value_len) {
+        Some(v) => v,
+        None => return false, // page fault → PANIC
+    };
 
     if let Some(account) = ctx.accounts.get_mut(&ctx.service_id) {
+        // Promote from opaque data if not in structured storage
+        if !account.storage.contains_key(&key) {
+            let state_key = grey_merkle::state_serial::compute_storage_state_key(
+                ctx.service_id, &key,
+            );
+            if let Some(v) = account.opaque_data.remove(&state_key) {
+                account.storage.insert(key.clone(), v);
+            }
+        }
+
         let old_len: u64 = account
             .storage
             .get(&key)
@@ -835,8 +1013,13 @@ fn host_write(pvm: &mut PvmInstance, ctx: &mut AccContext) -> bool {
             new_items = if was_new { account.items + 1 } else { account.items };
         }
 
-        let threshold = new_items as u64 * grey_types::constants::BALANCE_PER_ITEM
-            + new_bytes * grey_types::constants::BALANCE_PER_OCTET;
+        let threshold = {
+            let raw = grey_types::constants::BALANCE_SERVICE_MINIMUM as i64
+                + grey_types::constants::BALANCE_PER_ITEM as i64 * new_items as i64
+                + grey_types::constants::BALANCE_PER_OCTET as i64 * new_bytes as i64
+                - account.deposit_offset as i64;
+            std::cmp::max(0, raw) as u64
+        };
         if threshold > account.balance {
             pvm.set_reg(7, FULL);
             return true;
@@ -848,6 +1031,8 @@ fn host_write(pvm: &mut PvmInstance, ctx: &mut AccContext) -> bool {
                 account.items = new_items;
             }
         } else {
+            tracing::warn!("    write svc={} key={} val_len={} old_len={} items={}->{}  bytes={}->{}",
+                ctx.service_id, key.iter().map(|b| format!("{:02x}", b)).collect::<String>(), value.len(), old_len, account.items, new_items, account.bytes, new_bytes);
             account.storage.insert(key, value);
             account.bytes = new_bytes;
             account.items = new_items;
@@ -901,14 +1086,20 @@ fn host_info(pvm: &mut PvmInstance, ctx: &mut AccContext) -> bool {
         buf[88..92].copy_from_slice(&account.last_accumulation_slot.to_le_bytes()); // a_a
         buf[92..96].copy_from_slice(&account.parent_service.to_le_bytes()); // a_p
 
-        tracing::debug!("  info struct for svc {}: {} bytes", ctx.service_id, buf.len());
+        tracing::warn!("  info for svc {} (queried by {}): balance={}, threshold={}, items={}, bytes={}, min_item_gas={}, min_memo_gas={}, deposit_offset={}, creation_slot={}, last_acc_slot={}, parent_svc={}",
+            service_id, ctx.service_id, account.balance, threshold, account.items, account.bytes,
+            account.min_item_gas, account.min_memo_gas, account.deposit_offset, account.creation_slot,
+            account.last_accumulation_slot, account.parent_service);
+        tracing::warn!("  info hex: {}", buf.iter().map(|b| format!("{:02x}", b)).collect::<String>());
 
         let v_len = buf.len() as u64;
         let f = offset.min(v_len);
         let l = max_len.min(v_len - f);
 
         if l > 0 {
-            pvm.write_bytes(out_ptr, &buf[f as usize..(f + l) as usize]);
+            if pvm.try_write_bytes(out_ptr, &buf[f as usize..(f + l) as usize]).is_none() {
+                return false; // page fault → PANIC
+            }
         }
         pvm.set_reg(7, v_len); // return |v|
     } else {
@@ -935,16 +1126,16 @@ fn host_checkpoint(
 /// Returns: OK, WHO (dest unknown), LOW (gas < min), CASH (insufficient balance)
 fn host_transfer(pvm: &mut PvmInstance, ctx: &mut AccContext) -> bool {
     const MEMO_SIZE: u32 = 128; // W_T
-    const WHO: u64 = u64::MAX - 3;
-    const LOW: u64 = u64::MAX - 7;
-    const CASH: u64 = u64::MAX - 6;
 
     let dest = pvm.reg(7) as ServiceId;
     let amount = pvm.reg(8);
     let gas_limit = pvm.reg(9);
     let memo_ptr = pvm.reg(10) as u32;
 
-    let memo = pvm.read_bytes(memo_ptr, MEMO_SIZE);
+    let memo = match pvm.try_read_bytes(memo_ptr, MEMO_SIZE) {
+        Some(m) => m,
+        None => return false, // page fault → PANIC
+    };
 
     if !ctx.accounts.contains_key(&dest) {
         pvm.set_reg(7, WHO);
@@ -991,15 +1182,22 @@ fn host_transfer(pvm: &mut PvmInstance, ctx: &mut AccContext) -> bool {
 /// φ[7] = target service to eject (d), φ[8] = hash_ptr (o)
 /// On success: removes target, transfers its balance to caller.
 fn host_eject(pvm: &mut PvmInstance, ctx: &mut AccContext, _timeslot: Timeslot) -> bool {
-    const WHO: u64 = u64::MAX - 3;
-
     let target = pvm.reg(7) as ServiceId;
+    let o_ptr = pvm.reg(8) as u32;
+
+    // GP order (eq Ω_J): read hash from memory FIRST.
+    // If memory inaccessible → PANIC (⚡), takes priority over all other checks.
+    let _hash_data = match pvm.try_read_bytes(o_ptr, 32) {
+        Some(d) => d,
+        None => return false, // page fault → PANIC
+    };
 
     if target == ctx.service_id {
         pvm.set_reg(7, WHO);
         return true;
     }
 
+    // TODO: Full GP eject logic (code_hash check, item count, preimage lookup, age check)
     if let Some(ejected) = ctx.accounts.remove(&target) {
         if let Some(self_acc) = ctx.accounts.get_mut(&ctx.service_id) {
             self_acc.balance = self_acc.balance.saturating_add(ejected.balance);
@@ -1017,13 +1215,693 @@ fn host_eject(pvm: &mut PvmInstance, ctx: &mut AccContext, _timeslot: Timeslot) 
 fn host_yield(pvm: &mut PvmInstance, ctx: &mut AccContext) -> bool {
     let hash_ptr = pvm.reg(7) as u32;
 
-    let data = pvm.read_bytes(hash_ptr, 32);
+    let data = match pvm.try_read_bytes(hash_ptr, 32) {
+        Some(d) => d,
+        None => return false, // page fault → PANIC
+    };
     let mut hash = [0u8; 32];
     hash.copy_from_slice(&data);
 
     ctx.output = Some(Hash(hash));
     pvm.set_reg(7, 0); // OK
     true
+}
+
+/// lookup (id=2): Preimage lookup (GP ΩL).
+/// φ[7] = service_id (or NONE for self), φ[8] = hash_ptr, φ[9] = output_ptr,
+/// φ[10] = offset, φ[11] = max_len
+fn host_lookup(pvm: &mut PvmInstance, ctx: &mut AccContext) -> bool {
+    let service_id = if pvm.reg(7) == NONE || pvm.reg(7) as u32 as u64 == pvm.reg(7) && pvm.reg(7) as u32 == ctx.service_id {
+        ctx.service_id
+    } else if pvm.reg(7) <= u32::MAX as u64 {
+        pvm.reg(7) as ServiceId
+    } else {
+        pvm.set_reg(7, NONE);
+        return true;
+    };
+    let hash_ptr = pvm.reg(8) as u32;
+    let out_ptr = pvm.reg(9) as u32;
+    let offset = pvm.reg(10);
+    let max_len = pvm.reg(11);
+
+    let hash_data = match pvm.try_read_bytes(hash_ptr, 32) {
+        Some(d) => d,
+        None => return false, // page fault → PANIC
+    };
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&hash_data);
+    let hash = Hash(hash);
+
+    if let Some(account) = ctx.accounts.get_mut(&service_id) {
+        // Check structured preimage_lookup first, then fall back to opaque data
+        let value = if let Some(v) = account.preimage_lookup.get(&hash) {
+            Some(v.clone())
+        } else {
+            let state_key =
+                grey_merkle::state_serial::compute_preimage_lookup_state_key(service_id, &hash);
+            if let Some(v) = account.opaque_data.remove(&state_key) {
+                // Promote from opaque to structured preimage_lookup
+                account.preimage_lookup.insert(hash, v.clone());
+                Some(v)
+            } else {
+                None
+            }
+        };
+
+        if let Some(value) = value {
+            let v_len = value.len() as u64;
+            let f = offset.min(v_len) as usize;
+            let l = max_len.min(v_len - f as u64) as usize;
+            if l > 0 {
+                if pvm.try_write_bytes(out_ptr, &value[f..f + l]).is_none() {
+                    return false; // page fault → PANIC
+                }
+            }
+            pvm.set_reg(7, v_len);
+        } else {
+            pvm.set_reg(7, NONE);
+        }
+    } else {
+        pvm.set_reg(7, NONE);
+    }
+    true
+}
+
+/// bless (id=14): Update privileged services (GP ΩB).
+/// φ[7]=m, φ[8]=a, φ[9]=v, φ[10]=r, φ[11]=o, φ[12]=n
+/// Updates the regular context's environment privileges (x'_e)_{(m,a,v,r,z)}.
+fn host_bless(
+    pvm: &mut PvmInstance,
+    regular: &mut AccContext,
+    _exceptional: &mut AccContext,
+    config: &Config,
+) -> bool {
+    let m = pvm.reg(7);
+    let a_ptr = pvm.reg(8) as u32;
+    let v = pvm.reg(9);
+    let r = pvm.reg(10);
+    let o_ptr = pvm.reg(11) as u32;
+    let n = pvm.reg(12) as u32;
+
+    let c = config.core_count as u32;
+
+    // Read auth pool: C u32 values from memory at address a_ptr
+    let auth_pool_bytes = match pvm.try_read_bytes(a_ptr, 4 * c) {
+        Some(b) => b,
+        None => return false, // page fault → PANIC
+    };
+    let auth_pool: Vec<ServiceId> = (0..c as usize)
+        .map(|i| {
+            u32::from_le_bytes([
+                auth_pool_bytes[i * 4],
+                auth_pool_bytes[i * 4 + 1],
+                auth_pool_bytes[i * 4 + 2],
+                auth_pool_bytes[i * 4 + 3],
+            ])
+        })
+        .collect();
+
+    // Read always-accumulate map: n entries of (u32, u64) = 12 bytes each
+    let always_bytes = match pvm.try_read_bytes(o_ptr, 12 * n) {
+        Some(b) => b,
+        None => return false, // page fault → PANIC
+    };
+    let always_acc: Vec<(ServiceId, Gas)> = (0..n as usize)
+        .map(|i| {
+            let sid = u32::from_le_bytes([
+                always_bytes[i * 12],
+                always_bytes[i * 12 + 1],
+                always_bytes[i * 12 + 2],
+                always_bytes[i * 12 + 3],
+            ]);
+            let gas = u64::from_le_bytes([
+                always_bytes[i * 12 + 4],
+                always_bytes[i * 12 + 5],
+                always_bytes[i * 12 + 6],
+                always_bytes[i * 12 + 7],
+                always_bytes[i * 12 + 8],
+                always_bytes[i * 12 + 9],
+                always_bytes[i * 12 + 10],
+                always_bytes[i * 12 + 11],
+            ]);
+            (sid, gas)
+        })
+        .collect();
+
+    // Check (m, v, r) are valid service IDs (fit in u32)
+    if m > u32::MAX as u64 || v > u32::MAX as u64 || r > u32::MAX as u64 {
+        pvm.set_reg(7, WHO);
+        return true;
+    }
+
+    // Update regular context's environment privileges
+    regular.privileges = AccPrivileges {
+        bless: m as ServiceId,
+        assign: auth_pool,
+        designate: v as ServiceId,
+        register: r as ServiceId,
+        always_acc,
+    };
+
+    pvm.set_reg(7, OK);
+    true
+}
+
+/// assign (id=15): Update authorization queue for a core (GP ΩA).
+/// φ[7]=c, φ[8]=o, φ[9]=a
+/// Updates the regular context's environment (x'_e)_q[c] and (x'_e)_a[c].
+fn host_assign(
+    pvm: &mut PvmInstance,
+    regular: &mut AccContext,
+    _exceptional: &mut AccContext,
+    config: &Config,
+) -> bool {
+    let c = pvm.reg(7);
+    let o_ptr = pvm.reg(8) as u32;
+    let a = pvm.reg(9);
+
+    // GP order (eq Ω_A): read memory FIRST, then check privileges.
+    // If memory inaccessible → PANIC (⚡), takes priority over all other checks.
+    let q_count = config.auth_queue_size as u32;
+    let queue_bytes = match pvm.try_read_bytes(o_ptr, 32 * q_count) {
+        Some(b) => b,
+        None => return false, // page fault → PANIC
+    };
+
+    if c >= config.core_count as u64 {
+        pvm.set_reg(7, CORE);
+        return true;
+    }
+
+    let core = c as u16;
+
+    // Check caller is the current assigner for this core
+    if core < regular.privileges.assign.len() as u16 {
+        if regular.service_id != regular.privileges.assign[core as usize] {
+            pvm.set_reg(7, HUH);
+            return true;
+        }
+    } else {
+        pvm.set_reg(7, HUH);
+        return true;
+    }
+
+    if a > u32::MAX as u64 {
+        pvm.set_reg(7, WHO);
+        return true;
+    }
+
+    let queue: Vec<Hash> = (0..q_count as usize)
+        .map(|i| {
+            let mut h = [0u8; 32];
+            h.copy_from_slice(&queue_bytes[i * 32..(i + 1) * 32]);
+            Hash(h)
+        })
+        .collect();
+
+    // Store in regular context
+    if regular.auth_queues.is_none() {
+        regular.auth_queues = Some(BTreeMap::new());
+    }
+    regular
+        .auth_queues
+        .as_mut()
+        .unwrap()
+        .insert(core, (queue, a as ServiceId));
+
+    pvm.set_reg(7, OK);
+    true
+}
+
+/// designate (id=16): Set pending validator keys (GP ΩD).
+/// φ[7]=o (memory offset for V validator keys, 336 bytes each)
+/// Updates the regular context's environment (x'_e)_i (pending validators).
+fn host_designate(
+    pvm: &mut PvmInstance,
+    regular: &mut AccContext,
+    _exceptional: &mut AccContext,
+    config: &Config,
+) -> bool {
+    let o_ptr = pvm.reg(7) as u32;
+
+    let v = config.validators_count as u32;
+    let key_size = 336u32; // Each validator key is 336 bytes
+
+    // GP order (eq Ω_D): read memory FIRST, then check privileges.
+    // If memory inaccessible → PANIC (⚡), takes priority over all other checks.
+    let keys_bytes = match pvm.try_read_bytes(o_ptr, key_size * v) {
+        Some(b) => b,
+        None => return false, // page fault → PANIC
+    };
+
+    // Check caller is the designator
+    if regular.service_id != regular.privileges.designate {
+        pvm.set_reg(7, HUH);
+        return true;
+    }
+
+    let keys: Vec<Vec<u8>> = (0..v as usize)
+        .map(|i| keys_bytes[i * key_size as usize..(i + 1) * key_size as usize].to_vec())
+        .collect();
+
+    regular.pending_validators = Some(keys);
+
+    pvm.set_reg(7, OK);
+    true
+}
+
+/// new (id=18): Create a new service account (GP ΩN).
+/// φ[7]=o (code hash ptr), φ[8]=l (preimage length), φ[9]=g, φ[10]=m, φ[11]=f, φ[12]=i
+fn host_new(pvm: &mut PvmInstance, ctx: &mut AccContext, timeslot: Timeslot) -> bool {
+    let o_ptr = pvm.reg(7) as u32;
+    let l = pvm.reg(8);
+    let g = pvm.reg(9);
+    let m = pvm.reg(10);
+    let f = pvm.reg(11); // freeze / free_storage_offset
+    let hint_i = pvm.reg(12);
+
+    // Read code hash from memory
+    let hash_data = match pvm.try_read_bytes(o_ptr, 32) {
+        Some(d) => d,
+        None => return false, // page fault → PANIC
+    };
+    let mut code_hash = [0u8; 32];
+    code_hash.copy_from_slice(&hash_data);
+    let code_hash = Hash(code_hash);
+
+    // Validate l fits u32
+    if l > u32::MAX as u64 {
+        return false; // panic
+    }
+
+    // Build the new account to compute its threshold balance
+    let mut preimage_info = BTreeMap::new();
+    preimage_info.insert((code_hash, l as u32), vec![]);
+
+    // Compute derived footprint for new account (GP eq 9.4)
+    // a_i = 2·|a_l| + |a_s| = 2·1 + 0 = 2
+    let items_count = 2u64 * preimage_info.len() as u64;
+    // a_o = Σ(81 + z) for (h,z) ∈ K(a_l)
+    let footprint = 81u64 + l;
+
+    // a_t = max(0, B_S + B_I·a_i + B_L·a_o - a_f) (GP eq 9.8)
+    let threshold = {
+        let raw = grey_types::constants::BALANCE_SERVICE_MINIMUM as i64
+            + grey_types::constants::BALANCE_PER_ITEM as i64 * items_count as i64
+            + grey_types::constants::BALANCE_PER_OCTET as i64 * footprint as i64
+            - f as i64;
+        std::cmp::max(0, raw) as u64
+    };
+
+    // Check f ≠ 0 requires caller to be manager (GP: if f ≠ 0 ∧ x_s ≠ χ_M → HUH)
+    if f != 0 && ctx.service_id != ctx.privileges.bless {
+        pvm.set_reg(7, HUH);
+        return true;
+    }
+
+    // Check caller has enough balance after deduction
+    // GP: let s = x_s except s_b = (x_s)_b - a_t; if s_b < (x_s)_t → CASH
+    // i.e. caller's balance after deducting a_t must still be ≥ caller's own threshold
+    if let Some(self_acc) = ctx.accounts.get(&ctx.service_id) {
+        let caller_threshold = compute_account_threshold(self_acc);
+        if self_acc.balance.saturating_sub(threshold) < caller_threshold {
+            pvm.set_reg(7, CASH);
+            return true;
+        }
+    } else {
+        pvm.set_reg(7, CASH);
+        return true;
+    }
+
+    // Find service ID
+    let s_threshold = grey_types::constants::MIN_PUBLIC_SERVICE_INDEX; // S = 2^16 (GP I.4.4)
+    let new_id = if ctx.service_id == ctx.privileges.register && (hint_i as u32) < s_threshold && hint_i <= u32::MAX as u64 {
+        // Registrar can use IDs below S threshold
+        let id = hint_i as u32;
+        if ctx.accounts.contains_key(&id) {
+            pvm.set_reg(7, FULL);
+            return true;
+        }
+        id
+    } else {
+        // Use next_service_id from context
+        let id = ctx.next_service_id;
+        if ctx.accounts.contains_key(&id) {
+            pvm.set_reg(7, FULL);
+            return true;
+        }
+        id
+    };
+
+    // Debit caller by threshold amount (GP: s_b = (x_s)_b - a_t)
+    if let Some(self_acc) = ctx.accounts.get_mut(&ctx.service_id) {
+        self_acc.balance -= threshold;
+    }
+
+    let new_account = AccServiceAccount {
+        version: 0,
+        code_hash,
+        balance: threshold,
+        min_item_gas: g,
+        min_memo_gas: m,
+        bytes: footprint,
+        deposit_offset: f,
+        items: items_count,
+        creation_slot: timeslot,
+        last_accumulation_slot: 0,
+        parent_service: ctx.service_id,
+        storage: BTreeMap::new(),
+        preimage_lookup: BTreeMap::new(),
+        preimage_info,
+        opaque_data: BTreeMap::new(),
+    };
+
+    tracing::warn!("host_new: svc={} new_id={} (0x{:08x}) l={} g={} m={} f={} items={} bytes={} threshold={} balance_after_debit={}",
+        ctx.service_id, new_id, new_id, l, g, m, f, items_count, footprint, threshold,
+        ctx.accounts.get(&ctx.service_id).map(|a| a.balance).unwrap_or(0));
+    ctx.accounts.insert(new_id, new_account);
+
+    // Advance next_service_id: i* = check(S + (x_i - S + 42) mod (2^32 - S - 2^8)) (GP eq 24.62)
+    let range = u32::MAX - s_threshold - 255;
+    let candidate = s_threshold + ((new_id - s_threshold + 42) % range);
+    ctx.next_service_id = find_free_service_id(candidate, &ctx.accounts, s_threshold);
+
+    pvm.set_reg(7, new_id as u64);
+    true
+}
+
+/// upgrade (id=19): Update service code hash, gas limits (GP ΩU).
+/// φ[7]=o (code hash ptr), φ[8]=g (min_item_gas), φ[9]=m (min_memo_gas)
+fn host_upgrade(pvm: &mut PvmInstance, ctx: &mut AccContext) -> bool {
+    let o_ptr = pvm.reg(7) as u32;
+    let g = pvm.reg(8);
+    let m = pvm.reg(9);
+
+    let hash_data = match pvm.try_read_bytes(o_ptr, 32) {
+        Some(d) => d,
+        None => return false, // page fault → PANIC
+    };
+    let mut code_hash = [0u8; 32];
+    code_hash.copy_from_slice(&hash_data);
+
+    if let Some(account) = ctx.accounts.get_mut(&ctx.service_id) {
+        account.code_hash = Hash(code_hash);
+        account.min_item_gas = g;
+        account.min_memo_gas = m;
+        pvm.set_reg(7, OK);
+    } else {
+        pvm.set_reg(7, NONE);
+    }
+    true
+}
+
+/// query (id=22): Query preimage info status (GP ΩQ).
+/// φ[7]=o (hash ptr), φ[8]=z (length)
+fn host_query(pvm: &mut PvmInstance, ctx: &mut AccContext) -> bool {
+    let o_ptr = pvm.reg(7) as u32;
+    let z = pvm.reg(8) as u32;
+
+    let hash_data = match pvm.try_read_bytes(o_ptr, 32) {
+        Some(d) => d,
+        None => return false, // page fault → PANIC
+    };
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&hash_data);
+    let hash = Hash(hash);
+
+    let account = ctx.accounts.get(&ctx.service_id);
+    if let Some(account) = account {
+        if let Some(timeslots) = account.preimage_info.get(&(hash, z)) {
+            match timeslots.len() {
+                0 => {
+                    pvm.set_reg(7, 0);
+                    pvm.set_reg(8, 0);
+                }
+                1 => {
+                    pvm.set_reg(7, 1 + ((timeslots[0] as u64) << 32));
+                    pvm.set_reg(8, 0);
+                }
+                2 => {
+                    pvm.set_reg(7, 2 + ((timeslots[0] as u64) << 32));
+                    pvm.set_reg(8, timeslots[1] as u64);
+                }
+                _ => {
+                    pvm.set_reg(7, 3 + ((timeslots[0] as u64) << 32));
+                    pvm.set_reg(8, timeslots[1] as u64 + ((timeslots[2] as u64) << 32));
+                }
+            }
+        } else {
+            pvm.set_reg(7, NONE);
+            pvm.set_reg(8, 0);
+        }
+    } else {
+        pvm.set_reg(7, NONE);
+        pvm.set_reg(8, 0);
+    }
+    true
+}
+
+/// solicit (id=23): Request a preimage (GP ΩS).
+/// φ[7]=o (hash ptr), φ[8]=z (length)
+fn host_solicit(pvm: &mut PvmInstance, ctx: &mut AccContext, timeslot: Timeslot) -> bool {
+    let o_ptr = pvm.reg(7) as u32;
+    let z = pvm.reg(8) as u32;
+
+    let hash_data = match pvm.try_read_bytes(o_ptr, 32) {
+        Some(d) => d,
+        None => return false, // page fault → PANIC
+    };
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&hash_data);
+    let hash = Hash(hash);
+
+    if let Some(account) = ctx.accounts.get_mut(&ctx.service_id) {
+        let key = (hash, z);
+        // Promote from opaque data if not in structured preimage_info
+        if !account.preimage_info.contains_key(&key) {
+            let state_key = grey_merkle::state_serial::compute_preimage_info_state_key(
+                ctx.service_id, &hash, z,
+            );
+            if let Some(v) = account.opaque_data.remove(&state_key) {
+                // Decode timeslots from raw bytes (4 bytes LE each)
+                let timeslots: Vec<Timeslot> = v
+                    .chunks_exact(4)
+                    .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect();
+                account.preimage_info.insert(key, timeslots);
+            }
+        }
+
+        if let Some(ts) = account.preimage_info.get(&key) {
+            if ts.len() == 2 {
+                // Already has [x, y] — append t to get [x, y, t]
+                let mut new_ts = ts.clone();
+                new_ts.push(timeslot);
+                account.preimage_info.insert(key, new_ts);
+            } else {
+                // Already solicited with different state
+                pvm.set_reg(7, HUH);
+                return true;
+            }
+        } else {
+            // New solicitation: create entry with empty timeslots
+            account.preimage_info.insert(key, vec![]);
+            // Update items/bytes for the new preimage_info entry
+            // GP eq 9.4: items += 2 (each preimage_info entry counts as 2 items)
+            account.items += 2;
+            account.bytes += 81 + z as u64;
+        }
+
+        // Check minimum balance requirement
+        let threshold = compute_account_threshold(account);
+        if threshold > account.balance {
+            // Undo the insert
+            if account.preimage_info.get(&key).map(|v| v.is_empty()).unwrap_or(false) {
+                account.preimage_info.remove(&key);
+                account.items -= 2;
+                account.bytes -= 81 + z as u64;
+            }
+            pvm.set_reg(7, FULL);
+            return true;
+        }
+
+        pvm.set_reg(7, OK);
+    } else {
+        pvm.set_reg(7, HUH);
+    }
+    true
+}
+
+/// forget (id=24): Remove a preimage request (GP ΩF).
+/// φ[7]=o (hash ptr), φ[8]=z (length)
+fn host_forget(pvm: &mut PvmInstance, ctx: &mut AccContext, timeslot: Timeslot, config: &Config) -> bool {
+    let o_ptr = pvm.reg(7) as u32;
+    let z = pvm.reg(8) as u32;
+
+    let hash_data = match pvm.try_read_bytes(o_ptr, 32) {
+        Some(d) => d,
+        None => return false, // page fault → PANIC
+    };
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&hash_data);
+    let hash = Hash(hash);
+
+    let d_const = config.preimage_expunge_period; // D
+
+    if let Some(account) = ctx.accounts.get_mut(&ctx.service_id) {
+        let key = (hash, z);
+        // Promote from opaque data if not in structured preimage_info
+        if !account.preimage_info.contains_key(&key) {
+            let state_key = grey_merkle::state_serial::compute_preimage_info_state_key(
+                ctx.service_id, &hash, z,
+            );
+            if let Some(v) = account.opaque_data.remove(&state_key) {
+                let timeslots: Vec<Timeslot> = v
+                    .chunks_exact(4)
+                    .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect();
+                account.preimage_info.insert(key, timeslots);
+            }
+        }
+        // Also promote preimage_lookup from opaque if needed for removal
+        if !account.preimage_lookup.contains_key(&hash) {
+            let lookup_key =
+                grey_merkle::state_serial::compute_preimage_lookup_state_key(ctx.service_id, &hash);
+            if let Some(v) = account.opaque_data.remove(&lookup_key) {
+                account.preimage_lookup.insert(hash, v);
+            }
+        }
+
+        if let Some(ts) = account.preimage_info.get(&key).cloned() {
+            match ts.len() {
+                0 | 2 if ts.len() == 0 || (ts.len() == 2 && ts[1] < timeslot.saturating_sub(d_const)) => {
+                    // Remove preimage_info entry and preimage_lookup
+                    account.preimage_info.remove(&key);
+                    account.preimage_lookup.remove(&hash);
+                    // Update items/bytes for removed preimage_info entry
+                    account.items = account.items.saturating_sub(2);
+                    account.bytes = account.bytes.saturating_sub(81 + z as u64);
+                }
+                1 => {
+                    // Set forget time: [x] → [x, t]
+                    let mut new_ts = ts;
+                    new_ts.push(timeslot);
+                    account.preimage_info.insert(key, new_ts);
+                }
+                3 if ts[1] < timeslot.saturating_sub(d_const) => {
+                    // [x, y, w] with y < t - D → [w, t]
+                    account.preimage_info.insert(key, vec![ts[2], timeslot]);
+                }
+                _ => {
+                    pvm.set_reg(7, HUH);
+                    return true;
+                }
+            }
+            pvm.set_reg(7, OK);
+        } else {
+            pvm.set_reg(7, HUH);
+        }
+    } else {
+        pvm.set_reg(7, HUH);
+    }
+    true
+}
+
+/// provide (id=26): Provide a preimage (GP ΩP).
+/// φ[7]=s (target service or NONE for self), φ[8]=o (data ptr), φ[9]=z (data len)
+fn host_provide(pvm: &mut PvmInstance, ctx: &mut AccContext) -> bool {
+    let target = if pvm.reg(7) == NONE {
+        ctx.service_id
+    } else if pvm.reg(7) <= u32::MAX as u64 {
+        pvm.reg(7) as ServiceId
+    } else {
+        pvm.set_reg(7, WHO);
+        return true;
+    };
+    let o_ptr = pvm.reg(8) as u32;
+    let z = pvm.reg(9) as u32;
+
+    let data = match pvm.try_read_bytes(o_ptr, z) {
+        Some(d) => d,
+        None => return false, // page fault → PANIC
+    };
+    let hash = grey_crypto::blake2b_256(&data);
+
+    if let Some(account) = ctx.accounts.get_mut(&target) {
+        // Check if there's a preimage_info entry with matching hash and length
+        let key = (hash, z);
+        // Promote from opaque data if not in structured preimage_info
+        if !account.preimage_info.contains_key(&key) {
+            let state_key = grey_merkle::state_serial::compute_preimage_info_state_key(
+                target, &hash, z,
+            );
+            if let Some(v) = account.opaque_data.remove(&state_key) {
+                let timeslots: Vec<Timeslot> = v
+                    .chunks_exact(4)
+                    .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect();
+                account.preimage_info.insert(key, timeslots);
+            }
+        }
+
+        if account.preimage_info.contains_key(&key) {
+            account.preimage_lookup.insert(hash, data);
+
+            // Update preimage_info: mark as provided with timeslot
+            if let Some(ts) = account.preimage_info.get(&key) {
+                if ts.is_empty() {
+                    // Not yet provided: no timeslot recorded yet
+                    // After provide, the info should have the current timeslot
+                    // For now, leave as is (provide doesn't change info state per GP)
+                }
+            }
+
+            pvm.set_reg(7, OK);
+        } else {
+            pvm.set_reg(7, HUH);
+        }
+    } else {
+        pvm.set_reg(7, WHO);
+    }
+    true
+}
+
+/// Compute the minimum balance threshold for a service account (GP eq 9.4/9.8).
+/// a_i = 2·|a_l| + |a_s|
+/// a_o = Σ(81+z) for (h,z)∈K(a_l) + Σ(34+|y|+|x|) for (x,y)∈a_s
+/// a_t = max(0, B_S + B_I·a_i + B_L·a_o - a_f)
+fn compute_account_threshold(account: &AccServiceAccount) -> u64 {
+    // Use stored items/bytes which are maintained incrementally by host calls.
+    // GP eq 9.8: a_t = max(0, B_S + B_I·a_i + B_L·a_o - a_f)
+    let raw = grey_types::constants::BALANCE_SERVICE_MINIMUM as i64
+        + grey_types::constants::BALANCE_PER_ITEM as i64 * account.items as i64
+        + grey_types::constants::BALANCE_PER_OCTET as i64 * account.bytes as i64
+        - account.deposit_offset as i64;
+    std::cmp::max(0, raw) as u64
+}
+
+/// Find a free service ID starting from the given candidate.
+/// GP check(δ, n): find next free service ID starting at candidate.
+/// Wraps within [S, 2^32 - 2^8) by incrementing by 1.
+fn find_free_service_id(
+    candidate: ServiceId,
+    accounts: &BTreeMap<ServiceId, AccServiceAccount>,
+    s_threshold: u32,
+) -> ServiceId {
+    let range = u32::MAX - s_threshold - 255; // 2^32 - S - 2^8
+    let mut id = s_threshold + (candidate.wrapping_sub(s_threshold) % range);
+    let start = id;
+    loop {
+        if !accounts.contains_key(&id) {
+            return id;
+        }
+        // check() increments by 1 per GP eq (24.51)
+        id = s_threshold + ((id - s_threshold + 1) % range);
+        if id == start {
+            break;
+        }
+    }
+    id
 }
 
 // ---------------------------------------------------------------------------
@@ -1034,6 +1912,7 @@ fn host_yield(pvm: &mut PvmInstance, ctx: &mut AccContext) -> bool {
 /// All reports in the batch are processed together — each involved service
 /// receives ALL items from ALL reports in a single PVM invocation.
 fn accumulate_batch(
+    config: &Config,
     accounts: &BTreeMap<ServiceId, AccServiceAccount>,
     transfers: &[DeferredTransfer],
     reports: &[WorkReport],
@@ -1047,6 +1926,8 @@ fn accumulate_batch(
     Vec<(ServiceId, Hash)>,
     Vec<(ServiceId, Gas)>,
     AccPrivileges,
+    Option<BTreeMap<u16, (Vec<Hash>, ServiceId)>>,
+    Option<Vec<Vec<u8>>>,
 ) {
     // Collect all involved service IDs across all reports
     let mut involved = BTreeSet::new();
@@ -1062,14 +1943,29 @@ fn accumulate_batch(
         involved.insert(t.destination);
     }
 
+    tracing::warn!(
+        "accumulate_batch: {} involved services {:?}, manager={}, designate={}, assign={:?}",
+        involved.len(), involved, privileges.bless, privileges.designate, privileges.assign
+    );
     let mut current_accounts = accounts.clone();
     let mut all_transfers = Vec::new();
     let mut outputs = Vec::new();
     let mut gas_usage = Vec::new();
     let mut current_privileges = privileges.clone();
+    // Track auth_queues and pending_validators from host calls.
+    // GP Δ* merge: q'_c = ((Δ(a_c)_e)_q)_c, i' = (Δ(v)_e)_i
+    // In sequential model: last service to call assign/designate wins per-core.
+    let mut batch_auth_queues: Option<BTreeMap<u16, (Vec<Hash>, ServiceId)>> = None;
+    let mut batch_pending_validators: Option<Vec<Vec<u8>>> = None;
+
+    // Save initial assign for R merge: if bless changed assign[c], bless wins over assign.
+    let initial_assign = privileges.assign.clone();
 
     for &sid in &involved {
+        let prev_designate = current_privileges.designate;
+        let prev_bless = current_privileges.bless;
         let result = accumulate_single_service(
+            config,
             &current_accounts,
             transfers,
             reports,
@@ -1083,10 +1979,49 @@ fn accumulate_batch(
         current_accounts = result.accounts;
         all_transfers.extend(result.transfers);
         gas_usage.push((sid, result.gas_used));
+
+        // Collect auth_queues from assign host call.
+        if let Some(aq) = &result.auth_queues {
+            let merged = batch_auth_queues.get_or_insert_with(BTreeMap::new);
+            for (core, entry) in aq {
+                merged.insert(*core, entry.clone());
+            }
+        }
+
+        // Collect pending_validators from designate host call.
+        if result.pending_validators.is_some() {
+            batch_pending_validators = result.pending_validators;
+        }
+
+        if result.privileges.designate != prev_designate || result.privileges.bless != prev_bless {
+            tracing::warn!(
+                "PRIVILEGE CHANGE after svc {}: designate {} -> {}, bless {} -> {}",
+                sid, prev_designate, result.privileges.designate,
+                prev_bless, result.privileges.bless
+            );
+        }
         current_privileges = result.privileges;
 
         if let Some(output) = result.output {
             outputs.push((sid, output));
+        }
+    }
+
+    // Apply R merge for assign's assigner SID update:
+    // GP: a'_c = R(a_c, (e*_a)_c, ((Δ(a_c)_e)_a)_c)
+    // R(o, a, b) = b if a = o, else a
+    // If bless changed assign[c] (current != initial), keep bless's value.
+    // If only assign changed it, use assign's new assigner.
+    if let Some(ref aq) = batch_auth_queues {
+        for (&core, &(_, new_assigner)) in aq {
+            let c = core as usize;
+            if c < current_privileges.assign.len() && c < initial_assign.len() {
+                if current_privileges.assign[c] == initial_assign[c] {
+                    // Bless didn't change this core's assigner → use assign's value
+                    current_privileges.assign[c] = new_assigner;
+                }
+                // else: bless changed it → keep bless's value (R merge: manager wins)
+            }
         }
     }
 
@@ -1096,6 +2031,8 @@ fn accumulate_batch(
         outputs,
         gas_usage,
         current_privileges,
+        batch_auth_queues,
+        batch_pending_validators,
     )
 }
 
@@ -1109,6 +2046,7 @@ fn accumulate_batch(
 /// g* = g + Σ(t_g for t in t) — gas augmented by transfer gas
 /// Recursive call uses f = {} (always_acc only in first batch)
 fn accumulate_all(
+    config: &Config,
     gas_budget: Gas,
     transfers: Vec<DeferredTransfer>,
     reports: &[WorkReport],
@@ -1123,6 +2061,8 @@ fn accumulate_all(
     Vec<(ServiceId, Hash)>,
     Vec<(ServiceId, Gas)>,
     AccPrivileges,
+    Option<BTreeMap<u16, (Vec<Hash>, ServiceId)>>,
+    Option<Vec<Vec<u8>>>,
 ) {
     // Find max reports that fit in gas budget (i in GP)
     let mut gas_sum: Gas = 0;
@@ -1138,14 +2078,19 @@ fn accumulate_all(
 
     // GP: n = |t| + i + |f| — total items to process
     let n = transfers.len() + max_reports + privileges.always_acc.len();
+    tracing::warn!("accumulate_all: n={} (transfers={}, reports={}, always_acc={}), gas_budget={}",
+        n, transfers.len(), max_reports, privileges.always_acc.len(), gas_budget);
+    for t in &transfers {
+        tracing::warn!("  transfer: sender={} dest={} amount={} gas={}", t.sender, t.destination, t.amount, t.gas_limit);
+    }
     if n == 0 {
-        return (0, accounts.clone(), vec![], vec![], privileges.clone());
+        return (0, accounts.clone(), vec![], vec![], privileges.clone(), None, None);
     }
 
     // Process this batch: Δ*(e, t, r[..i], f)
     let batch_reports = &reports[..max_reports];
-    let (new_accounts, new_transfers, outputs, gas_usage, new_privileges) =
-        accumulate_batch(accounts, &transfers, batch_reports, privileges, timeslot, entropy, fetch_ctx);
+    let (new_accounts, new_transfers, outputs, gas_usage, new_privileges, batch_aq, batch_pv) =
+        accumulate_batch(config, accounts, &transfers, batch_reports, privileges, timeslot, entropy, fetch_ctx);
 
     let batch_gas_used: Gas = gas_usage.iter().map(|(_, g)| *g).sum();
 
@@ -1159,8 +2104,9 @@ fn accumulate_all(
     recursive_privileges.always_acc = vec![];
 
     // Always recurse — handles remaining reports AND deferred transfers
-    let (more_count, final_accounts, more_outputs, more_gas, final_privileges) =
+    let (more_count, final_accounts, more_outputs, more_gas, final_privileges, more_aq, more_pv) =
         accumulate_all(
+            config,
             remaining_gas,
             new_transfers,
             &reports[max_reports..],
@@ -1176,12 +2122,24 @@ fn accumulate_all(
     let mut all_gas = gas_usage;
     all_gas.extend(more_gas);
 
+    // Merge auth_queues: later batches override earlier per-core
+    let final_aq = match (batch_aq, more_aq) {
+        (None, None) => None,
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (Some(mut a), Some(b)) => { a.extend(b); Some(a) }
+    };
+    // Pending validators: later batch wins
+    let final_pv = more_pv.or(batch_pv);
+
     (
         max_reports + more_count,
         final_accounts,
         all_outputs,
         all_gas,
         final_privileges,
+        final_aq,
+        final_pv,
     )
 }
 
@@ -1234,7 +2192,8 @@ pub fn process_accumulate(
     };
 
     // Step 4: Run accumulation pipeline (Δ+)
-    let (n, new_accounts, outputs, gas_usage, new_privileges) = accumulate_all(
+    let (n, new_accounts, outputs, gas_usage, new_privileges, acc_auth_queues, acc_pending_validators) = accumulate_all(
+        config,
         gas_budget,
         vec![],
         &accumulatable,
@@ -1247,6 +2206,10 @@ pub fn process_accumulate(
 
     // Step 5: Update service accounts
     state.accounts = new_accounts;
+
+    // Step 5b: Store auth_queues and pending_validators from host calls
+    state.auth_queues = acc_auth_queues;
+    state.pending_validators = acc_pending_validators;
 
     // Step 6: Update last_accumulation_slot for all accumulated services
     // This tracks the accumulation timeslot in the internal AccServiceAccount representation.
@@ -1308,6 +2271,11 @@ pub fn process_accumulate(
     accum_stats.retain(|_, (g, n)| *g + *n as u64 != 0);
 
     // Step 13: Compute output hash (Keccak Merkle root of outputs)
+    tracing::info!("  accumulate outputs count: {}, sids: {:?}", outputs.len(),
+        outputs.iter().map(|(s, _)| *s).collect::<Vec<_>>());
+    for (sid, hash) in &outputs {
+        tracing::info!("    yield: sid={}, hash={}", sid, hash);
+    }
     let output_hash = compute_output_hash(&outputs);
     AccumulateOutput {
         hash: output_hash,
@@ -1463,21 +2431,42 @@ fn compute_output_hash(outputs: &[(ServiceId, Hash)]) -> Hash {
     keccak_merkle_root(leaves)
 }
 
-/// Balanced Keccak-256 Merkle tree M_K(L) (eq E.4).
-fn keccak_merkle_root(leaves: Vec<Vec<u8>>) -> Hash {
+/// GP node function N(v, H) (eq E.1) — returns raw bytes (blob or hash).
+///
+/// - |v| = 0: H_0 (32 zero bytes)
+/// - |v| = 1: v_0 (raw blob, NOT hashed)
+/// - |v| > 1: H("node" ⌢ N(left, H) ⌢ N(right, H))
+///
+/// Note: Reference implementations (Strawberry/Go) use "node" without '$' prefix.
+fn keccak_merkle_node(leaves: &[Vec<u8>]) -> Vec<u8> {
     match leaves.len() {
-        0 => Hash([0u8; 32]),
-        1 => grey_crypto::keccak_256(&leaves[0]),
+        0 => vec![0u8; 32],
+        1 => leaves[0].clone(),
         n => {
-            let mid = (n + 1) / 2;
-            let left = keccak_merkle_root(leaves[..mid].to_vec());
-            let right = keccak_merkle_root(leaves[mid..].to_vec());
-            let mut combined = [0u8; 64];
-            combined[..32].copy_from_slice(&left.0);
-            combined[32..].copy_from_slice(&right.0);
-            grey_crypto::keccak_256(&combined)
+            let mid = (n + 1) / 2; // ceil(n/2)
+            let left = keccak_merkle_node(&leaves[..mid]);
+            let right = keccak_merkle_node(&leaves[mid..]);
+            let mut input = Vec::with_capacity(4 + left.len() + right.len());
+            input.extend_from_slice(b"node");
+            input.extend_from_slice(&left);
+            input.extend_from_slice(&right);
+            grey_crypto::keccak_256(&input).0.to_vec()
         }
     }
+}
+
+/// Well-balanced Keccak-256 Merkle tree M_B(v, H_K) (eq E.1).
+///
+/// - |v| = 1: H_K(v_0) (hash the single item)
+/// - otherwise: N(v, H_K)
+fn keccak_merkle_root(leaves: Vec<Vec<u8>>) -> Hash {
+    if leaves.len() == 1 {
+        return grey_crypto::keccak_256(&leaves[0]);
+    }
+    let result = keccak_merkle_node(&leaves);
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&result);
+    Hash(hash)
 }
 
 // ---------------------------------------------------------------------------
@@ -1493,12 +2482,21 @@ fn service_to_acc(
     a: &ServiceAccount,
     opaque_data: &[([u8; 31], Vec<u8>)],
 ) -> AccServiceAccount {
+    // Collect per-service opaque data entries
+    let mut per_service_opaque: BTreeMap<[u8; 31], Vec<u8>> = BTreeMap::new();
+    for (key, value) in opaque_data {
+        let entry_sid = grey_merkle::state_serial::extract_service_id_from_data_key(key);
+        if entry_sid == sid {
+            per_service_opaque.insert(*key, value.clone());
+        }
+    }
+
     // Build preimage_lookup from ServiceAccount, plus code blob from opaque data
     let mut preimage_lookup = a.preimage_lookup.clone();
     if a.code_hash != Hash::ZERO && !preimage_lookup.contains_key(&a.code_hash) {
-        if let Some(code_blob) =
-            grey_merkle::state_serial::lookup_preimage_in_opaque(sid, &a.code_hash, opaque_data)
-        {
+        let code_key =
+            grey_merkle::state_serial::compute_preimage_lookup_state_key(sid, &a.code_hash);
+        if let Some(code_blob) = per_service_opaque.remove(&code_key) {
             tracing::info!(
                 "Found code blob for service {} in opaque data: {} bytes",
                 sid, code_blob.len()
@@ -1516,20 +2514,24 @@ fn service_to_acc(
         bytes: a.total_footprint,
         deposit_offset: a.free_storage_offset,
         items: a.accumulation_counter as u64,
-        creation_slot: 0, // Not tracked in ServiceAccount
-        last_accumulation_slot: a.last_accumulation,
-        parent_service: 0, // Not tracked
+        creation_slot: a.last_accumulation, // position r = creation timeslot
+        last_accumulation_slot: a.last_activity, // position a = last accumulation timeslot
+        parent_service: a.preimage_count, // position p = parent service ID
         storage: a.storage.clone(),
         preimage_lookup,
         preimage_info: a.preimage_info.clone(),
+        opaque_data: per_service_opaque,
     }
 }
 
 /// Convert AccServiceAccount back to ServiceAccount.
 ///
-/// GP field mapping:
-///   a_r (ServiceAccount.last_accumulation) = creation slot — preserved from original
-///   a_a (ServiceAccount.last_activity) = most recent accumulation slot — set to timeslot if accumulated
+/// GP field mapping (eq D.2 serialization):
+///   position i (accumulation_counter) = a_i = 2·|a_l| + |a_s|  (GP eq 9.4)
+///   position o (total_footprint) = a_o = Σ(81+z) + Σ(34+|y|+|x|)  (GP eq 9.4)
+///   position r (last_accumulation) = creation slot — preserved from original
+///   position a (last_activity) = most recent accumulation slot — set to timeslot if accumulated
+///   position p (preimage_count) = parent service ID  (GP eq 9.3)
 fn acc_to_service(
     a: &AccServiceAccount,
     original: Option<&ServiceAccount>,
@@ -1544,6 +2546,7 @@ fn acc_to_service(
     };
     // a_r: always preserve creation slot from original
     let last_accumulation = original.map(|o| o.last_accumulation).unwrap_or(a.creation_slot);
+
     ServiceAccount {
         code_hash: a.code_hash,
         balance: a.balance,
@@ -1557,7 +2560,7 @@ fn acc_to_service(
         accumulation_counter: a.items as u32,
         last_accumulation,
         last_activity,
-        preimage_count: original.map(|o| o.preimage_count).unwrap_or(a.preimage_info.len() as u32),
+        preimage_count: a.parent_service,
     }
 }
 
@@ -1612,15 +2615,17 @@ fn ready_to_state_queue(ready: &[Vec<ReadyRecord>]) -> Vec<Vec<(WorkReport, Vec<
 
 /// Run accumulation on available reports, updating the state in-place.
 ///
-/// Returns (accumulate_root_hash, accumulation_stats) where accumulation_stats
-/// is the S mapping: service_id → (total_gas, work_item_count) per GP eq 1892.
+/// Returns (accumulate_root_hash, accumulation_stats, remaining_opaque_data) where:
+/// - accumulation_stats is the S mapping: service_id → (total_gas, work_item_count) per GP eq 1892
+/// - remaining_opaque_data is the opaque service data entries after consuming entries accessed
+///   by host calls during accumulation
 pub fn run_accumulation(
     config: &Config,
     state: &mut State,
     prev_timeslot: Timeslot,
     available_reports: Vec<WorkReport>,
     opaque_data: &[([u8; 31], Vec<u8>)],
-) -> (Hash, BTreeMap<ServiceId, (Gas, u32)>) {
+) -> (Hash, BTreeMap<ServiceId, (Gas, u32)>, Vec<([u8; 31], Vec<u8>)>) {
     let epoch_length = config.epoch_length as usize;
 
     tracing::debug!(
@@ -1628,30 +2633,8 @@ pub fn run_accumulation(
         available_reports.len(), state.timeslot, prev_timeslot
     );
 
-    if available_reports.is_empty() {
-        // Still need to shift history and queue for this timeslot
-        shift_accumulated(
-            &mut state.accumulation_history,
-            &[],
-            0,
-            epoch_length,
-        );
-
-        let mut ready = state_queue_to_ready(&state.accumulation_queue);
-        update_ready_queue(
-            &mut ready,
-            &[],
-            &BTreeSet::new(),
-            epoch_length,
-            prev_timeslot,
-            state.timeslot,
-        );
-        state.accumulation_queue = ready_to_state_queue(&ready);
-
-        state.accumulation_outputs = vec![];
-        return (Hash::ZERO, BTreeMap::new());
-    }
-
+    // GP eq 12.22-12.24: Δ+ is always called, even with no available reports.
+    // Always-accumulate services (χ_Z) must run every block.
     // Build AccumulateState from main State
     let mut acc_state = AccumulateState {
         slot: prev_timeslot,
@@ -1665,6 +2648,8 @@ pub fn run_accumulation(
             .iter()
             .map(|(&sid, a)| (sid, service_to_acc(sid, a, opaque_data)))
             .collect(),
+        auth_queues: None,
+        pending_validators: None,
     };
 
     let input = AccumulateInput {
@@ -1673,11 +2658,25 @@ pub fn run_accumulation(
     };
 
     let acc_output = process_accumulate(config, &mut acc_state, &input);
-    tracing::debug!("  accumulate output_hash: {}", acc_output.hash);
+    tracing::info!("  accumulate output_hash: {}", acc_output.hash);
+    tracing::info!(
+        "  accumulate privileges: bless={}, designate={}, register={}, assign={:?}, always_acc={}",
+        acc_state.privileges.bless, acc_state.privileges.designate,
+        acc_state.privileges.register, acc_state.privileges.assign,
+        acc_state.privileges.always_acc.len()
+    );
 
     // Build set of accumulated service IDs from accumulation_stats
     let accumulated_sids: std::collections::BTreeSet<ServiceId> =
         acc_output.accumulation_stats.keys().copied().collect();
+
+    // Collect remaining opaque data from all service accounts
+    let mut remaining_opaque: Vec<([u8; 31], Vec<u8>)> = Vec::new();
+    for (_, acc) in &acc_state.accounts {
+        for (k, v) in &acc.opaque_data {
+            remaining_opaque.push((*k, v.clone()));
+        }
+    }
 
     // Propagate results back to State
     let new_services: BTreeMap<ServiceId, ServiceAccount> = acc_state
@@ -1689,11 +2688,58 @@ pub fn run_accumulation(
         })
         .collect();
 
+    // Log new service IDs being written back
+    for (&sid, _) in &new_services {
+        if !state.services.contains_key(&sid) {
+            tracing::warn!("run_accumulation: NEW service_id={} (0x{:08x}) being added to state", sid, sid);
+        }
+    }
     state.services = new_services;
     state.accumulation_history = acc_state.accumulated;
     state.accumulation_queue = ready_to_state_queue(&acc_state.ready_queue);
     state.privileged_services = acc_to_privileges(&acc_state.privileges);
     state.accumulation_outputs = acc_output.outputs.clone();
 
-    (acc_output.hash, acc_output.accumulation_stats)
+    // Apply auth queue changes from assign host call (GP: φ' = q' from Δ*).
+    // auth_queue[slot_idx][core_idx] = queue_hashes[slot_idx] for each modified core.
+    if let Some(ref aq) = acc_state.auth_queues {
+        for (&core, (queue_hashes, _assigner)) in aq {
+            let c = core as usize;
+            tracing::info!(
+                "run_accumulation: applying auth_queue update for core {}: {} queue entries",
+                c, queue_hashes.len()
+            );
+            for (slot_idx, hash) in queue_hashes.iter().enumerate() {
+                if slot_idx < state.auth_queue.len() {
+                    // Ensure the core dimension exists
+                    while state.auth_queue[slot_idx].len() <= c {
+                        state.auth_queue[slot_idx].push(Hash::ZERO);
+                    }
+                    state.auth_queue[slot_idx][c] = *hash;
+                }
+            }
+        }
+    }
+
+    // Apply pending validator changes from designate host call (GP: ι' from Δ*).
+    if let Some(ref pv) = acc_state.pending_validators {
+        tracing::info!(
+            "run_accumulation: applying pending_validators update: {} validators",
+            pv.len()
+        );
+        state.pending_validators = pv
+            .iter()
+            .map(|bytes| {
+                if bytes.len() == 336 {
+                    let arr: &[u8; 336] = bytes.as_slice().try_into().unwrap();
+                    grey_types::validator::ValidatorKey::from_bytes(arr)
+                } else {
+                    tracing::warn!("pending_validators: unexpected key length {}", bytes.len());
+                    grey_types::validator::ValidatorKey::null()
+                }
+            })
+            .collect();
+    }
+
+    (acc_output.hash, acc_output.accumulation_stats, remaining_opaque)
 }

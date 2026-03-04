@@ -28,40 +28,45 @@ pub fn compute_state_root_from_kvs(kvs: &[([u8; 31], Vec<u8>)]) -> Hash {
     trie::merkle_root(&refs)
 }
 
+/// GP node function N(v, H) (eq E.1) — returns raw bytes (blob or hash).
+///
+/// - |v| = 0: H_0 (32 zero bytes)
+/// - |v| = 1: v_0 (raw blob, NOT hashed)
+/// - |v| > 1: H("node" ⌢ N(left, H) ⌢ N(right, H))
+///
+/// Note: Reference implementations (Strawberry/Go) use "node" without '$' prefix.
+fn merkle_node(leaves: &[&[u8]], hash_fn: fn(&[u8]) -> Hash) -> Vec<u8> {
+    match leaves.len() {
+        0 => vec![0u8; 32],
+        1 => leaves[0].to_vec(),
+        n => {
+            let mid = (n + 1) / 2; // ceil(n/2)
+            let left = merkle_node(&leaves[..mid], hash_fn);
+            let right = merkle_node(&leaves[mid..], hash_fn);
+            let mut input = Vec::with_capacity(4 + left.len() + right.len());
+            input.extend_from_slice(b"node");
+            input.extend_from_slice(&left);
+            input.extend_from_slice(&right);
+            hash_fn(&input).0.to_vec()
+        }
+    }
+}
+
 /// Compute the well-balanced binary Merkle tree root MB (eq E.1).
+///
+/// - |v| = 1: H(v_0) (hash the single item)
+/// - otherwise: N(v, H)
 ///
 /// MB: (⟦B⟧, B → H) → H
 pub fn balanced_merkle_root(leaves: &[&[u8]], hash_fn: fn(&[u8]) -> Hash) -> Hash {
-    if leaves.is_empty() {
-        return Hash::ZERO;
-    }
     if leaves.len() == 1 {
         return hash_fn(leaves[0]);
     }
-
-    // Build tree bottom-up
-    let mut current: Vec<Hash> = leaves.iter().map(|l| hash_fn(l)).collect();
-
-    while current.len() > 1 {
-        let mut next = Vec::with_capacity((current.len() + 1) / 2);
-        for i in (0..current.len()).step_by(2) {
-            if i + 1 < current.len() {
-                let mut combined = Vec::with_capacity(64);
-                combined.extend_from_slice(&current[i].0);
-                combined.extend_from_slice(&current[i + 1].0);
-                next.push(hash_fn(&combined));
-            } else {
-                // Odd element: pair with zero hash
-                let mut combined = Vec::with_capacity(64);
-                combined.extend_from_slice(&current[i].0);
-                combined.extend_from_slice(&Hash::ZERO.0);
-                next.push(hash_fn(&combined));
-            }
-        }
-        current = next;
-    }
-
-    current[0]
+    // For 0 or 2+ items, delegate to N
+    let result = merkle_node(leaves, hash_fn);
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&result);
+    Hash(hash)
 }
 
 /// State-key constructor C (eq D.1).

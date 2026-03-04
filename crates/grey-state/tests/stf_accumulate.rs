@@ -164,6 +164,7 @@ fn parse_service_account(v: &serde_json::Value) -> (ServiceId, AccServiceAccount
         storage,
         preimage_lookup,
         preimage_info,
+        opaque_data: std::collections::BTreeMap::new(),
     };
 
     (id, account)
@@ -259,6 +260,8 @@ fn parse_state(v: &serde_json::Value) -> AccumulateState {
         privileges: parse_privileges(&v["privileges"]),
         statistics: parse_statistics(&v["statistics"]),
         accounts,
+        auth_queues: None,
+        pending_validators: None,
     }
 }
 

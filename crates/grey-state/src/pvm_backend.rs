@@ -60,10 +60,29 @@ impl PvmInstance {
             .collect()
     }
 
+    /// Try to read bytes; returns None on page fault (any inaccessible byte).
+    /// Used by host calls where inaccessible memory causes a PANIC.
+    pub fn try_read_bytes(&self, addr: u32, len: u32) -> Option<Vec<u8>> {
+        self.inner.memory.read_bytes(addr, len)
+    }
+
     pub fn write_bytes(&mut self, addr: u32, data: &[u8]) {
         for (i, &byte) in data.iter().enumerate() {
             self.inner.memory.write_u8(addr + i as u32, byte);
         }
+    }
+
+    /// Try to write bytes; returns None on page fault (any non-writable byte).
+    /// Used by host calls where non-writable memory causes a PANIC.
+    pub fn try_write_bytes(&mut self, addr: u32, data: &[u8]) -> Option<()> {
+        use grey_pvm::memory::MemoryAccess;
+        for (i, &byte) in data.iter().enumerate() {
+            match self.inner.memory.write_u8(addr.wrapping_add(i as u32), byte) {
+                MemoryAccess::Ok => {}
+                MemoryAccess::PageFault(_) => return None,
+            }
+        }
+        Some(())
     }
 
     /// Enable instruction trace collection.

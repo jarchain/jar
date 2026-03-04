@@ -199,6 +199,72 @@ For instruction-level debugging, the PVM supports trace mode that logs every
 instruction executed. See [docs/pvm-sbrk.md](pvm-sbrk.md) for an example of
 how instruction-level tracing was used to find a 4-gas discrepancy.
 
+### `scripts/compare_with_ref.py`
+
+Compares Grey's state KV pairs against a reference implementation (Jamzig) at a
+specific block boundary. Runs both targets in parallel, dumps state from each,
+and shows mismatched/added/removed keys with decoded service account fields.
+
+```bash
+python3 scripts/compare_with_ref.py 64 --trace res/conformance/.../no_forks
+```
+
+This is the most powerful debugging tool for finding exactly which state components
+diverge. For service accounts, it decodes all fields (balance, gas limits, items,
+creation_slot, etc.) and highlights individual field differences.
+
+### `scripts/compare_states.py`
+
+Compares Grey's own state between two block boundaries to see what changed in a
+single transition. Useful for understanding what a specific block's accumulation did.
+
+```bash
+python3 scripts/compare_states.py --before 63 --after 64 --hex
+```
+
+## Advanced Debugging: Host-Call Tracing
+
+When the state divergence is caused by PVM execution differences, use detailed
+host-call tracing to compare the execution sequence with a reference.
+
+### Capturing Host-Call Traces
+
+Run with verbose accumulation logging:
+
+```bash
+RUST_LOG=grey_state::accumulate=debug python3 scripts/run_conform.py \
+  --blocks 65 res/conformance/.../no_forks
+```
+
+Each host call is logged with:
+- Host call ID and name
+- Input registers (ω7-ω12)
+- Output register (ω7) / return value
+- Gas before and after
+
+### Interpreting Host-Call Sequences
+
+A typical accumulation host-call sequence:
+
+1. `gas(0)` — query remaining gas
+2. `fetch(1)` — read config values (timeslot, core count, etc.)
+3. `info(5)` — query service account info
+4. `read(3)` / `write(4)` — storage operations
+5. `checkpoint(17)` — save state snapshot (regular ← exceptional)
+6. `assign(15)` / `designate(16)` — privileged operations
+7. PVM HALT or PANIC
+
+When a PANIC occurs after a checkpoint, the exceptional context (saved at
+checkpoint) is restored. This means all state changes between the last checkpoint
+and the PANIC are reverted.
+
+### Key Insight: Check Ordering Matters
+
+Host calls that read from guest memory MUST attempt the read before any validation
+checks. If memory is inaccessible, the PVM PANICs — and this takes priority over
+returning error sentinels like HUH or CORE. See [host-call-ordering.md](host-call-ordering.md)
+for a detailed case study.
+
 ## Common Failure Modes
 
 ### "No accumulation" (output_hash = 0x000...0)

@@ -9,7 +9,7 @@ use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 
 use grey_codec::encode::encode_compact;
-use grey_codec::header_codec::compute_header_hash;
+use grey_codec::header_codec::{compute_header_hash, compute_unsigned_header_hash};
 use grey_codec::DecodeWithConfig;
 use grey_merkle::state_serial;
 use grey_types::config::Config;
@@ -30,6 +30,7 @@ const FEATURE_ANCESTRY: u32 = 1;
 const FEATURE_FORK: u32 = 2;
 
 /// Tracked state for a particular header hash.
+#[derive(Clone)]
 struct TrackedState {
     state: State,
     /// Opaque service data KV pairs for re-serialization.
@@ -323,13 +324,13 @@ impl ConformTarget {
                 }
 
                 self.states.clear();
-                self.states.insert(
-                    header_hash,
-                    TrackedState {
-                        state,
-                        opaque_data: opaque,
-                    },
-                );
+                let unsigned_hash = compute_unsigned_header_hash(&header);
+                let tracked = TrackedState {
+                    state,
+                    opaque_data: opaque,
+                };
+                self.states.insert(header_hash, tracked.clone());
+                self.states.insert(unsigned_hash, tracked);
             }
             Err(e) => {
                 tracing::error!("Failed to deserialize state: {e}");
@@ -417,19 +418,270 @@ impl ConformTarget {
         // Apply state transition
         let parent_opaque = parent_tracked.opaque_data.clone();
 
+        // For the failing block, apply step-by-step to identify the divergent step
+        eprintln!("DEBUG: block timeslot = {}", block.header.timeslot);
+        let step_by_step = block.header.timeslot == 63;
+
         match grey_state::transition::apply_with_config(&parent_tracked.state, &block, &self.config, &parent_opaque) {
-            Ok(new_state) => {
+            Ok((new_state, remaining_opaque)) => {
+                // Step-by-step debugging for the failing block
+                if step_by_step {
+                    self.debug_step_by_step(&parent_tracked.state, &block, &parent_opaque);
+                }
                 // Compute header hash of the imported block
                 let header_hash = compute_header_hash(&block.header);
 
                 // Compute state root
+                // Debug: compare structured vs opaque KV entries
+                let structured_kvs = state_serial::serialize_state(&new_state, &self.config);
+                let structured_keys: std::collections::HashSet<[u8; 31]> =
+                    structured_kvs.iter().map(|(k, _)| *k).collect();
+                let opaque_superseded = remaining_opaque.iter()
+                    .filter(|(k, _)| structured_keys.contains(k))
+                    .count();
+                let opaque_added: Vec<_> = remaining_opaque.iter()
+                    .filter(|(k, _)| !structured_keys.contains(k))
+                    .collect();
+                tracing::warn!(
+                    "  KV merge: {} structured, {} opaque superseded, {} opaque added (zombie)",
+                    structured_kvs.len(), opaque_superseded, opaque_added.len()
+                );
+                for (k, v) in &opaque_added {
+                    let key_hex: String = k[..8].iter().map(|b| format!("{b:02x}")).collect();
+                    tracing::warn!(
+                        "    opaque added: key={key_hex}...: {} bytes",
+                        v.len(),
+                    );
+                }
+
                 let kvs = state_serial::serialize_state_with_opaque(
                     &new_state,
                     &self.config,
-                    &parent_opaque,
+                    &remaining_opaque,
                 );
                 let state_root = grey_merkle::compute_state_root_from_kvs(&kvs);
                 tracing::info!("Post-block state root: {state_root}");
+
+                // Diagnostic: root WITHOUT opaque data
+                if step_by_step {
+                    let kvs_no_opaque = state_serial::serialize_state(&new_state, &self.config);
+                    let root_no_opaque = grey_merkle::compute_state_root_from_kvs(&kvs_no_opaque);
+                    tracing::warn!("  Root WITHOUT opaque: {root_no_opaque} ({} KVs)", kvs_no_opaque.len());
+                    tracing::warn!("  Root WITH opaque:    {state_root} ({} KVs)", kvs.len());
+
+                    // Count how many opaque entries were added (not superseded)
+                    let struct_keys: std::collections::HashSet<[u8; 31]> =
+                        kvs_no_opaque.iter().map(|(k, _)| *k).collect();
+                    let mut opaque_added = 0;
+                    let mut opaque_superseded = 0;
+                    for (k, _v) in &parent_opaque {
+                        if struct_keys.contains(k) {
+                            opaque_superseded += 1;
+                        } else {
+                            opaque_added += 1;
+                        }
+                    }
+                    tracing::warn!("  Opaque: {} total, {} superseded, {} added",
+                        parent_opaque.len(), opaque_superseded, opaque_added);
+
+                    // Show all opaque entries that were NOT superseded
+                    for (k, v) in &parent_opaque {
+                        if !struct_keys.contains(k) {
+                            let key_hex: String = k[..8].iter().map(|b| format!("{b:02x}")).collect();
+                            tracing::warn!("    zombie opaque: key={key_hex}...: {} bytes", v.len());
+                        }
+                    }
+                }
+
+                // Binary search: which component(s) cause the root mismatch?
+                if step_by_step {
+                    let expected_root_hex = "b6c72027f5628d674261c017e5c8aa922afb1d9b0c16bb1c0c693c31dcf3ab56";
+                    let expected_root = {
+                        let mut h = [0u8; 32];
+                        for i in 0..32 {
+                            h[i] = u8::from_str_radix(&expected_root_hex[i*2..i*2+2], 16).unwrap();
+                        }
+                        Hash(h)
+                    };
+
+                    // Get parent state's KVs
+                    let parent_kvs = state_serial::serialize_state_with_opaque(
+                        &parent_tracked.state, &self.config, &parent_opaque,
+                    );
+                    let parent_kv_map: std::collections::HashMap<[u8; 31], Vec<u8>> =
+                        parent_kvs.into_iter().collect();
+
+                    // KV diff: show which keys changed, were added, or removed
+                    let new_kv_map: std::collections::HashMap<[u8; 31], Vec<u8>> =
+                        kvs.iter().map(|(k, v)| (*k, v.clone())).collect();
+                    eprintln!("=== KV DIFF parent vs new state (slot {}) ===", block.header.timeslot);
+                    let mut all_keys: std::collections::BTreeSet<[u8; 31]> = std::collections::BTreeSet::new();
+                    for k in parent_kv_map.keys() { all_keys.insert(*k); }
+                    for k in new_kv_map.keys() { all_keys.insert(*k); }
+                    let mut changed = 0;
+                    let mut added = 0;
+                    let mut removed = 0;
+                    for k in &all_keys {
+                        let key_hex: String = k.iter().map(|b| format!("{b:02x}")).collect();
+                        match (parent_kv_map.get(k), new_kv_map.get(k)) {
+                            (Some(pv), Some(nv)) if pv != nv => {
+                                changed += 1;
+                                let pv_hash = grey_crypto::blake2b_256(pv);
+                                let nv_hash = grey_crypto::blake2b_256(nv);
+                                eprintln!("  CHANGED key={key_hex}: {} -> {} bytes, hash {} -> {}",
+                                    pv.len(), nv.len(), pv_hash, nv_hash);
+                                // For small values, show hex
+                                if nv.len() <= 128 {
+                                    let hex: String = nv.iter().map(|b| format!("{b:02x}")).collect();
+                                    eprintln!("    new_val: {hex}");
+                                }
+                                if pv.len() <= 128 {
+                                    let hex: String = pv.iter().map(|b| format!("{b:02x}")).collect();
+                                    eprintln!("    old_val: {hex}");
+                                }
+                            }
+                            (None, Some(nv)) => {
+                                added += 1;
+                                eprintln!("  ADDED key={key_hex}: {} bytes", nv.len());
+                            }
+                            (Some(pv), None) => {
+                                removed += 1;
+                                eprintln!("  REMOVED key={key_hex}: was {} bytes", pv.len());
+                            }
+                            _ => {} // unchanged
+                        }
+                    }
+                    eprintln!("  Total: {} changed, {} added, {} removed (out of {} keys)", changed, added, removed, all_keys.len());
+
+                    // Try substituting each component key from parent
+                    for comp_idx in 1u8..=16 {
+                        let comp_key = {
+                            let mut k = [0u8; 31];
+                            k[0] = comp_idx;
+                            k
+                        };
+                        if let Some(parent_val) = parent_kv_map.get(&comp_key) {
+                            let mut test_kvs = kvs.clone();
+                            for (k, v) in test_kvs.iter_mut() {
+                                if *k == comp_key {
+                                    *v = parent_val.clone();
+                                }
+                            }
+                            let test_root = grey_merkle::compute_state_root_from_kvs(&test_kvs);
+                            if test_root == expected_root {
+                                eprintln!("  FOUND: substituting C({comp_idx}) from parent gives EXPECTED root!");
+                            } else {
+                                eprintln!("  sub C({comp_idx}): {test_root}");
+                            }
+                        }
+                    }
+
+                    // Also try substituting C(255) service accounts
+                    // Substitute ALL service-related keys from parent
+                    {
+                        let mut test_kvs = kvs.clone();
+                        for (k, v) in test_kvs.iter_mut() {
+                            if k[0] == 255 || k[1..] != [0u8; 30] {
+                                if let Some(parent_val) = parent_kv_map.get(k) {
+                                    *v = parent_val.clone();
+                                }
+                            }
+                        }
+                        // Also remove keys that exist in current but not parent for service data
+                        test_kvs.retain(|(k, _)| {
+                            if (k[0] == 255 && k[1..] != [0u8; 30]) || (k[0] != 255 && k[1..] != [0u8; 30]) {
+                                parent_kv_map.contains_key(k)
+                            } else {
+                                true
+                            }
+                        });
+                        // Add parent keys not in current
+                        let current_keys: std::collections::HashSet<[u8; 31]> =
+                            test_kvs.iter().map(|(k, _)| *k).collect();
+                        for (k, v) in &parent_kv_map {
+                            if (k[0] == 255 && k[1..] != [0u8; 30]) || (k[0] != 255 && k[1..] != [0u8; 30]) {
+                                if !current_keys.contains(k) {
+                                    test_kvs.push((*k, v.clone()));
+                                }
+                            }
+                        }
+                        test_kvs.sort_by(|a, b| a.0.cmp(&b.0));
+                        let test_root = grey_merkle::compute_state_root_from_kvs(&test_kvs);
+                        if test_root == expected_root {
+                            eprintln!("  FOUND: substituting ALL service keys from parent gives EXPECTED root!");
+                        } else {
+                            eprintln!("  sub ALL svc keys: {test_root}");
+                        }
+                    }
+
+                    // Try combinations of two components
+                    let changed_comps: Vec<u8> = vec![3, 6, 10, 11, 13, 14, 15];
+                    for i in 0..changed_comps.len() {
+                        for j in (i+1)..changed_comps.len() {
+                            let ci = changed_comps[i];
+                            let cj = changed_comps[j];
+                            let key_i = { let mut k = [0u8; 31]; k[0] = ci; k };
+                            let key_j = { let mut k = [0u8; 31]; k[0] = cj; k };
+                            let mut test_kvs = kvs.clone();
+                            for (k, v) in test_kvs.iter_mut() {
+                                if *k == key_i {
+                                    if let Some(pv) = parent_kv_map.get(&key_i) { *v = pv.clone(); }
+                                }
+                                if *k == key_j {
+                                    if let Some(pv) = parent_kv_map.get(&key_j) { *v = pv.clone(); }
+                                }
+                            }
+                            let test_root = grey_merkle::compute_state_root_from_kvs(&test_kvs);
+                            if test_root == expected_root {
+                                eprintln!("  FOUND: substituting C({ci})+C({cj}) from parent gives EXPECTED root!");
+                            } else {
+                                eprintln!("  sub C({ci})+C({cj}): {test_root}");
+                            }
+                        }
+                    }
+                }
+
+                // Dump KV pairs to file for debugging
+                if block.header.timeslot >= 42 {
+                    let path = format!("/tmp/kvs_slot{}.txt", block.header.timeslot);
+                    let mut dump = String::new();
+                    for (k, v) in &kvs {
+                        let key_hex: String = k.iter().map(|b| format!("{b:02x}")).collect();
+                        let val_hex: String = v.iter().map(|b| format!("{b:02x}")).collect();
+                        dump.push_str(&format!("{key_hex} {val_hex}\n"));
+                    }
+                    std::fs::write(&path, &dump).ok();
+                    tracing::info!("Dumped {} KV pairs to {path}", kvs.len());
+                }
+
+                // Dump service 2068330841 account metadata if present
+                if let Some(svc) = new_state.services.get(&2068330841) {
+                    tracing::warn!(
+                        "  svc2068330841: storage={}, preimage_lookup={}, preimage_info={}, balance={}, items={}, bytes={}, a_a={}, a_r={}, a_p={}",
+                        svc.storage.len(), svc.preimage_lookup.len(), svc.preimage_info.len(),
+                        svc.balance, svc.accumulation_counter, svc.total_footprint,
+                        svc.last_activity, svc.last_accumulation, svc.preimage_count
+                    );
+                    // Show raw serialized bytes for this service
+                    let svc_key = state_serial::key_for_service_pub(255, 2068330841);
+                    if let Some((_, val)) = kvs.iter().find(|(k, _)| *k == svc_key) {
+                        let hex: String = val.iter().map(|b| format!("{b:02x}")).collect();
+                        tracing::warn!("    C(255, 2068330841) raw: {hex}");
+                    }
+                }
+
+                // Log service 0 storage/preimage counts
+                if let Some(svc0) = new_state.services.get(&0) {
+                    tracing::warn!(
+                        "  svc0: storage={}, preimage_lookup={}, preimage_info={}, balance={}, items={}, bytes={}",
+                        svc0.storage.len(), svc0.preimage_lookup.len(), svc0.preimage_info.len(),
+                        svc0.balance, svc0.accumulation_counter, svc0.total_footprint
+                    );
+                    for (k, v) in &svc0.storage {
+                        let k_hex: String = k.iter().map(|b| format!("{b:02x}")).collect();
+                        tracing::warn!("    storage[{k_hex}]: {} bytes", v.len());
+                    }
+                }
 
                 // Per-component hash logging for all blocks
                 for (key, val) in &kvs {
@@ -491,20 +743,28 @@ impl ConformTarget {
                     let n_svc_accounts = kvs.iter().filter(|(k, _)| k[0] == 255 && k[1..] != [0u8; 30]).count();
                     let n_svc_data = kvs.iter().filter(|(k, _)| k[0] != 255 && k[1..] != [0u8; 30]).count();
                     tracing::info!("  KV breakdown: {} components, {} svc accounts, {} svc data", n_components, n_svc_accounts, n_svc_data);
+
+                    // Root with only components (no service accounts or service data)
+                    let kvs_components_only: Vec<_> = kvs.iter()
+                        .filter(|(k, _)| k[1..] == [0u8; 30])
+                        .cloned()
+                        .collect();
+                    tracing::info!("  Root components-only: {}", grey_merkle::compute_state_root_from_kvs(&kvs_components_only));
                 }
 
                 // Update ancestry
                 self.ancestry
                     .push((block.header.timeslot, header_hash));
 
-                // Store new state
-                self.states.insert(
-                    header_hash,
-                    TrackedState {
-                        state: new_state,
-                        opaque_data: parent_opaque,
-                    },
-                );
+                // Store new state under both full and unsigned header hashes
+                let unsigned_hash = compute_unsigned_header_hash(&block.header);
+                tracing::info!("Storing state under header_hash={header_hash} and unsigned_hash={unsigned_hash}");
+                let tracked = TrackedState {
+                    state: new_state,
+                    opaque_data: remaining_opaque,
+                };
+                self.states.insert(header_hash, tracked.clone());
+                self.states.insert(unsigned_hash, tracked);
 
                 make_state_root(&state_root)
             }
@@ -513,6 +773,131 @@ impl ConformTarget {
                 make_error(&format!("{e}"))
             }
         }
+    }
+
+    /// Debug: apply block step-by-step and compute state root after each step.
+    fn debug_step_by_step(
+        &self,
+        state: &State,
+        block: &grey_types::header::Block,
+        opaque: &[([u8; 31], Vec<u8>)],
+    ) {
+        use grey_codec::header_codec::compute_header_hash as chh;
+
+        let compute_root = |s: &State| {
+            let kvs = state_serial::serialize_state_with_opaque(s, &self.config, opaque);
+            grey_merkle::compute_state_root_from_kvs(&kvs)
+        };
+
+        let compute_component_hash = |s: &State, comp_idx: u8| {
+            let kvs = state_serial::serialize_state_with_opaque(s, &self.config, opaque);
+            kvs.iter()
+                .find(|(k, _)| k[0] == comp_idx && k[1..] == [0u8; 30])
+                .map(|(_, v)| (v.len(), grey_crypto::blake2b_256(v)))
+        };
+
+        let header = &block.header;
+        let extrinsic = &block.extrinsic;
+        let mut s = state.clone();
+
+        tracing::info!("=== STEP-BY-STEP DEBUG for timeslot {} ===", header.timeslot);
+
+        let base_root = compute_root(&s);
+        tracing::info!("  Base state root: {base_root}");
+
+        // Step 1: Timekeeping
+        let prior_timeslot = s.timeslot;
+        s.timeslot = header.timeslot;
+        let r1 = compute_root(&s);
+        tracing::info!("  After step 1 (timekeeping): {r1}");
+
+        // Step 2: Judgments
+        // (just call the public transition but track which component changed)
+        // For simplicity, log component hashes for changed components
+
+        // Step 4: Safrole
+        grey_state::transition::debug_apply_safrole(&mut s, header, &self.config, prior_timeslot);
+        if let Some((len, h)) = compute_component_hash(&s, 6) {
+            tracing::info!("  After step 4 (safrole) C(6) eta: {len} bytes, hash={h}");
+        }
+
+        // Step 5: Assurances
+        let available_reports = grey_state::transition::debug_process_assurances(
+            &mut s, &extrinsic.assurances, header.timeslot, &self.config,
+        );
+        if let Some((len, h)) = compute_component_hash(&s, 10) {
+            tracing::info!("  After step 5 (assurances) C(10) rho: {len} bytes, hash={h}");
+        }
+        tracing::info!("  Available reports from assurances: {}", available_reports.len());
+
+        // Step 6: Guarantees
+        let incoming_reports: Vec<&grey_types::work::WorkReport> = extrinsic.guarantees.iter().map(|g| &g.report).collect();
+        let _ = grey_state::transition::debug_process_guarantees(
+            &mut s, &extrinsic.guarantees, header.timeslot,
+        );
+        if let Some((len, h)) = compute_component_hash(&s, 10) {
+            tracing::info!("  After step 6 (guarantees) C(10) rho: {len} bytes, hash={h}");
+        }
+
+        // Step 7: Accumulation
+        let (accumulate_root, accumulation_gas_usage, _remaining_opaque) = grey_state::accumulate::run_accumulation(
+            &self.config, &mut s, state.timeslot, available_reports.clone(), opaque,
+        );
+        tracing::info!("  After step 7 (accumulation) accumulate_root={accumulate_root}");
+        for comp in [13u8, 14, 15, 16] {
+            if let Some((len, h)) = compute_component_hash(&s, comp) {
+                tracing::info!("  After step 7 C({comp}): {len} bytes, hash={h}");
+            }
+        }
+        // Also check service account
+        {
+            let kvs = state_serial::serialize_state_with_opaque(&s, &self.config, opaque);
+            for (k, v) in &kvs {
+                if k[0] == 255 && k[1..] == [0u8; 30] {
+                    let h = grey_crypto::blake2b_256(v);
+                    tracing::info!("  After step 7 C(255): {} bytes, hash={h}", v.len());
+                } else if k[1..] != [0u8; 30] {
+                    let kh: String = k[..8].iter().map(|b| format!("{b:02x}")).collect();
+                    let h = grey_crypto::blake2b_256(v);
+                    tracing::info!("  After step 7 svc_data key={kh}...: {} bytes, hash={h}", v.len());
+                }
+            }
+        }
+
+        // Step 8: History
+        {
+            let header_hash = chh(header);
+            let work_packages: Vec<(Hash, Hash)> = extrinsic.guarantees.iter().map(|g| {
+                (g.report.package_spec.package_hash, g.report.package_spec.exports_root)
+            }).collect();
+            let input = grey_state::history::HistoryInput {
+                header_hash,
+                parent_state_root: header.state_root,
+                accumulate_root,
+                work_packages,
+            };
+            grey_state::history::update_history(&mut s.recent_blocks, &input);
+        }
+        if let Some((len, h)) = compute_component_hash(&s, 3) {
+            tracing::info!("  After step 8 (history) C(3) beta: {len} bytes, hash={h}");
+        }
+
+        // Step 9: Statistics
+        grey_state::statistics::update_statistics(
+            &self.config, &mut s.statistics, state.timeslot, header.timeslot,
+            header.author_index, extrinsic, &incoming_reports,
+            &available_reports, &accumulation_gas_usage,
+        );
+        if let Some((len, h)) = compute_component_hash(&s, 13) {
+            tracing::info!("  After step 9 (statistics) C(13) pi: {len} bytes, hash={h}");
+        }
+
+        // Step 10: Preimages (no change expected in this block)
+        // Step 11: Auth rotation (no change expected)
+
+        let final_root = compute_root(&s);
+        tracing::info!("  Final step-by-step root: {final_root}");
+        tracing::info!("=== END STEP-BY-STEP ===");
     }
 
     fn handle_get_state(&self, body: &[u8]) -> Vec<u8> {

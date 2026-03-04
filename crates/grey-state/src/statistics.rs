@@ -67,10 +67,16 @@ pub fn update_statistics(
         }
     }
 
-    // Guarantees: each validator that guaranteed a report
-    for guarantee in &extrinsic.guarantees {
-        for (validator_idx, _sig) in &guarantee.credentials {
-            let idx = *validator_idx as usize;
+    // Guarantees: G = set of Ed25519 keys from guarantee credentials (eq 13.5)
+    // π_V'[v]_g ≡ a[v]_g + (κ'_v ∈ G) — boolean membership, not count
+    {
+        let mut reporters = std::collections::HashSet::new();
+        for guarantee in &extrinsic.guarantees {
+            for (validator_idx, _sig) in &guarantee.credentials {
+                reporters.insert(*validator_idx as usize);
+            }
+        }
+        for idx in reporters {
             if idx < stats.current.len() {
                 stats.current[idx].reports_guaranteed += 1;
             }
