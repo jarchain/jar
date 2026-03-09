@@ -209,7 +209,7 @@ crates/
 | 7 | `grey-network` | Scaffolded — API stubs only | 0 |
 | 7 | `grey` | Conformance target (`grey-conform`) + CLI entry point | 0 |
 
-**Total: 311 tests passing across all crates. Conformance: 68/101 blocks passing.**
+**Total: 311 tests passing across all crates. Conformance: 101/101 blocks passing.**
 
 ### What's Implemented
 - Full PVM instruction set (~150 opcodes) with correct Gray Paper encoding
@@ -220,13 +220,12 @@ crates/
 - Safrole sub-transition with real Ring VRF ticket verification (21/21 test vectors)
 - Accumulation pipeline (Δ+, Δ*, Δ1) with PVM execution and host-call dispatch
 - State serialization T(σ) and deserialization (Appendix D.2)
-- Conformance target binary with fuzz-proto v1 protocol (68/101 blocks passing)
+- Conformance target binary with fuzz-proto v1 protocol (101/101 blocks passing)
 - JAM codec decode for all compound types (Block, Header, Extrinsic)
 
 ### Conformance Progress
-- Blocks 1-68 pass (0.7.2/no_forks trace)
-- Block 69 is next failure (uninvestigated)
-- Key bugs fixed: sbrk(0) heap query, accumulation dependency resolution, host-call check ordering
+- All 101 blocks pass (0.7.2/no_forks trace)
+- Key bugs fixed: sbrk(0) heap query, accumulation dependency resolution, host-call check ordering, output hash sorting
 - See `docs/conformance-testing.md` for debugging methodology
 
 ### Known Issues
@@ -235,7 +234,7 @@ crates/
 - Safrole sub-transition: Always fails with BadSlot in conformance tests (seal key verification). Success/failure paths produce identical state for non-epoch blocks without tickets.
 
 ### What's Next
-- Investigate block 69 failure
+- Run additional conformance traces (with_forks, larger traces)
 - Complete `host_eject` implementation per GP eq 4601-4621
 - P2P networking layer in `grey-network`
 - Node executable with genesis, block import, validator mode

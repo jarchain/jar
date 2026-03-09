@@ -2192,7 +2192,7 @@ pub fn process_accumulate(
     };
 
     // Step 4: Run accumulation pipeline (Δ+)
-    let (n, new_accounts, outputs, gas_usage, new_privileges, acc_auth_queues, acc_pending_validators) = accumulate_all(
+    let (n, new_accounts, mut outputs, gas_usage, new_privileges, acc_auth_queues, acc_pending_validators) = accumulate_all(
         config,
         gas_budget,
         vec![],
@@ -2277,6 +2277,8 @@ pub fn process_accumulate(
         tracing::info!("    yield: sid={}, hash={}", sid, hash);
     }
     let output_hash = compute_output_hash(&outputs);
+    // Sort outputs by service ID (GP eq 12.17: θ is a sorted sequence)
+    outputs.sort_by_key(|(sid, _)| *sid);
     AccumulateOutput {
         hash: output_hash,
         outputs,
@@ -2415,8 +2417,11 @@ fn compute_output_hash(outputs: &[(ServiceId, Hash)]) -> Hash {
     if outputs.is_empty() {
         return Hash([0u8; 32]);
     }
+    // Sort by service_id numerically (GP eq 12.17: sorted sequence keyed by service ID)
+    let mut sorted: Vec<(ServiceId, Hash)> = outputs.to_vec();
+    sorted.sort_by_key(|(sid, _)| *sid);
     // Encode each (service_id, yield_hash) pair as 36 bytes
-    let mut leaves: Vec<Vec<u8>> = outputs
+    let leaves: Vec<Vec<u8>> = sorted
         .iter()
         .map(|(sid, hash)| {
             let mut leaf = Vec::with_capacity(36);
@@ -2425,8 +2430,6 @@ fn compute_output_hash(outputs: &[(ServiceId, Hash)]) -> Hash {
             leaf
         })
         .collect();
-    // Sort by service_id (already encoded LE, so sorting by first 4 bytes = sorting by sid)
-    leaves.sort();
     // Balanced Keccak-256 Merkle tree M_K (eq E.4)
     keccak_merkle_root(leaves)
 }
