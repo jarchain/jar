@@ -2,6 +2,18 @@
 
 A JAM (Join-Accumulate Machine) blockchain node implementation in Rust, following the [Gray Paper v0.7.2](https://github.com/gavofyork/graypaper/releases/download/v0.7.2/graypaper-0.7.2.pdf).
 
+## Highlights
+
+- **313 tests passing** across all crates, **101/101 conformance blocks**
+- **PVM interpreter faster than polkavm** — grey's from-scratch interpreter beats polkavm v0.30.0's interpreter on both compute and host-call workloads:
+
+  | Benchmark | Grey | PolkaVM | Result |
+  |-----------|------|---------|--------|
+  | Fibonacci (1M iter) | 8.8ms | 9.1ms | **Grey 1.04x faster** |
+  | Host calls (100K ecalli) | 0.82ms | 2.5ms | **Grey 3.0x faster** |
+
+  Key optimizations: pre-decoded instruction cache, basic-block gas charging, inline flat-operand execution, pre-resolved branch targets. See [docs/pvm-interpreter-optimization.md](docs/pvm-interpreter-optimization.md) for details.
+
 ## Building
 
 ```
@@ -10,13 +22,13 @@ cargo build
 
 ## Test Status
 
-**311 tests passing** across all crates.
+**313 tests passing** across all crates.
 
 | Category | Crate | Tests | Status |
 |----------|-------|------:|--------|
 | Codec (Appendix C) | `grey-codec` | 32 | All passing |
 | Cryptography (Section 3.8) | `grey-crypto` | 15 | All passing |
-| PVM — Polkadot Virtual Machine (Appendix A) | `grey-pvm` | 31 | All passing |
+| PVM — Polkadot Virtual Machine (Appendix A) | `grey-pvm` | 41 | All passing |
 | Merkle tries (Appendices D & E) | `grey-merkle` | 14 | All passing |
 | Erasure coding (Appendix H) | `grey-erasure` | 24 | All passing |
 | Safrole consensus (Section 6) | `grey-consensus` | 25 | All passing |
