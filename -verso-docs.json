@@ -1,0 +1,213 @@
+{"99": "<code>Jar.PVM.Reg</code>",
+ "98":
+ "<code>Jar.PVM.ExitReason : Type</code><span class=\"sep\"></span><code class=\"docstring\">PVM exit reason. GP Appendix A. </code>",
+ "97":
+ "<code>Jar.PVM.Reg : Type</code><span class=\"sep\"></span><code class=\"docstring\">𝕣 : Register value. ℕ_{2^64}. GP eq (A.1). </code>",
+ "96":
+ "<code>Jar.PVM.Reg</code><span class=\"sep\"></span><code class=\"docstring\">ι : Program counter. </code>",
+ "95":
+ "<code>Jar.SignedGas : Type</code><span class=\"sep\"></span><code class=\"docstring\">ℤ_G ≡ ℤ_{-2^63..2^63} : Signed gas values (64-bit signed). GP eq (24). </code>",
+ "94":
+ "<code>Jar.SignedGas</code><span class=\"sep\"></span><code class=\"docstring\">ζ : Gas remaining. </code>",
+ "93":
+ "<code>Jar.PVM.Memory : Type</code><span class=\"sep\"></span><code class=\"docstring\">μ : RAM state. GP eq (4.17).\nμ ≡ ⟨μ_v : 𝔹_{2^32}, μ_a : ⟦{W, R, ∅}⟧_p⟩ where p = 2^32 / Z_P. </code>",
+ "92":
+ "<code>Jar.PVM.Memory</code><span class=\"sep\"></span><code class=\"docstring\">μ : RAM. </code>",
+ "91":
+ "<code>Jar.PVM.Registers : Type</code><span class=\"sep\"></span><code class=\"docstring\">Register file: 13 × 64-bit registers. ⟦𝕣⟧_13. </code>",
+ "90":
+ "<code>Jar.PVM.Registers</code><span class=\"sep\"></span><code class=\"docstring\">ω : Register file. ⟦𝕣⟧_13. </code>",
+ "9": "<code>List (K × V)</code>",
+ "89":
+ "<code>Jar.PVM.MachineState.mk (registers : Jar.PVM.Registers) (memory : Jar.PVM.Memory) (gas : Jar.SignedGas)\n  (pc : Jar.PVM.Reg) : Jar.PVM.MachineState</code>",
+ "88":
+ "<code>Jar.PVM.PageAccess : Type</code><span class=\"sep\"></span><code class=\"docstring\">Page access mode. GP eq (4.17). </code>",
+ "87":
+ "<code>Array Jar.PVM.PageAccess</code><span class=\"sep\"></span><code class=\"docstring\">μ_a : Per-page access flags. </code>",
+ "86":
+ "<code>ByteArray</code><span class=\"sep\"></span><code class=\"docstring\">μ_v : Memory contents, 2^32 addressable bytes. </code>",
+ "85":
+ "<code>Jar.PVM.Memory.mk (value : ByteArray) (access : Array Jar.PVM.PageAccess) : Jar.PVM.Memory</code>",
+ "84":
+ "<code>Jar.Block : Type</code><span class=\"sep\"></span><code class=\"docstring\">B : Block. GP eq (3).\nB ≡ (H, E) </code>",
+ "83": "<code>Jar.Block</code>",
+ "82":
+ "<code>Jar.Extrinsic : Type</code><span class=\"sep\"></span><code class=\"docstring\">E : Extrinsic data. GP eq (4).\nE ≡ (E_T, E_D, E_P, E_A, E_G) </code>",
+ "81": "<code>Jar.Extrinsic</code>",
+ "80":
+ "<code>Jar.State : Type</code><span class=\"sep\"></span><code class=\"docstring\">σ : Complete chain state. GP eq (6).\nσ ≡ (α, β, θ, γ, δ, η, ι, κ, λ, ρ, τ, ϕ, χ, ψ, π, ω, ξ) </code>",
+ "8":
+ "<code>Dict.mk {K V : Type} [BEq K] (entries : List (K × V)) : Dict K V</code>",
+ "79": "<code>Jar.State</code>",
+ "78":
+ "<code>Bool : Type</code><span class=\"sep\"></span><code class=\"docstring\">The Boolean values, `true` and `false`.\n\nLogically speaking, this is equivalent to `Prop` (the type of propositions). The distinction is\npublic important for programming: both propositions and their proofs are erased in the code generator,\nwhile `Bool` corresponds to the Boolean type in most programming languages and carries precisely one\nbit of run-time information.\n</code>",
+ "77": "<code>Jar.Timeslot</code>",
+ "76":
+ "<code>Jar.Header : Type</code><span class=\"sep\"></span><code class=\"docstring\">H : Block header. GP eq (5.1).\nH ≡ (H_p, H_r, H_x, H_t, H_e, H_w, H_o, H_i, H_v, H_s) </code>",
+ "75": "<code>Jar.Header</code>",
+ "74":
+ "<code>Jar.ServiceStatistics : Type</code><span class=\"sep\"></span><code class=\"docstring\">Per-service statistics for a block. GP §13.2. </code>",
+ "73":
+ "<code>Dict Jar.ServiceId Jar.ServiceStatistics</code><span class=\"sep\"></span><code class=\"docstring\">π_S : Service statistics (per-block). ⟨ℕ_S → ServiceStatistics⟩. </code>",
+ "72":
+ "<code>Jar.CoreStatistics : Type</code><span class=\"sep\"></span><code class=\"docstring\">Per-core statistics for a block. GP §13.2. </code>",
+ "71":
+ "<code>Array Jar.CoreStatistics</code><span class=\"sep\"></span><code class=\"docstring\">π_C : Core statistics (per-block). ⟦CoreStatistics⟧_C. </code>",
+ "70":
+ "<code>Array Jar.ValidatorRecord</code><span class=\"sep\"></span><code class=\"docstring\">π_L : Previous epoch validator stats. ⟦ValidatorRecord⟧_V. </code>",
+ "7":
+ "<code>BEq.{u} (α : Type u) : Type u</code><span class=\"sep\"></span><code class=\"docstring\">`BEq α` is a typeclass for supplying a boolean-valued equality relation on\n`α`, notated as `a == b`. Unlike `DecidableEq α` (which uses `a = b`), this\nis `Bool` valued instead of `Prop` valued, and it also does not have any\naxioms like being reflexive or agreeing with `=`. It is mainly intended for\nprogramming applications. See `LawfulBEq` for a version that requires that\n`==` and `=` coincide.\n\nTypically we prefer to put the \"more variable\" term on the left,\nand the \"more constant\" term on the right.\n</code>",
+ "69":
+ "<code>Jar.ValidatorRecord : Type</code><span class=\"sep\"></span><code class=\"docstring\">Per-validator activity record. GP §13.1. </code>",
+ "68":
+ "<code>Array Jar.ValidatorRecord</code><span class=\"sep\"></span><code class=\"docstring\">π_V : Current epoch validator stats. ⟦ValidatorRecord⟧_V. </code>",
+ "67":
+ "<code>Jar.ActivityStatistics.mk (current previous : Array Jar.ValidatorRecord) (coreStats : Array Jar.CoreStatistics)\n  (serviceStats : Dict Jar.ServiceId Jar.ServiceStatistics) : Jar.ActivityStatistics</code>",
+ "66":
+ "<code>Dict Hash Hash</code><span class=\"sep\"></span><code class=\"docstring\">p : Reported work-package hashes. ⟨ℍ→ℍ⟩. </code>",
+ "65":
+ "<code>Hash</code><span class=\"sep\"></span><code class=\"docstring\">b : Accumulation-output log super-peak. ℍ. </code>",
+ "64":
+ "<code>Hash</code><span class=\"sep\"></span><code class=\"docstring\">s : State root. ℍ. </code>",
+ "63":
+ "<code>Hash</code><span class=\"sep\"></span><code class=\"docstring\">h : Header hash. ℍ. </code>",
+ "62":
+ "<code>Jar.RecentBlockInfo.mk (headerHash stateRoot accOutputRoot : Hash) (reportedPackages : Dict Hash Hash) :\n  Jar.RecentBlockInfo</code>",
+ "61":
+ "<code>Array (Option Hash)</code><span class=\"sep\"></span><code class=\"docstring\">β_B : Accumulation-output belt. ⟦ℍ?⟧. </code>",
+ "60":
+ "<code>Jar.RecentBlockInfo : Type</code><span class=\"sep\"></span><code class=\"docstring\">A single entry in the recent block history. GP §7.\n⟨h, s, b, p⟩ </code>",
+ "6":
+ "<code>Exceptional (α : Type) : Type</code><span class=\"sep\"></span><code class=\"docstring\">GP uses ∅ for \"no specific value\" (we use `Option.none`)\nand ∇ for \"unexpected failure / invalid\". We model ∇ explicitly. </code>",
+ "59":
+ "<code>Array Jar.RecentBlockInfo</code><span class=\"sep\"></span><code class=\"docstring\">β_H : Recent block infos. ⟦RecentBlockInfo⟧_{:H}. </code>",
+ "58":
+ "<code>Jar.RecentHistory.mk (blocks : Array Jar.RecentBlockInfo) (accOutputBelt : Array (Option Hash)) : Jar.RecentHistory</code>",
+ "57":
+ "<code>Array (Array Hash)</code><span class=\"sep\"></span><code class=\"docstring\">ξ : Accumulated work-package hashes history. </code>",
+ "56":
+ "<code>Jar.WorkReport : Type</code><span class=\"sep\"></span><code class=\"docstring\">ℝ : Work report. GP eq (32–45).\nR = ⟨s, c, x, a, o, l, d, g⟩ </code>",
+ "55":
+ "<code>Array (Array (Jar.WorkReport × Array Hash))</code><span class=\"sep\"></span><code class=\"docstring\">ω : Accumulation queue (ready work-reports). </code>",
+ "54":
+ "<code>Jar.ActivityStatistics : Type</code><span class=\"sep\"></span><code class=\"docstring\">π : Validator activity statistics. GP §13.\nπ = ⟨π_V, π_L, π_C, π_S⟩ </code>",
+ "53":
+ "<code>Jar.ActivityStatistics</code><span class=\"sep\"></span><code class=\"docstring\">π : Validator activity statistics. </code>",
+ "52":
+ "<code>Jar.JudgmentsState : Type</code><span class=\"sep\"></span><code class=\"docstring\">ψ : Judgment state. GP §10.1.\nψ = ⟨ψ_G, ψ_B, ψ_W, ψ_O⟩ </code>",
+ "51":
+ "<code>Jar.JudgmentsState</code><span class=\"sep\"></span><code class=\"docstring\">ψ : Past judgments. </code>",
+ "50":
+ "<code>Jar.PrivilegedServices : Type</code><span class=\"sep\"></span><code class=\"docstring\">χ : Privileged service identifiers. GP §9.4.\nχ = ⟨χ_M, χ_A, χ_V, χ_R, χ_Z⟩ </code>",
+ "5":
+ "<code>Option.none.{u} {α : Type u} : Option α</code><span class=\"sep\"></span><code class=\"docstring\">No value. </code>",
+ "49":
+ "<code>Jar.PrivilegedServices</code><span class=\"sep\"></span><code class=\"docstring\">χ : Privileged service identifiers. </code>",
+ "48":
+ "<code>Array (Array Hash)</code><span class=\"sep\"></span><code class=\"docstring\">ϕ : Authorization queue. ⟦⟦ℍ⟧_Q⟧_C.\nPer-core queue of authorized code hashes. </code>",
+ "47":
+ "<code>Jar.Timeslot : Type</code><span class=\"sep\"></span><code class=\"docstring\">ℕ_T ≡ ℕ_{2^32} : Timeslot index (32-bit unsigned). GP eq (28). </code>",
+ "46":
+ "<code>Jar.Timeslot</code><span class=\"sep\"></span><code class=\"docstring\">τ : Current timeslot. ℕ_T. </code>",
+ "45":
+ "<code>Jar.PendingReport : Type</code><span class=\"sep\"></span><code class=\"docstring\">Pending report on a core: a work report with its reporting timeslot. </code>",
+ "44":
+ "<code>Array (Option Jar.PendingReport)</code><span class=\"sep\"></span><code class=\"docstring\">ρ : Pending work reports per core. ⟦PendingReport?⟧_C. </code>",
+ "43":
+ "<code>Array Jar.ValidatorKey</code><span class=\"sep\"></span><code class=\"docstring\">λ : Previous validator keys. ⟦𝕂⟧_V. </code>",
+ "42":
+ "<code>Array Jar.ValidatorKey</code><span class=\"sep\"></span><code class=\"docstring\">κ : Current (active) validator keys. ⟦𝕂⟧_V. </code>",
+ "41":
+ "<code>Jar.ValidatorKey : Type</code><span class=\"sep\"></span><code class=\"docstring\">𝕂 : Validator key set. GP eq (56).\nK = 𝔹_336 decomposed as: k_b (Bandersnatch) ∥ k_e (Ed25519) ∥\nk_l (BLS) ∥ k_m (metadata).\nTotal: 32 + 32 + 144 + 128 = 336 bytes. </code>",
+ "40":
+ "<code>Array Jar.ValidatorKey</code><span class=\"sep\"></span><code class=\"docstring\">ι : Pending (staging) validator keys for next epoch. ⟦𝕂⟧_V. </code>",
+ "4": "<code>Type</code>",
+ "39":
+ "<code>Jar.Entropy : Type</code><span class=\"sep\"></span><code class=\"docstring\">η : Entropy accumulator. GP eq (68).\nη ≡ ⟦ℍ⟧_4 — a 4-element tuple of hashes. </code>",
+ "38":
+ "<code>Jar.Entropy</code><span class=\"sep\"></span><code class=\"docstring\">η : Entropy accumulator. ⟦ℍ⟧_4. </code>",
+ "37":
+ "<code>Jar.ServiceAccount : Type</code><span class=\"sep\"></span><code class=\"docstring\">𝔸 : Service account. GP eq (9.3).\nA = ⟨s, p, l, f, c, b, g, m, i, r, a⟩\n\nContains code, storage, preimages, and gas configuration. </code>",
+ "36":
+ "<code>Jar.ServiceId : Type</code><span class=\"sep\"></span><code class=\"docstring\">ℕ_S ≡ ℕ_{2^32} : Service identifier (32-bit unsigned). GP §9. </code>",
+ "35":
+ "<code>Dict Jar.ServiceId Jar.ServiceAccount</code><span class=\"sep\"></span><code class=\"docstring\">δ : Service accounts. ⟨ℕ_S → 𝔸⟩. </code>",
+ "34":
+ "<code>Jar.SafroleState : Type</code><span class=\"sep\"></span><code class=\"docstring\">γ : Safrole consensus state. GP eq (34–37).\nγ ≡ ⟨γ_k, γ_z, γ_s, γ_a⟩ </code>",
+ "33":
+ "<code>Jar.SafroleState</code><span class=\"sep\"></span><code class=\"docstring\">γ : Safrole consensus state. </code>",
+ "32":
+ "<code>Jar.AccumulationOutputs : Type</code><span class=\"sep\"></span><code class=\"docstring\">θ : Most recent accumulation outputs. GP §12.\n⟦(ℕ_S, ℍ)⟧ </code>",
+ "31":
+ "<code>Jar.AccumulationOutputs</code><span class=\"sep\"></span><code class=\"docstring\">θ : Most recent accumulation outputs. </code>",
+ "30":
+ "<code>Jar.RecentHistory : Type</code><span class=\"sep\"></span><code class=\"docstring\">β : Recent history state. GP §7.\nComposed of block history and accumulation-output belt.\nβ = ⟨β_H, β_B⟩ </code>",
+ "3":
+ "<code>Option.{u} (α : Type u) : Type u</code><span class=\"sep\"></span><code class=\"docstring\">Optional values, which are either `some` around a value from the underlying type or `none`.\n\n`Option` can represent nullable types or computations that might fail. In the codomain of a function\ntype, it can also represent partiality.\n</code>",
+ "29":
+ "<code>Jar.RecentHistory</code><span class=\"sep\"></span><code class=\"docstring\">β : Recent block history. </code>",
+ "28":
+ "<code>Array.{u} (α : Type u) : Type u</code><span class=\"sep\"></span><code class=\"docstring\">`Array α` is the type of [dynamic arrays](https://en.wikipedia.org/wiki/Dynamic_array) with elements\nfrom `α`. This type has special support in the runtime.\n\nArrays perform best when unshared. As long as there is never more than one reference to an array,\nall updates will be performed _destructively_. This results in performance comparable to mutable\narrays in imperative programming languages.\n\nAn array has a size and a capacity. The size is the number of elements present in the array, while\nthe capacity is the amount of memory currently allocated for elements. The size is accessible via\n`Array.size`, but the capacity is not observable from Lean code. `Array.emptyWithCapacity n` creates\nan array which is equal to `#[]`, but internally allocates an array of capacity `n`. When the size\nexceeds the capacity, allocation is required to grow the array.\n\nFrom the point of view of proofs, `Array α` is just a wrapper around `List α`.\n</code>",
+ "27":
+ "<code>Array (Array Hash)</code><span class=\"sep\"></span><code class=\"docstring\">α : Authorization pool. ⟦⟦ℍ⟧_{:O}⟧_C.\nPer-core pool of authorized code hashes. </code>",
+ "26":
+ "<code>Jar.State.mk (authPool : Array (Array Hash)) (recent : Jar.RecentHistory) (accOutputs : Jar.AccumulationOutputs)\n  (safrole : Jar.SafroleState) (services : Dict Jar.ServiceId Jar.ServiceAccount) (entropy : Jar.Entropy)\n  (pendingValidators currentValidators previousValidators : Array Jar.ValidatorKey)\n  (pendingReports : Array (Option Jar.PendingReport)) (timeslot : Jar.Timeslot) (authQueue : Array (Array Hash))\n  (privileged : Jar.PrivilegedServices) (judgments : Jar.JudgmentsState) (statistics : Jar.ActivityStatistics)\n  (accQueue : Array (Array (Jar.WorkReport × Array Hash))) (accHistory : Array (Array Hash)) : Jar.State</code>",
+ "25":
+ "<code>Hash : Type</code><span class=\"sep\"></span><code class=\"docstring\">ℍ ≡ 𝔹_32 : 256-bit hash values. GP §3.8.1. </code>",
+ "24":
+ "<code>Eq.{u_1} {α : Sort u_1} : α → α → Prop</code><span class=\"sep\"></span><code class=\"docstring\">The equality relation. It has one introduction rule, `Eq.refl`.\nWe use `a = b` as notation for `Eq a b`.\nA fundamental property of equality is that it is an equivalence relation.\n```\nvariable (α : Type) (a b c d : α)\nvariable (hab : a = b) (hcb : c = b) (hcd : c = d)\n\nexample : a = d :=\n  Eq.trans (Eq.trans hab (Eq.symm hcb)) hcd\n```\nEquality is much more than an equivalence relation, however. It has the important property that every assertion\nrespects the equivalence, in the sense that we can substitute equal expressions without changing the truth value.\nThat is, given `h1 : a = b` and `h2 : p a`, we can construct a proof for `p b` using substitution: `Eq.subst h1 h2`.\nExample:\n```\nexample (α : Type) (a b : α) (p : α → Prop)\n        (h1 : a = b) (h2 : p a) : p b :=\n  Eq.subst h1 h2\n\nexample (α : Type) (a b : α) (p : α → Prop)\n    (h1 : a = b) (h2 : p a) : p b :=\n  h1 ▸ h2\n```\nThe triangle in the second presentation is a macro built on top of `Eq.subst` and `Eq.symm`, and you can enter it by typing `\\t`.\nFor more information: [Equality](https://lean-lang.org/theorem_proving_in_lean4/quantifiers_and_equality.html#equality)\n\n\nConventions for notations in identifiers:\n\n * The recommended spelling of `=` in identifiers is `eq`.</code>",
+ "23":
+ "<code>ByteArray.size : ByteArray → Nat</code><span class=\"sep\"></span><code class=\"docstring\">Returns the number of bytes in the byte array.\n\nThis is the number of bytes actually in the array, as distinct from its capacity, which is the\namount of memory presently allocated for the array.\n</code>",
+ "22": "<code>OctetSeq.data {n : Nat} (self : OctetSeq n) : ByteArray</code>",
+ "21": "<code>OctetSeq n</code>",
+ "20": "<code>self.data.size = n</code>",
+ "2":
+ "<code>List.{u} (α : Type u) : Type u</code><span class=\"sep\"></span><code class=\"docstring\">Linked lists: ordered lists, in which each element has a reference to the next element.\n\nMost operations on linked lists take time proportional to the length of the list, because each\nelement must be traversed to find the next element.\n\n`List α` is isomorphic to `Array α`, but they are useful for different things:\n* `List α` is easier for reasoning, and `Array α` is modeled as a wrapper around `List α`.\n* `List α` works well as a persistent data structure, when many copies of the tail are shared. When\n  the value is not shared, `Array α` will have better performance because it can do destructive\n  updates.\n</code>",
+ "19":
+ "<code>ByteArray : Type</code><span class=\"sep\"></span><code class=\"docstring\">`ByteArray` is like `Array UInt8`, but with an efficient run-time representation as a packed\nbyte buffer.\n</code>",
+ "18": "<code>ByteArray</code>",
+ "17":
+ "<code>OctetSeq.mk {n : Nat} (data : ByteArray) (size_eq : data.size = n) : OctetSeq n</code>",
+ "16":
+ "<code>Nat : Type</code><span class=\"sep\"></span><code class=\"docstring\">The natural numbers, starting at zero.\n\nThis type is special-cased by both the kernel and the compiler, and overridden with an efficient\nimplementation. Both use a fast arbitrary-precision arithmetic library (usually\n[GMP](https://gmplib.org/)); at runtime, `Nat` values that are sufficiently small are unboxed.\n</code>",
+ "15": "<code>Nat</code>",
+ "14": "<code>V</code>",
+ "13": "<code>K</code>",
+ "12":
+ "<code>Dict (K V : Type) [BEq K] : Type</code><span class=\"sep\"></span><code class=\"docstring\">A dictionary ⟨K→V⟩ : partial mapping with enumerable key-value pairs.\nGP §3.5. Represented as sorted association list with unique keys. </code>",
+ "116":
+ "<code>Jar.PVM.InvocationResult : Type</code><span class=\"sep\"></span><code class=\"docstring\">Result of a PVM invocation. </code>",
+ "115":
+ "<code>Int64 : Type</code><span class=\"sep\"></span><code class=\"docstring\">Signed 64-bit integers.\n\nThis type has special support in the compiler so it can be represented by an unboxed 64-bit value.\n</code>",
+ "114": "<code>Int64</code>",
+ "113": "<code>Jar.PVM.Memory</code>",
+ "112": "<code>Jar.PVM.Registers</code>",
+ "111":
+ "<code>Jar.PVM.ProgramBlob : Type</code><span class=\"sep\"></span><code class=\"docstring\">Decoded program blob components. </code>",
+ "110": "<code>Jar.PVM.ProgramBlob</code>",
+ "11": "<code>Dict K V</code>",
+ "109":
+ "<code>Array Nat</code><span class=\"sep\"></span><code class=\"docstring\">Jump table for dynamic jumps. </code>",
+ "108":
+ "<code>Array Bool</code><span class=\"sep\"></span><code class=\"docstring\">Bitmask: one bit per code byte, marking opcode positions. </code>",
+ "107":
+ "<code>ByteArray</code><span class=\"sep\"></span><code class=\"docstring\">Code bytes. </code>",
+ "106":
+ "<code>Jar.PVM.Program.mk (code : ByteArray) (bitmask : Array Bool) (jumpTable : Array Nat) : Jar.PVM.Program</code>",
+ "105":
+ "<code>Jar.PVM.Memory</code><span class=\"sep\"></span><code class=\"docstring\">Final memory state. </code>",
+ "104":
+ "<code>Jar.PVM.Registers</code><span class=\"sep\"></span><code class=\"docstring\">Final register file. </code>",
+ "103":
+ "<code>Jar.SignedGas</code><span class=\"sep\"></span><code class=\"docstring\">Gas counter at exit (may be negative for OOG). </code>",
+ "102":
+ "<code>Jar.PVM.Reg</code><span class=\"sep\"></span><code class=\"docstring\">ω_7 : Value in register 7 at exit (status/return value). </code>",
+ "101":
+ "<code>Jar.PVM.ExitReason</code><span class=\"sep\"></span><code class=\"docstring\">Exit reason (halt/panic/oog/fault/host). </code>",
+ "100":
+ "<code>Jar.PVM.InvocationResult.mk (exitReason : Jar.PVM.ExitReason) (exitValue : Jar.PVM.Reg) (gas : Jar.SignedGas)\n  (registers : Jar.PVM.Registers) (memory : Jar.PVM.Memory) : Jar.PVM.InvocationResult</code>",
+ "10":
+ "<code>Prod.{u, v} (α : Type u) (β : Type v) : Type (max u v)</code><span class=\"sep\"></span><code class=\"docstring\">The product type, usually written `α × β`. Product types are also called pair or tuple types.\nElements of this type are pairs in which the first element is an `α` and the second element is a\n`β`.\n\nProducts nest to the right, so `(x, y, z) : α × β × γ` is equivalent to `(x, (y, z)) : α × (β × γ)`.\n\n\nConventions for notations in identifiers:\n\n * The recommended spelling of `×` in identifiers is `Prod`.</code>",
+ "1":
+ "<code class=\"docstring\">A type universe. `Type ≡ Type 0`, `Type u ≡ Sort (u + 1)`. </code>",
+ "0": "<code>Type u_1</code>"}

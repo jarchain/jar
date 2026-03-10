@@ -1,0 +1,1 @@
+window.docContents[218].resolve({"/Protocol-Constants/#JAR___-JAM-Axiomatic-Reference--Protocol-Constants":{"contents":"All protocol constants from the Gray Paper (Appendix I.4.4 and throughout).\n\n\n\n\n\n\n\n\n\n\n\n","context":"JAR: JAM Axiomatic Reference","header":"2. Protocol Constants","id":"/Protocol-Constants/#JAR___-JAM-Axiomatic-Reference--Protocol-Constants"}});

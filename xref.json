@@ -1,0 +1,729 @@
+{"Verso.Genre.Manual.section":
+ {"title": "Sections or chapters of the manual",
+  "description": null,
+  "contents":
+  {"JAR___-JAM-Axiomatic-Reference--State-and-Transitions--Timekeeping":
+   [{"id": "JAR___-JAM-Axiomatic-Reference--State-and-Transitions--Timekeeping",
+     "data":
+     {"title": "Timekeeping",
+      "shortTitle": null,
+      "sectionNum": "3.2.",
+      "context":
+      [{"title": "JAR: JAM Axiomatic Reference",
+        "shortTitle": null,
+        "number": null},
+       {"title": "State and Transitions", "shortTitle": null, "number": "3"},
+       {"title": "Timekeeping", "shortTitle": null, "number": "2"}]},
+     "address": "/State-and-Transitions/Timekeeping/"}],
+   "JAR___-JAM-Axiomatic-Reference--State-and-Transitions--State-Transition":
+   [{"id":
+     "JAR___-JAM-Axiomatic-Reference--State-and-Transitions--State-Transition",
+     "data":
+     {"title": "State Transition",
+      "shortTitle": null,
+      "sectionNum": "3.4.",
+      "context":
+      [{"title": "JAR: JAM Axiomatic Reference",
+        "shortTitle": null,
+        "number": null},
+       {"title": "State and Transitions", "shortTitle": null, "number": "3"},
+       {"title": "State Transition", "shortTitle": null, "number": "4"}]},
+     "address": "/State-and-Transitions/State-Transition/"}],
+   "JAR___-JAM-Axiomatic-Reference--State-and-Transitions--State-Structure":
+   [{"id":
+     "JAR___-JAM-Axiomatic-Reference--State-and-Transitions--State-Structure",
+     "data":
+     {"title": "State Structure",
+      "shortTitle": null,
+      "sectionNum": "3.1.",
+      "context":
+      [{"title": "JAR: JAM Axiomatic Reference",
+        "shortTitle": null,
+        "number": null},
+       {"title": "State and Transitions", "shortTitle": null, "number": "3"},
+       {"title": "State Structure", "shortTitle": null, "number": "1"}]},
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "JAR___-JAM-Axiomatic-Reference--State-and-Transitions--Header-Validation-_LPAR_section-5_RPAR_":
+   [{"id":
+     "JAR___-JAM-Axiomatic-Reference--State-and-Transitions--Header-Validation-_LPAR_section-5_RPAR_",
+     "data":
+     {"title": "Header Validation (section 5)",
+      "shortTitle": null,
+      "sectionNum": "3.3.",
+      "context":
+      [{"title": "JAR: JAM Axiomatic Reference",
+        "shortTitle": null,
+        "number": null},
+       {"title": "State and Transitions", "shortTitle": null, "number": "3"},
+       {"title": "Header Validation (section 5)",
+        "shortTitle": null,
+        "number": "3"}]},
+     "address":
+     "/State-and-Transitions/Header-Validation-_LPAR_section-5_RPAR_/"}],
+   "JAR___-JAM-Axiomatic-Reference--State-and-Transitions":
+   [{"id": "JAR___-JAM-Axiomatic-Reference--State-and-Transitions",
+     "data":
+     {"title": "State and Transitions",
+      "shortTitle": null,
+      "sectionNum": "3.",
+      "context":
+      [{"title": "JAR: JAM Axiomatic Reference",
+        "shortTitle": null,
+        "number": null},
+       {"title": "State and Transitions", "shortTitle": null, "number": "3"}]},
+     "address": "/State-and-Transitions/"}],
+   "JAR___-JAM-Axiomatic-Reference--Protocol-Constants--Timing":
+   [{"id": "JAR___-JAM-Axiomatic-Reference--Protocol-Constants--Timing",
+     "data":
+     {"title": "Timing",
+      "shortTitle": null,
+      "sectionNum": "2.4.",
+      "context":
+      [{"title": "JAR: JAM Axiomatic Reference",
+        "shortTitle": null,
+        "number": null},
+       {"title": "Protocol Constants", "shortTitle": null, "number": "2"},
+       {"title": "Timing", "shortTitle": null, "number": "4"}]},
+     "address": "/Protocol-Constants/Timing/"}],
+   "JAR___-JAM-Axiomatic-Reference--Protocol-Constants--Size-Limits":
+   [{"id": "JAR___-JAM-Axiomatic-Reference--Protocol-Constants--Size-Limits",
+     "data":
+     {"title": "Size Limits",
+      "shortTitle": null,
+      "sectionNum": "2.3.",
+      "context":
+      [{"title": "JAR: JAM Axiomatic Reference",
+        "shortTitle": null,
+        "number": null},
+       {"title": "Protocol Constants", "shortTitle": null, "number": "2"},
+       {"title": "Size Limits", "shortTitle": null, "number": "3"}]},
+     "address": "/Protocol-Constants/Size-Limits/"}],
+   "JAR___-JAM-Axiomatic-Reference--Protocol-Constants--Gas-Allocations":
+   [{"id":
+     "JAR___-JAM-Axiomatic-Reference--Protocol-Constants--Gas-Allocations",
+     "data":
+     {"title": "Gas Allocations",
+      "shortTitle": null,
+      "sectionNum": "2.2.",
+      "context":
+      [{"title": "JAR: JAM Axiomatic Reference",
+        "shortTitle": null,
+        "number": null},
+       {"title": "Protocol Constants", "shortTitle": null, "number": "2"},
+       {"title": "Gas Allocations", "shortTitle": null, "number": "2"}]},
+     "address": "/Protocol-Constants/Gas-Allocations/"}],
+   "JAR___-JAM-Axiomatic-Reference--Protocol-Constants--Consensus-and-Validators":
+   [{"id":
+     "JAR___-JAM-Axiomatic-Reference--Protocol-Constants--Consensus-and-Validators",
+     "data":
+     {"title": "Consensus and Validators",
+      "shortTitle": null,
+      "sectionNum": "2.1.",
+      "context":
+      [{"title": "JAR: JAM Axiomatic Reference",
+        "shortTitle": null,
+        "number": null},
+       {"title": "Protocol Constants", "shortTitle": null, "number": "2"},
+       {"title": "Consensus and Validators",
+        "shortTitle": null,
+        "number": "1"}]},
+     "address": "/Protocol-Constants/Consensus-and-Validators/"}],
+   "JAR___-JAM-Axiomatic-Reference--Protocol-Constants--Balance-Thresholds":
+   [{"id":
+     "JAR___-JAM-Axiomatic-Reference--Protocol-Constants--Balance-Thresholds",
+     "data":
+     {"title": "Balance Thresholds",
+      "shortTitle": null,
+      "sectionNum": "2.5.",
+      "context":
+      [{"title": "JAR: JAM Axiomatic Reference",
+        "shortTitle": null,
+        "number": null},
+       {"title": "Protocol Constants", "shortTitle": null, "number": "2"},
+       {"title": "Balance Thresholds", "shortTitle": null, "number": "5"}]},
+     "address": "/Protocol-Constants/Balance-Thresholds/"}],
+   "JAR___-JAM-Axiomatic-Reference--Protocol-Constants":
+   [{"id": "JAR___-JAM-Axiomatic-Reference--Protocol-Constants",
+     "data":
+     {"title": "Protocol Constants",
+      "shortTitle": null,
+      "sectionNum": "2.",
+      "context":
+      [{"title": "JAR: JAM Axiomatic Reference",
+        "shortTitle": null,
+        "number": null},
+       {"title": "Protocol Constants", "shortTitle": null, "number": "2"}]},
+     "address": "/Protocol-Constants/"}],
+   "JAR___-JAM-Axiomatic-Reference--Polkadot-Virtual-Machine--Program-Representation":
+   [{"id":
+     "JAR___-JAM-Axiomatic-Reference--Polkadot-Virtual-Machine--Program-Representation",
+     "data":
+     {"title": "Program Representation",
+      "shortTitle": null,
+      "sectionNum": "4.2.",
+      "context":
+      [{"title": "JAR: JAM Axiomatic Reference",
+        "shortTitle": null,
+        "number": null},
+       {"title": "Polkadot Virtual Machine", "shortTitle": null, "number": "4"},
+       {"title": "Program Representation", "shortTitle": null, "number": "2"}]},
+     "address": "/Polkadot-Virtual-Machine/Program-Representation/"}],
+   "JAR___-JAM-Axiomatic-Reference--Polkadot-Virtual-Machine--Machine-Model":
+   [{"id":
+     "JAR___-JAM-Axiomatic-Reference--Polkadot-Virtual-Machine--Machine-Model",
+     "data":
+     {"title": "Machine Model",
+      "shortTitle": null,
+      "sectionNum": "4.1.",
+      "context":
+      [{"title": "JAR: JAM Axiomatic Reference",
+        "shortTitle": null,
+        "number": null},
+       {"title": "Polkadot Virtual Machine", "shortTitle": null, "number": "4"},
+       {"title": "Machine Model", "shortTitle": null, "number": "1"}]},
+     "address": "/Polkadot-Virtual-Machine/Machine-Model/"}],
+   "JAR___-JAM-Axiomatic-Reference--Polkadot-Virtual-Machine--Execution":
+   [{"id":
+     "JAR___-JAM-Axiomatic-Reference--Polkadot-Virtual-Machine--Execution",
+     "data":
+     {"title": "Execution",
+      "shortTitle": null,
+      "sectionNum": "4.3.",
+      "context":
+      [{"title": "JAR: JAM Axiomatic Reference",
+        "shortTitle": null,
+        "number": null},
+       {"title": "Polkadot Virtual Machine", "shortTitle": null, "number": "4"},
+       {"title": "Execution", "shortTitle": null, "number": "3"}]},
+     "address": "/Polkadot-Virtual-Machine/Execution/"}],
+   "JAR___-JAM-Axiomatic-Reference--Polkadot-Virtual-Machine":
+   [{"id": "JAR___-JAM-Axiomatic-Reference--Polkadot-Virtual-Machine",
+     "data":
+     {"title": "Polkadot Virtual Machine",
+      "shortTitle": null,
+      "sectionNum": "4.",
+      "context":
+      [{"title": "JAR: JAM Axiomatic Reference",
+        "shortTitle": null,
+        "number": null},
+       {"title": "Polkadot Virtual Machine",
+        "shortTitle": null,
+        "number": "4"}]},
+     "address": "/Polkadot-Virtual-Machine/"}],
+   "JAR___-JAM-Axiomatic-Reference--Notation-and-Conventions--Optional-Substitution":
+   [{"id":
+     "JAR___-JAM-Axiomatic-Reference--Notation-and-Conventions--Optional-Substitution",
+     "data":
+     {"title": "Optional Substitution",
+      "shortTitle": null,
+      "sectionNum": "1.1.",
+      "context":
+      [{"title": "JAR: JAM Axiomatic Reference",
+        "shortTitle": null,
+        "number": null},
+       {"title": "Notation and Conventions", "shortTitle": null, "number": "1"},
+       {"title": "Optional Substitution", "shortTitle": null, "number": "1"}]},
+     "address": "/Notation-and-Conventions/Optional-Substitution/"}],
+   "JAR___-JAM-Axiomatic-Reference--Notation-and-Conventions--Octet-Sequences":
+   [{"id":
+     "JAR___-JAM-Axiomatic-Reference--Notation-and-Conventions--Octet-Sequences",
+     "data":
+     {"title": "Octet Sequences",
+      "shortTitle": null,
+      "sectionNum": "1.4.",
+      "context":
+      [{"title": "JAR: JAM Axiomatic Reference",
+        "shortTitle": null,
+        "number": null},
+       {"title": "Notation and Conventions", "shortTitle": null, "number": "1"},
+       {"title": "Octet Sequences", "shortTitle": null, "number": "4"}]},
+     "address": "/Notation-and-Conventions/Octet-Sequences/"}],
+   "JAR___-JAM-Axiomatic-Reference--Notation-and-Conventions--Exceptional-Values":
+   [{"id":
+     "JAR___-JAM-Axiomatic-Reference--Notation-and-Conventions--Exceptional-Values",
+     "data":
+     {"title": "Exceptional Values",
+      "shortTitle": null,
+      "sectionNum": "1.2.",
+      "context":
+      [{"title": "JAR: JAM Axiomatic Reference",
+        "shortTitle": null,
+        "number": null},
+       {"title": "Notation and Conventions", "shortTitle": null, "number": "1"},
+       {"title": "Exceptional Values", "shortTitle": null, "number": "2"}]},
+     "address": "/Notation-and-Conventions/Exceptional-Values/"}],
+   "JAR___-JAM-Axiomatic-Reference--Notation-and-Conventions--Dictionaries":
+   [{"id":
+     "JAR___-JAM-Axiomatic-Reference--Notation-and-Conventions--Dictionaries",
+     "data":
+     {"title": "Dictionaries",
+      "shortTitle": null,
+      "sectionNum": "1.3.",
+      "context":
+      [{"title": "JAR: JAM Axiomatic Reference",
+        "shortTitle": null,
+        "number": null},
+       {"title": "Notation and Conventions", "shortTitle": null, "number": "1"},
+       {"title": "Dictionaries", "shortTitle": null, "number": "3"}]},
+     "address": "/Notation-and-Conventions/Dictionaries/"}],
+   "JAR___-JAM-Axiomatic-Reference--Notation-and-Conventions":
+   [{"id": "JAR___-JAM-Axiomatic-Reference--Notation-and-Conventions",
+     "data":
+     {"title": "Notation and Conventions",
+      "shortTitle": null,
+      "sectionNum": "1.",
+      "context":
+      [{"title": "JAR: JAM Axiomatic Reference",
+        "shortTitle": null,
+        "number": null},
+       {"title": "Notation and Conventions",
+        "shortTitle": null,
+        "number": "1"}]},
+     "address": "/Notation-and-Conventions/"}],
+   "JAR___-JAM-Axiomatic-Reference":
+   [{"id": "JAR___-JAM-Axiomatic-Reference",
+     "data":
+     {"title": "JAR: JAM Axiomatic Reference",
+      "shortTitle": null,
+      "sectionNum": "",
+      "context":
+      [{"title": "JAR: JAM Axiomatic Reference",
+        "shortTitle": null,
+        "number": null}]},
+     "address": "/"}]}},
+ "Verso.Genre.Manual.doc.tech":
+ {"title": "Terminology",
+  "description": "Definitions of technical terms",
+  "contents": {}},
+ "Verso.Genre.Manual.doc.tactic.conv":
+ {"title": "Conversion Tactics",
+  "description": "Tactics for performing targeted rewriting of subterms",
+  "contents": {}},
+ "Verso.Genre.Manual.doc.tactic":
+ {"title": "Tactic Documentation",
+  "description": "Detailed descriptions of tactics",
+  "contents": {}},
+ "Verso.Genre.Manual.doc.suggestion":
+ {"title": "Lean constant suggestions",
+  "description": "Search suggestions for Lean constants",
+  "contents": {}},
+ "Verso.Genre.Manual.doc.option":
+ {"title": "Compiler options", "description": null, "contents": {}},
+ "Verso.Genre.Manual.doc":
+ {"title": "Lean constant reference",
+  "description": "Documentation for Lean constants",
+  "contents":
+  {"substituteIfNone":
+   [{"id": "substituteIfNone",
+     "data": null,
+     "address": "/Notation-and-Conventions/Optional-Substitution/"}],
+   "OctetSeq.size_eq":
+   [{"id": "OctetSeq___mk",
+     "data": null,
+     "address": "/Notation-and-Conventions/Octet-Sequences/"}],
+   "OctetSeq.mk":
+   [{"id": "OctetSeq___mk",
+     "data": null,
+     "address": "/Notation-and-Conventions/Octet-Sequences/"}],
+   "OctetSeq.data":
+   [{"id": "OctetSeq___mk",
+     "data": null,
+     "address": "/Notation-and-Conventions/Octet-Sequences/"}],
+   "OctetSeq":
+   [{"id": "OctetSeq___mk",
+     "data": null,
+     "address": "/Notation-and-Conventions/Octet-Sequences/"}],
+   "Jar.validateHeader":
+   [{"id": "Jar___validateHeader",
+     "data": null,
+     "address":
+     "/State-and-Transitions/Header-Validation-_LPAR_section-5_RPAR_/"}],
+   "Jar.validateExtrinsic":
+   [{"id": "Jar___validateExtrinsic",
+     "data": null,
+     "address":
+     "/State-and-Transitions/Header-Validation-_LPAR_section-5_RPAR_/"}],
+   "Jar.stateTransition":
+   [{"id": "Jar___stateTransition",
+     "data": null,
+     "address": "/State-and-Transitions/State-Transition/"}],
+   "Jar.newTimeslot":
+   [{"id": "Jar___newTimeslot",
+     "data": null,
+     "address": "/State-and-Transitions/Timekeeping/"}],
+   "Jar.isEpochChange":
+   [{"id": "Jar___isEpochChange",
+     "data": null,
+     "address": "/State-and-Transitions/Timekeeping/"}],
+   "Jar.epochIndex":
+   [{"id": "Jar___epochIndex",
+     "data": null,
+     "address": "/State-and-Transitions/Timekeeping/"}],
+   "Jar.Z_Z":
+   [{"id": "Jar___Z_Z",
+     "data": null,
+     "address": "/Protocol-Constants/Size-Limits/"}],
+   "Jar.Z_P":
+   [{"id": "Jar___Z_P",
+     "data": null,
+     "address": "/Protocol-Constants/Size-Limits/"}],
+   "Jar.W_T":
+   [{"id": "Jar___W_T",
+     "data": null,
+     "address": "/Protocol-Constants/Size-Limits/"}],
+   "Jar.W_C":
+   [{"id": "Jar___W_C",
+     "data": null,
+     "address": "/Protocol-Constants/Size-Limits/"}],
+   "Jar.V":
+   [{"id": "Jar___V",
+     "data": null,
+     "address": "/Protocol-Constants/Consensus-and-Validators/"}],
+   "Jar.State.timeslot":
+   [{"id": "Jar___State___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.State.statistics":
+   [{"id": "Jar___State___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.State.services":
+   [{"id": "Jar___State___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.State.safrole":
+   [{"id": "Jar___State___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.State.recent":
+   [{"id": "Jar___State___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.State.privileged":
+   [{"id": "Jar___State___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.State.previousValidators":
+   [{"id": "Jar___State___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.State.pendingValidators":
+   [{"id": "Jar___State___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.State.pendingReports":
+   [{"id": "Jar___State___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.State.mk":
+   [{"id": "Jar___State___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.State.judgments":
+   [{"id": "Jar___State___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.State.entropy":
+   [{"id": "Jar___State___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.State.currentValidators":
+   [{"id": "Jar___State___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.State.authQueue":
+   [{"id": "Jar___State___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.State.authPool":
+   [{"id": "Jar___State___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.State.accQueue":
+   [{"id": "Jar___State___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.State.accOutputs":
+   [{"id": "Jar___State___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.State.accHistory":
+   [{"id": "Jar___State___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.State":
+   [{"id": "Jar___State___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.RecentHistory.mk":
+   [{"id": "Jar___RecentHistory___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.RecentHistory.blocks":
+   [{"id": "Jar___RecentHistory___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.RecentHistory.accOutputBelt":
+   [{"id": "Jar___RecentHistory___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.RecentHistory":
+   [{"id": "Jar___RecentHistory___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.RecentBlockInfo.stateRoot":
+   [{"id": "Jar___RecentBlockInfo___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.RecentBlockInfo.reportedPackages":
+   [{"id": "Jar___RecentBlockInfo___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.RecentBlockInfo.mk":
+   [{"id": "Jar___RecentBlockInfo___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.RecentBlockInfo.headerHash":
+   [{"id": "Jar___RecentBlockInfo___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.RecentBlockInfo.accOutputRoot":
+   [{"id": "Jar___RecentBlockInfo___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.RecentBlockInfo":
+   [{"id": "Jar___RecentBlockInfo___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.PVM.run":
+   [{"id": "Jar___PVM___run",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Execution/"}],
+   "Jar.PVM.Program.mk":
+   [{"id": "Jar___PVM___Program___mk",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Program-Representation/"}],
+   "Jar.PVM.Program.jumpTable":
+   [{"id": "Jar___PVM___Program___mk",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Program-Representation/"}],
+   "Jar.PVM.Program.code":
+   [{"id": "Jar___PVM___Program___mk",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Program-Representation/"}],
+   "Jar.PVM.Program.bitmask":
+   [{"id": "Jar___PVM___Program___mk",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Program-Representation/"}],
+   "Jar.PVM.Program":
+   [{"id": "Jar___PVM___Program___mk",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Program-Representation/"}],
+   "Jar.PVM.Memory.value":
+   [{"id": "Jar___PVM___Memory___mk",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Machine-Model/"}],
+   "Jar.PVM.Memory.mk":
+   [{"id": "Jar___PVM___Memory___mk",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Machine-Model/"}],
+   "Jar.PVM.Memory.access":
+   [{"id": "Jar___PVM___Memory___mk",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Machine-Model/"}],
+   "Jar.PVM.Memory":
+   [{"id": "Jar___PVM___Memory___mk",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Machine-Model/"}],
+   "Jar.PVM.MachineState.registers":
+   [{"id": "Jar___PVM___MachineState___mk",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Machine-Model/"}],
+   "Jar.PVM.MachineState.pc":
+   [{"id": "Jar___PVM___MachineState___mk",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Machine-Model/"}],
+   "Jar.PVM.MachineState.mk":
+   [{"id": "Jar___PVM___MachineState___mk",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Machine-Model/"}],
+   "Jar.PVM.MachineState.memory":
+   [{"id": "Jar___PVM___MachineState___mk",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Machine-Model/"}],
+   "Jar.PVM.MachineState.gas":
+   [{"id": "Jar___PVM___MachineState___mk",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Machine-Model/"}],
+   "Jar.PVM.MachineState":
+   [{"id": "Jar___PVM___MachineState___mk",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Machine-Model/"}],
+   "Jar.PVM.InvocationResult.registers":
+   [{"id": "Jar___PVM___InvocationResult___mk",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Machine-Model/"}],
+   "Jar.PVM.InvocationResult.mk":
+   [{"id": "Jar___PVM___InvocationResult___mk",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Machine-Model/"}],
+   "Jar.PVM.InvocationResult.memory":
+   [{"id": "Jar___PVM___InvocationResult___mk",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Machine-Model/"}],
+   "Jar.PVM.InvocationResult.gas":
+   [{"id": "Jar___PVM___InvocationResult___mk",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Machine-Model/"}],
+   "Jar.PVM.InvocationResult.exitValue":
+   [{"id": "Jar___PVM___InvocationResult___mk",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Machine-Model/"}],
+   "Jar.PVM.InvocationResult.exitReason":
+   [{"id": "Jar___PVM___InvocationResult___mk",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Machine-Model/"}],
+   "Jar.PVM.InvocationResult":
+   [{"id": "Jar___PVM___InvocationResult___mk",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Machine-Model/"}],
+   "Jar.PVM.ExitReason.panic":
+   [{"id": "Jar___PVM___ExitReason___halt",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Machine-Model/"}],
+   "Jar.PVM.ExitReason.pageFault":
+   [{"id": "Jar___PVM___ExitReason___halt",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Machine-Model/"}],
+   "Jar.PVM.ExitReason.outOfGas":
+   [{"id": "Jar___PVM___ExitReason___halt",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Machine-Model/"}],
+   "Jar.PVM.ExitReason.hostCall":
+   [{"id": "Jar___PVM___ExitReason___halt",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Machine-Model/"}],
+   "Jar.PVM.ExitReason.halt":
+   [{"id": "Jar___PVM___ExitReason___halt",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Machine-Model/"}],
+   "Jar.PVM.ExitReason":
+   [{"id": "Jar___PVM___ExitReason___halt",
+     "data": null,
+     "address": "/Polkadot-Virtual-Machine/Machine-Model/"}],
+   "Jar.JAM_EPOCH_UNIX":
+   [{"id": "Jar___JAM_EPOCH_UNIX",
+     "data": null,
+     "address": "/Protocol-Constants/Timing/"}],
+   "Jar.G_T":
+   [{"id": "Jar___G_T",
+     "data": null,
+     "address": "/Protocol-Constants/Gas-Allocations/"}],
+   "Jar.G_R":
+   [{"id": "Jar___G_R",
+     "data": null,
+     "address": "/Protocol-Constants/Gas-Allocations/"}],
+   "Jar.G_I":
+   [{"id": "Jar___G_I",
+     "data": null,
+     "address": "/Protocol-Constants/Gas-Allocations/"}],
+   "Jar.G_A":
+   [{"id": "Jar___G_A",
+     "data": null,
+     "address": "/Protocol-Constants/Gas-Allocations/"}],
+   "Jar.E":
+   [{"id": "Jar___E",
+     "data": null,
+     "address": "/Protocol-Constants/Consensus-and-Validators/"}],
+   "Jar.D_EXPUNGE":
+   [{"id": "Jar___D_EXPUNGE",
+     "data": null,
+     "address": "/Protocol-Constants/Timing/"}],
+   "Jar.C":
+   [{"id": "Jar___C",
+     "data": null,
+     "address": "/Protocol-Constants/Consensus-and-Validators/"}],
+   "Jar.B_S":
+   [{"id": "Jar___B_S",
+     "data": null,
+     "address": "/Protocol-Constants/Balance-Thresholds/"}],
+   "Jar.B_L":
+   [{"id": "Jar___B_L",
+     "data": null,
+     "address": "/Protocol-Constants/Balance-Thresholds/"}],
+   "Jar.B_I":
+   [{"id": "Jar___B_I",
+     "data": null,
+     "address": "/Protocol-Constants/Balance-Thresholds/"}],
+   "Jar.ActivityStatistics.serviceStats":
+   [{"id": "Jar___ActivityStatistics___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.ActivityStatistics.previous":
+   [{"id": "Jar___ActivityStatistics___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.ActivityStatistics.mk":
+   [{"id": "Jar___ActivityStatistics___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.ActivityStatistics.current":
+   [{"id": "Jar___ActivityStatistics___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.ActivityStatistics.coreStats":
+   [{"id": "Jar___ActivityStatistics___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Jar.ActivityStatistics":
+   [{"id": "Jar___ActivityStatistics___mk",
+     "data": null,
+     "address": "/State-and-Transitions/State-Structure/"}],
+   "Hash.zero":
+   [{"id": "Hash___zero",
+     "data": null,
+     "address": "/Notation-and-Conventions/Octet-Sequences/"}],
+   "Hash":
+   [{"id": "Hash",
+     "data": null,
+     "address": "/Notation-and-Conventions/Octet-Sequences/"}],
+   "Exceptional.ok":
+   [{"id": "Exceptional___ok",
+     "data": null,
+     "address": "/Notation-and-Conventions/Exceptional-Values/"}],
+   "Exceptional.none":
+   [{"id": "Exceptional___ok",
+     "data": null,
+     "address": "/Notation-and-Conventions/Exceptional-Values/"}],
+   "Exceptional.error":
+   [{"id": "Exceptional___ok",
+     "data": null,
+     "address": "/Notation-and-Conventions/Exceptional-Values/"}],
+   "Exceptional":
+   [{"id": "Exceptional___ok",
+     "data": null,
+     "address": "/Notation-and-Conventions/Exceptional-Values/"}],
+   "Dict.mk":
+   [{"id": "Dict___mk",
+     "data": null,
+     "address": "/Notation-and-Conventions/Dictionaries/"}],
+   "Dict.lookup":
+   [{"id": "Dict___lookup",
+     "data": null,
+     "address": "/Notation-and-Conventions/Dictionaries/"}],
+   "Dict.insert":
+   [{"id": "Dict___insert",
+     "data": null,
+     "address": "/Notation-and-Conventions/Dictionaries/"}],
+   "Dict.erase":
+   [{"id": "Dict___erase",
+     "data": null,
+     "address": "/Notation-and-Conventions/Dictionaries/"}],
+   "Dict.entries":
+   [{"id": "Dict___mk",
+     "data": null,
+     "address": "/Notation-and-Conventions/Dictionaries/"}],
+   "Dict":
+   [{"id": "Dict___mk",
+     "data": null,
+     "address": "/Notation-and-Conventions/Dictionaries/"}]}}}
