@@ -24,6 +24,7 @@ grey-state = { workspace = true }
 grey-consensus = { workspace = true }
 grey-services = { workspace = true }
 grey-network = { workspace = true }
+grey-transpiler = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { workspace = true }

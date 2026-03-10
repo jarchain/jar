@@ -78,6 +78,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 println!("  Blocks produced: {}", result.blocks_produced);
                 println!("  Finalized up to slot: {}", result.finalized_slot);
                 println!("  Final state timeslot: {}", result.final_timeslot);
+                println!("  Work packages submitted: {}", result.work_packages_submitted);
+                println!("  Work packages accumulated: {}", result.work_packages_accumulated);
                 println!("  Authors: {:?}", result.slot_authors.iter().map(|(s, a)| format!("slot{}->v{}", s, a)).collect::<Vec<_>>());
                 return Ok(());
             }

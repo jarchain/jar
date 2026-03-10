@@ -1109,6 +1109,7 @@ dependencies = [
  "grey-pvm",
  "grey-services",
  "grey-state",
+ "grey-transpiler",
  "grey-types",
  "hex",
  "libp2p",
@@ -1226,6 +1227,16 @@ dependencies = [
  "hex",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+ "tracing-test",
+]
+
+[[package]]
+name = "grey-transpiler"
+version = "0.1.0"
+dependencies = [
+ "grey-pvm",
  "thiserror 2.0.18",
  "tracing",
  "tracing-test",

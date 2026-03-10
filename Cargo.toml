@@ -12,6 +12,7 @@ members = [
     "crates/grey-consensus",
     "crates/grey-services",
     "crates/grey-network",
+    "crates/grey-transpiler",
 ]
 
 [workspace.package]
@@ -31,6 +32,7 @@ grey-state = { path = "crates/grey-state" }
 grey-consensus = { path = "crates/grey-consensus" }
 grey-services = { path = "crates/grey-services" }
 grey-network = { path = "crates/grey-network" }
+grey-transpiler = { path = "crates/grey-transpiler" }
 
 # External dependencies
 blake2 = "0.10"

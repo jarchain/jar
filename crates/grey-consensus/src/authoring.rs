@@ -75,6 +75,20 @@ pub fn author_block(
     secrets: &ValidatorSecrets,
     state_root: Hash,
 ) -> Block {
+    author_block_with_extrinsics(state, config, timeslot, author_index, secrets, state_root, vec![], vec![])
+}
+
+/// Author a new block with custom guarantee and assurance extrinsics.
+pub fn author_block_with_extrinsics(
+    state: &State,
+    config: &Config,
+    timeslot: Timeslot,
+    author_index: u16,
+    secrets: &ValidatorSecrets,
+    state_root: Hash,
+    guarantees: Vec<Guarantee>,
+    assurances: Vec<Assurance>,
+) -> Block {
     // Parent hash: from the most recent block in history, or Hash::ZERO for the first block
     let parent_hash = state
         .recent_blocks
@@ -122,12 +136,11 @@ pub fn author_block(
         None
     };
 
-    // Compute extrinsic hash (empty extrinsics = hash of empty encoding)
     let extrinsic = Extrinsic {
         tickets: vec![],
         preimages: vec![],
-        guarantees: vec![],
-        assurances: vec![],
+        guarantees,
+        assurances,
         disputes: DisputesExtrinsic::default(),
     };
     let extrinsic_hash = compute_extrinsic_hash(&extrinsic);
