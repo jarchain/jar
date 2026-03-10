@@ -13,6 +13,7 @@ members = [
     "crates/grey-services",
     "crates/grey-network",
     "crates/grey-transpiler",
+    "crates/grey-bench",
 ]
 exclude = [
     "services/sample-service",

@@ -294,16 +294,16 @@ impl Assembler {
     /// Opcode 200: add_64 (rD = rA + rB)
     pub fn add_64(&mut self, rd: Reg, ra: Reg, rb: Reg) -> &mut Self {
         self.emit_byte(200, true);
-        self.emit_byte((rd as u8) | ((ra as u8) << 4), false);
-        self.emit_byte(rb as u8, false);
+        self.emit_byte((ra as u8) | ((rb as u8) << 4), false);
+        self.emit_byte(rd as u8, false);
         self
     }
 
     /// Opcode 201: sub_64 (rD = rA - rB)
     pub fn sub_64(&mut self, rd: Reg, ra: Reg, rb: Reg) -> &mut Self {
         self.emit_byte(201, true);
-        self.emit_byte((rd as u8) | ((ra as u8) << 4), false);
-        self.emit_byte(rb as u8, false);
+        self.emit_byte((ra as u8) | ((rb as u8) << 4), false);
+        self.emit_byte(rd as u8, false);
         self
     }
 
@@ -320,6 +320,13 @@ impl Assembler {
             &self.bitmask,
             &self.jump_table,
         )
+    }
+
+    // ===== Public raw emission =====
+
+    /// Emit a raw byte with bitmask control.
+    pub fn emit_raw(&mut self, byte: u8, is_instruction_start: bool) {
+        self.emit_byte(byte, is_instruction_start);
     }
 
     // ===== Internal helpers =====
