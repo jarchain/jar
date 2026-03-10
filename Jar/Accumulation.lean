@@ -747,6 +747,30 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
 -- accone — Single-Service Accumulation — GP eq:accone
 -- ============================================================================
 
+/-- Encode accumulation arguments for PVM input. GP Appendix B §B.8.
+    Format: service_id(4) ‖ operand_count(4) ‖ transfer_count(4) ‖
+    for each operand: package_hash(32) ‖ segment_root(32) ‖ authorizer_hash(32) ‖
+      payload_hash(32) ‖ gas_limit(8) ‖ auth_output_len(4) ‖ auth_output ‖ result_encoding
+    for each transfer: source(4) ‖ dest(4) ‖ amount(8) ‖ memo(W_T) ‖ gas(8) -/
+private def encodeAccArgs (serviceId : ServiceId) (operands : Array OperandTuple)
+    (transfers : Array DeferredTransfer) : ByteArray :=
+  let header := Codec.encodeFixedNat 4 serviceId.toNat
+    ++ Codec.encodeFixedNat 4 operands.size
+    ++ Codec.encodeFixedNat 4 transfers.size
+  let opBytes := operands.foldl (init := ByteArray.empty) fun acc op =>
+    acc ++ op.packageHash.data ++ op.segmentRoot.data
+      ++ op.authorizerHash.data ++ op.payloadHash.data
+      ++ Codec.encodeFixedNat 8 op.gasLimit.toNat
+      ++ Codec.encodeFixedNat 4 op.authOutput.size ++ op.authOutput
+      ++ Codec.encodeWorkResult op.result
+  let xferBytes := transfers.foldl (init := ByteArray.empty) fun acc t =>
+    acc ++ Codec.encodeFixedNat 4 t.source.toNat
+      ++ Codec.encodeFixedNat 4 t.dest.toNat
+      ++ Codec.encodeFixedNat 8 t.amount.toNat
+      ++ t.memo.data
+      ++ Codec.encodeFixedNat 8 t.gas.toNat
+  header ++ opBytes ++ xferBytes
+
 /-- Accumulate a single service. GP §12 eq:accone.
     Gathers all operands and transfers for this service,
     invokes Ψ_A (PVM accumulate), and collects outputs. -/
@@ -765,10 +789,6 @@ def accone (ps : PartialState) (serviceId : ServiceId)
     let transferGas := transfers.foldl (init := (0 : UInt64)) fun acc t => acc + t.gas
     let totalGas := freeGas + operandGas + transferGas
 
-    -- Look up service code (simplified: use code hash as placeholder)
-    -- In a real implementation, we'd look up the code from preimages
-    let _codeHash := acct.codeHash
-
     -- Build accumulation context
     let ctx : AccContext := {
       serviceId
@@ -779,24 +799,52 @@ def accone (ps : PartialState) (serviceId : ServiceId)
       gasUsed := 0
       operands
       timeslot
-      nextServiceId := UInt32.ofNat S_MIN  -- Start new service IDs at S_MIN
+      nextServiceId := UInt32.ofNat S_MIN
       checkpoint := none
     }
 
-    -- In a full implementation, we would:
-    -- 1. Look up the service code blob from acct.codeHash
-    -- 2. Initialize PVM with initStandard
-    -- 3. Run PVM with handleHostCall as the host-call handler
-    -- 4. Collect outputs from the context
-    --
-    -- For now, we model this as an opaque invocation that returns the context.
-    -- The PVM infrastructure is in place for a complete implementation.
-
-    { postState := ctx.state
-      deferredTransfers := ctx.transfers
-      yieldHash := ctx.yieldHash
-      gasUsed := totalGas - totalGas  -- All gas "used" in this stub
-      provisions := ctx.provisions }
+    -- Look up service code blob from preimage store using codeHash
+    match acct.preimages.lookup acct.codeHash with
+    | none =>
+      -- Code not available: service cannot accumulate
+      { postState := ps, deferredTransfers := #[], yieldHash := none,
+        gasUsed := totalGas, provisions := #[] }
+    | some codeBlob =>
+      -- Encode accumulation arguments
+      let args := encodeAccArgs serviceId operands transfers
+      -- Initialize PVM with service code and arguments
+      match PVM.initStandard codeBlob args with
+      | none =>
+        -- Invalid program blob: panic
+        { postState := ps, deferredTransfers := #[], yieldHash := none,
+          gasUsed := totalGas, provisions := #[] }
+      | some (prog, regs, mem) =>
+        -- Run PVM with host-call dispatch via handleHostCall
+        let (result, ctx') := PVM.runWithHostCalls AccContext
+          prog 0 regs mem (Int64.mk totalGas)
+          (fun callId gas regs' mem' c =>
+            handleHostCall callId gas regs' mem' c)
+          ctx
+        -- On halt: use accumulated state; on panic: revert to checkpoint
+        let finalState := match result.exitReason with
+          | .halt => ctx'.state
+          | .panic =>
+            match ctx'.checkpoint with
+            | some savedAccounts => { ctx'.state with accounts := savedAccounts }
+            | none => ps  -- revert entirely
+          | _ => ps  -- OOG/fault: revert
+        -- Update lastAccumulation timeslot
+        let finalState := match finalState.accounts.lookup serviceId with
+          | some a =>
+            let a' := { a with lastAccumulation := timeslot }
+            { finalState with accounts := finalState.accounts.insert serviceId a' }
+          | none => finalState
+        let gasUsed := totalGas - result.gas.toUInt64
+        { postState := finalState
+          deferredTransfers := ctx'.transfers
+          yieldHash := ctx'.yieldHash
+          gasUsed
+          provisions := ctx'.provisions }
 
 -- ============================================================================
 -- accpar — Parallelized Accumulation — GP eq:accpar

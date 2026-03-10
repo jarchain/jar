@@ -4,6 +4,7 @@ import Jar.Crypto
 import Jar.Codec
 import Jar.Consensus
 import Jar.Accumulation
+import Jar.Merkle
 
 /-!
 # State Transition — §4–13
@@ -71,22 +72,45 @@ def updateParentStateRoot (bs : RecentHistory) (h : Header) : RecentHistory :=
     }
     { bs with blocks := bs.blocks.set idx last' }
 
+/-- Compute accumulation-output log super-peak. GP §E.7–E.10.
+    Builds an MMR from the accumulation output hashes produced this block,
+    then bags the peaks to get a single root hash. -/
+def computeAccOutputRoot (outputs : AccumulationOutputs) : Hash :=
+  if outputs.size == 0 then Hash.zero
+  else
+    let hashes := outputs.map fun (sid, h) =>
+      Crypto.blake2b (Codec.encodeFixedNat 4 sid.toNat ++ h.data)
+    let mmr := hashes.foldl (init := Merkle.MerkleMountainRange.mk #[])
+      fun mmr leaf => mmr.append leaf
+    mmr.root
+
+/-- Collect reported work-package hashes from guarantees. GP §7.
+    Maps package hash → erasure root for each guaranteed report. -/
+def collectReportedPackages (guarantees : GuaranteesExtrinsic) : Dict Hash Hash :=
+  guarantees.foldl (init := Dict.empty) fun acc g =>
+    acc.insert g.report.availSpec.packageHash g.report.availSpec.erasureRoot
+
 /-- β' : Full recent history update. GP eq (37–43).
     Appends new block info, truncates to max history length. -/
 def updateRecentHistory
-    (bdag : RecentHistory) (headerHash : Hash) : RecentHistory :=
+    (bdag : RecentHistory) (headerHash : Hash)
+    (accOutputs : AccumulationOutputs)
+    (guarantees : GuaranteesExtrinsic) : RecentHistory :=
   let maxLen := 8  -- H_R : Maximum recent history length
   let newEntry : RecentBlockInfo := {
     headerHash := headerHash
     stateRoot := Hash.zero  -- will be filled by next block's β†
-    accOutputRoot := Hash.zero  -- TODO: compute from accumulation outputs
-    reportedPackages := Dict.empty
+    accOutputRoot := computeAccOutputRoot accOutputs
+    reportedPackages := collectReportedPackages guarantees
   }
   let blocks' := bdag.blocks.push newEntry
   let blocks'' := if blocks'.size > maxLen
     then blocks'.extract 1 blocks'.size
     else blocks'
-  { bdag with blocks := blocks'' }
+  -- Update accumulation-output belt: append new output hashes
+  let newBeltEntries := accOutputs.map fun (_, h) => some h
+  let belt' := bdag.accOutputBelt ++ newBeltEntries
+  { blocks := blocks'', accOutputBelt := belt' }
 
 -- ============================================================================
 -- §6 — Entropy Accumulation
@@ -238,11 +262,10 @@ def updateAuthPool
     else a'
 
 -- ============================================================================
--- §12 — Accumulation (skeleton)
+-- §12 — Accumulation
 -- ============================================================================
 
-/-- Accumulation result: the combined outputs of processing available work reports.
-    Full implementation requires PVM execution. -/
+/-- Accumulation result: the combined outputs of processing available work reports. -/
 structure AccumulationResult where
   services : Dict ServiceId ServiceAccount
   privileged : PrivilegedServices
@@ -259,29 +282,90 @@ def performAccumulation
     (available : Array WorkReport)
     (s : State) (t' : Timeslot) : AccumulationResult :=
   let result := Accumulation.accumulate s available t'
+  -- Collect work-package hashes of accumulated reports for history
+  let accPackageHashes := available.map fun wr => wr.availSpec.packageHash
+  -- Update accumulation history: append this timeslot's hashes
+  let accHistory' := s.accHistory.push accPackageHashes
+  -- Trim history to D_EXPUNGE entries
+  let accHistory'' := if accHistory'.size > D_EXPUNGE
+    then accHistory'.extract 1 accHistory'.size
+    else accHistory'
+  -- Build per-service statistics from gas usage
+  let accStats := result.gasUsage.entries.foldl (init := Dict.empty (K := ServiceId) (V := ServiceStatistics))
+    fun acc (sid, gas) =>
+      acc.insert sid {
+        provided := (0, 0)
+        refinement := (0, 0)
+        imports := 0
+        extrinsicCount := 0
+        extrinsicSize := 0
+        exports := 0
+        accumulation := (1, gas)
+      }
   { services := result.services
     privileged := result.privileged
     pendingValidators := result.stagingKeys
     authQueue := result.authQueue
     outputs := result.outputs
-    accQueue := s.accQueue  -- Queue management handled separately
-    accHistory := s.accHistory
-    accStats := Dict.empty }  -- Gas stats mapped separately
+    accQueue := s.accQueue
+    accHistory := accHistory''
+    accStats := accStats }
 
 -- ============================================================================
 -- §12.7 — Preimage Integration
 -- ============================================================================
 
-/-- δ‡ : Integrate preimage data into service accounts. GP eq (12.35–12.38). -/
+/-- δ‡ : Integrate preimage data into service accounts. GP eq (12.35–12.38).
+    For each (service_id, preimage_data) in E_P:
+    1. Hash the preimage data to get h = H(data)
+    2. If the service has a solicitation for (h, |data|), store the preimage
+    3. Expunge old preimage solicitations past D_EXPUNGE timeslots. -/
 def integratePreimages
     (delta : Dict ServiceId ServiceAccount)
-    (_preimages : PreimagesExtrinsic)
-    (_t' : Timeslot) : Dict ServiceId ServiceAccount :=
-  -- TODO: store preimage data in the service's preimage store
-  delta
+    (preimages : PreimagesExtrinsic)
+    (t' : Timeslot) : Dict ServiceId ServiceAccount :=
+  -- Phase 1: Store new preimages
+  let delta' := preimages.foldl (init := delta) fun acc (sid, data) =>
+    match acc.lookup sid with
+    | none => acc
+    | some acct =>
+      let h := Crypto.blake2b data
+      let blobLen := UInt32.ofNat data.size
+      -- Check if the service has solicited this preimage
+      match acct.preimageInfo.lookup (h, blobLen) with
+      | none => acc  -- Not solicited; ignore
+      | some timeslots =>
+        -- Store the preimage data and update the info with current timeslot
+        let acct' := { acct with
+          preimages := acct.preimages.insert h data
+          preimageInfo := acct.preimageInfo.insert (h, blobLen)
+            (timeslots.push t') }
+        acc.insert sid acct'
+  -- Phase 2: Expunge old preimage solicitations past D_EXPUNGE
+  let delta'' := delta'.entries.foldl (init := delta') fun acc (sid, acct) =>
+    let expunged := acct.preimageInfo.entries.foldl (init := acct.preimageInfo)
+      fun info (key, timeslots) =>
+        -- Remove entries where all timeslots are older than D_EXPUNGE
+        let recent := timeslots.filter fun ts =>
+          t'.toNat - ts.toNat < D_EXPUNGE
+        if recent.size == 0 then
+          -- All timeslots expired: expunge the preimage and info
+          info.erase key
+        else
+          info.insert key recent
+    if expunged.size != acct.preimageInfo.size then
+      -- Also remove the actual preimage data for expunged hashes
+      let removedHashes := acct.preimageInfo.entries.foldl (init := #[]) fun removed (key, timeslots) =>
+        let recent := timeslots.filter fun ts => t'.toNat - ts.toNat < D_EXPUNGE
+        if recent.size == 0 then removed.push key.1 else removed
+      let preimages' := removedHashes.foldl (init := acct.preimages) fun pims h =>
+        pims.erase h
+      acc.insert sid { acct with preimageInfo := expunged, preimages := preimages' }
+    else acc
+  delta''
 
 -- ============================================================================
--- §13 — Statistics Update (skeleton)
+-- §13 — Statistics Update
 -- ============================================================================
 
 /-- Zero-valued validator record. -/
@@ -289,26 +373,194 @@ def ValidatorRecord.zero : ValidatorRecord :=
   { blocks := 0, tickets := 0, preimageCount := 0
     preimageSize := 0, guarantees := 0, assurances := 0 }
 
-/-- π' : Updated activity statistics. GP §13. -/
+/-- Zero-valued core statistics. -/
+def CoreStatistics.zero : CoreStatistics :=
+  { daLoad := 0, popularity := 0, imports := 0, extrinsicCount := 0
+    extrinsicSize := 0, exports := 0, bundleSize := 0, gasUsed := 0 }
+
+/-- π' : Updated activity statistics. GP §13.
+    Tracks per-validator: blocks, tickets, preimages, guarantees, assurances.
+    Tracks per-core and per-service statistics. -/
 def updateStatistics
     (pi : ActivityStatistics) (h : Header)
-    (_e : Extrinsic) (t t' : Timeslot)
+    (e : Extrinsic) (t t' : Timeslot)
     (_kappa' : Array ValidatorKey)
-    (_accStats : Dict ServiceId ServiceStatistics) : ActivityStatistics :=
+    (accStats : Dict ServiceId ServiceStatistics) : ActivityStatistics :=
   let epochChanged := isEpochChange t t'
   let (cur, prev) := if epochChanged
     then (Array.mkArray V ValidatorRecord.zero, pi.current)
     else (pi.current, pi.previous)
-  -- Increment block author stats
+
+  -- §13.1: Block author stats
   let authorIdx := h.authorIndex.val
-  let cur' := if hv : authorIdx < cur.size then
+  let cur := if hv : authorIdx < cur.size then
     let r := cur[authorIdx]
     cur.set authorIdx { r with blocks := r.blocks + 1 }
   else cur
-  { current := cur'
+
+  -- §13.1: Ticket stats — each ticket proof credits the author
+  let cur := if e.tickets.size > 0 then
+    if hv : authorIdx < cur.size then
+      let r := cur[authorIdx]
+      cur.set authorIdx { r with tickets := r.tickets + e.tickets.size }
+    else cur
+  else cur
+
+  -- §13.1: Preimage stats — each preimage credits the author
+  let cur := if e.preimages.size > 0 then
+    let totalSize := e.preimages.foldl (init := 0) fun acc (_, data) => acc + data.size
+    if hv : authorIdx < cur.size then
+      let r := cur[authorIdx]
+      cur.set authorIdx { r with
+        preimageCount := r.preimageCount + e.preimages.size
+        preimageSize := r.preimageSize + totalSize }
+    else cur
+  else cur
+
+  -- §13.1: Guarantee stats — credit each guarantor
+  let cur := e.guarantees.foldl (init := cur) fun c g =>
+    g.credentials.foldl (init := c) fun c' (vi, _) =>
+      if hv : vi.val < c'.size then
+        let r := c'[vi.val]
+        c'.set vi.val { r with guarantees := r.guarantees + 1 }
+      else c'
+
+  -- §13.1: Assurance stats — credit each assuring validator
+  let cur := e.assurances.foldl (init := cur) fun c a =>
+    if hv : a.validatorIndex.val < c.size then
+      let r := c[a.validatorIndex.val]
+      c.set a.validatorIndex.val { r with assurances := r.assurances + 1 }
+    else c
+
+  -- §13.2: Core statistics — compute from guarantees
+  let coreStats := if epochChanged
+    then Array.mkArray C CoreStatistics.zero
+    else pi.coreStats
+  let coreStats := e.guarantees.foldl (init := coreStats) fun cs g =>
+    let cIdx := g.report.coreIndex.val
+    if hc : cIdx < cs.size then
+      let s := cs[cIdx]
+      -- Count assurances for this core (popularity)
+      let pop := e.assurances.filter (fun a =>
+        let byteIdx := cIdx / 8
+        let bitIdx := cIdx % 8
+        byteIdx < a.bitfield.size &&
+          (a.bitfield.data[byteIdx]!.toNat >>> bitIdx) % 2 == 1) |>.size
+      -- Sum digest statistics
+      let (totalImports, totalExtrinsics, totalExtrinsicSize, totalExports, totalGas) :=
+        g.report.digests.foldl (init := (0, 0, 0, 0, (0 : UInt64))) fun (i, x, z, e', gas) d =>
+          (i + d.importsCount, x + d.extrinsicsCount, z + d.extrinsicsSize,
+           e' + d.exportsCount, gas + d.gasUsed)
+      cs.set cIdx { s with
+        daLoad := s.daLoad + g.report.availSpec.bundleLength.toNat
+        popularity := s.popularity + pop
+        imports := s.imports + totalImports
+        extrinsicCount := s.extrinsicCount + totalExtrinsics
+        extrinsicSize := s.extrinsicSize + totalExtrinsicSize
+        exports := s.exports + totalExports
+        bundleSize := s.bundleSize + g.report.availSpec.bundleLength.toNat
+        gasUsed := s.gasUsed + totalGas }
+    else cs
+
+  -- §13.2: Service statistics — merge accumulation stats with digest stats
+  let serviceStats := if epochChanged then Dict.empty else pi.serviceStats
+  -- Add refinement stats from guarantees
+  let serviceStats := e.guarantees.foldl (init := serviceStats) fun ss g =>
+    g.report.digests.foldl (init := ss) fun ss' d =>
+      let existing := match ss'.lookup d.serviceId with
+        | some s => s
+        | none => { provided := (0, 0), refinement := (0, 0), imports := 0,
+                    extrinsicCount := 0, extrinsicSize := 0, exports := 0,
+                    accumulation := (0, 0) }
+      ss'.insert d.serviceId { existing with
+        refinement := (existing.refinement.1 + 1, existing.refinement.2 + d.gasUsed)
+        imports := existing.imports + d.importsCount
+        extrinsicCount := existing.extrinsicCount + d.extrinsicsCount
+        extrinsicSize := existing.extrinsicSize + d.extrinsicsSize
+        exports := existing.exports + d.exportsCount }
+  -- Merge accumulation stats
+  let serviceStats := accStats.entries.foldl (init := serviceStats) fun ss (sid, astats) =>
+    let existing := match ss.lookup sid with
+      | some s => s
+      | none => { provided := (0, 0), refinement := (0, 0), imports := 0,
+                  extrinsicCount := 0, extrinsicSize := 0, exports := 0,
+                  accumulation := (0, 0) }
+    ss.insert sid { existing with
+      accumulation := (existing.accumulation.1 + astats.accumulation.1,
+                       existing.accumulation.2 + astats.accumulation.2)
+      provided := (existing.provided.1 + astats.provided.1,
+                   existing.provided.2 + astats.provided.2) }
+
+  { current := cur
     previous := prev
-    coreStats := pi.coreStats
-    serviceStats := pi.serviceStats }
+    coreStats
+    serviceStats }
+
+-- ============================================================================
+-- §5 — Header Validation
+-- ============================================================================
+
+/-- Validate block header against the current state. GP §5.
+    Checks:
+    1. Parent hash matches last known block
+    2. Timeslot strictly increasing
+    3. Timeslot not too far in the future
+    4. Author index is valid
+    5. Extrinsic size bounds
+    6. Seal signature (via crypto opaque)
+    7. VRF output (via crypto opaque) -/
+def validateHeader (s : State) (h : Header) : Bool :=
+  -- §5.1: Parent hash must match the last block in recent history
+  let parentOk := if hn : s.recent.blocks.size = 0 then true
+  else
+    let idx := s.recent.blocks.size - 1
+    have : idx < s.recent.blocks.size := Nat.sub_one_lt hn
+    let lastBlock := s.recent.blocks[idx]
+    h.parent == lastBlock.headerHash
+
+  -- §5.2: Timeslot must be strictly greater than prior
+  let timeslotOk := h.timeslot.toNat > s.timeslot.toNat
+
+  -- §5.3: Author index must be valid validator index
+  let authorOk := h.authorIndex.val < V
+
+  -- §5.4: Seal signature verification. GP eq (6.24–6.25).
+  -- Verify the block seal using the author's Bandersnatch key
+  let sealOk :=
+    if h.authorIndex.val < s.currentValidators.size then
+      let authorKey := s.currentValidators[h.authorIndex.val]!
+      let unsignedHeader := Codec.encodeUnsignedHeader h
+      Crypto.bandersnatchVerify authorKey.bandersnatch
+        Crypto.ctxTicketSeal unsignedHeader h.sealSig
+    else false
+
+  -- §5.5: VRF signature verification. GP eq (6.27).
+  let vrfOk :=
+    if h.authorIndex.val < s.currentValidators.size then
+      let authorKey := s.currentValidators[h.authorIndex.val]!
+      Crypto.bandersnatchVerify authorKey.bandersnatch
+        Crypto.ctxEntropy (Codec.encodeFixedNat 4 h.timeslot.toNat) h.vrfSignature
+    else false
+
+  -- §5.6: Epoch marker present iff epoch boundary
+  let epochMarkerOk :=
+    let shouldHaveMarker := isEpochChange s.timeslot h.timeslot
+    match h.epochMarker with
+    | some _ => shouldHaveMarker
+    | none => !shouldHaveMarker
+
+  parentOk && timeslotOk && authorOk && sealOk && vrfOk && epochMarkerOk
+
+/-- Validate extrinsic data bounds. GP §5, §11. -/
+def validateExtrinsic (e : Extrinsic) : Bool :=
+  -- Ticket submissions bounded by K
+  let ticketsOk := e.tickets.size <= K_MAX_TICKETS
+  -- Each guarantee must have at least 1 credential
+  let guaranteesOk := e.guarantees.all (fun g => g.credentials.size > 0)
+  -- No duplicate cores in guarantees
+  let coreIndices := e.guarantees.map (·.report.coreIndex)
+  let noDupCores := coreIndices.size == (coreIndices.toList.eraseDups).length
+  ticketsOk && guaranteesOk && noDupCores
 
 -- ============================================================================
 -- §4.1 — Top-Level State Transition Υ(σ, B) = σ'
@@ -320,15 +572,18 @@ def stateTransition (s : State) (b : Block) : Option State := do
   let h := b.header
   let ext := b.extrinsic
 
+  -- §5 — Header validation
+  guard (validateHeader s h)
+  guard (validateExtrinsic ext)
+
   -- §6.1 — Timekeeping
   let t' := newTimeslot h
-  guard (t'.toNat > s.timeslot.toNat)
 
   -- §6 — Entropy
   let eta' := updateEntropy s.entropy h s.timeslot t'
 
   -- §6 — Validator rotation
-  let kappa' := updateActiveValidators s.currentValidators s.safrole s.timeslot t' #[]
+  let kappa' := updateActiveValidators s.currentValidators s.safrole s.timeslot t' h.offenders
   let lambda' := updatePreviousValidators s.previousValidators s.currentValidators s.timeslot t'
 
   -- §10 — Judgments
@@ -347,7 +602,7 @@ def stateTransition (s : State) (b : Block) : Option State := do
 
   -- §7 — Recent history: β'
   let headerHash := Crypto.blake2b (Codec.encodeHeader h)
-  let beta' := updateRecentHistory bDag headerHash
+  let beta' := updateRecentHistory bDag headerHash accResult.outputs ext.guarantees
 
   -- §12.7 — Preimage integration
   let delta' := integratePreimages accResult.services ext.preimages t'
