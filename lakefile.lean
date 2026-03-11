@@ -52,3 +52,17 @@ lean_exe safroletest where
     "-ljar_crypto_ffi",
     "-lpthread", "-ldl", "-lm"
   ]
+
+lean_exe statisticstest where
+  root := `Jar.Test.StatisticsVectors
+
+lean_exe authorizationstest where
+  root := `Jar.Test.AuthorizationsVectors
+
+lean_exe historytest where
+  root := `Jar.Test.HistoryVectors
+  moreLinkArgs := #[
+    "-L", "crypto-ffi/target/release",
+    "-ljar_crypto_ffi",
+    "-lpthread", "-ldl", "-lm"
+  ]
