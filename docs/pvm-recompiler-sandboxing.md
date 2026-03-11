@@ -225,12 +225,179 @@ simultaneously, hardening the W^X guarantee at the OS level. Unlike
 namespaces/seccomp, this single prctl call works in containers. It should be
 applied opportunistically (best-effort, not required).
 
+## Guest Memory Access: The Real Performance Gap
+
+The sandboxing doc above argues our in-process model is correct for security.
+But it has a significant **performance cost** for memory-heavy workloads that
+must be addressed.
+
+### The Problem
+
+PolkaVM's compiler backend maps guest memory at a fixed base address in the
+worker process. A guest load becomes a single native instruction:
+
+```x86
+; polkavm: load_u32 rd, [ra + imm]
+lea  edx, [ra_reg + imm]
+mov  rd_reg, dword [guest_base + rdx]     ; 1 instruction, ~1-4 cycles
+```
+
+Our recompiler mediates every access through a helper function call:
+
+```x86
+; grey: load_u32 rd, [ra + imm]
+push rsi; push rdi; push r8; ...; push rcx   ; save 8 caller-saved regs
+mov  rdi, r15                                  ; arg0 = ctx
+lea  esi, [ra_reg + imm]                       ; arg1 = addr
+mov  rax, <mem_read_u32>
+call rax                                       ; → BTreeMap::get → data[offset]
+mov  scratch, rax
+pop  rcx; ...; pop rsi                         ; restore 8 regs
+cmp  dword [r15+120], 0                        ; check for page fault
+jne  exit
+mov  rd_reg, scratch
+```
+
+That is **~25 instructions + a BTreeMap lookup** vs **1 instruction**. On
+memory-heavy workloads (e.g. Merkle tree computation, data copying), this is
+a 20-50x penalty per access.
+
+The current fib benchmark doesn't exercise memory, so it hides this cost.
+Any real-world PVM program (accumulate, refine) will hit memory heavily.
+
+### Design Options
+
+Three approaches, from simplest to most aggressive:
+
+#### Option A: Flat backing buffer + inline permission check (recommended)
+
+Replace the `BTreeMap<u32, PageData>` with:
+- A **contiguous backing buffer** for guest data, `mmap`'d with
+  `MAP_NORESERVE` (lazy physical allocation)
+- A **page permission table** — one byte per page (1MB for 2^20 pages)
+- Both pointers stored in JitContext for direct access from JIT code
+
+The compiler emits inline checks instead of helper calls:
+
+```x86
+; load_u32 rd, [ra + imm]  —  fast path: 6 instructions
+lea  edx, [ra_reg + imm]          ; guest address (32-bit)
+mov  eax, edx
+shr  eax, 12                      ; page index
+movzx eax, byte [perm_base + rax] ; load permission byte
+test eax, READABLE                 ; check readable bit
+jz   page_fault_exit              ; cold path, rarely taken
+mov  rd_reg, dword [buf_base + rdx] ; DIRECT memory access
+```
+
+**Cost**: ~6 instructions on the fast path. No function call, no register
+save/restore. The page fault path is cold (branch predictor will learn).
+
+**Memory overhead**: One `mmap(MAP_NORESERVE)` up to 4GB virtual (but only
+touched pages consume physical memory). Plus 1MB for the permission table.
+Typical PVM programs use <1MB of pages, so physical usage is small.
+
+**Security**: The guest buffer is at a known base address in the host
+process. Guest code still cannot access it directly — the JIT compiler
+controls what instructions are emitted and the guest address is always added
+to `buf_base` (a register or context field), not used raw. A compiler bug
+could produce an out-of-bounds access, but the buffer is bounded at 4GB and
+the address is 32-bit, so it cannot reach host memory outside the buffer.
+
+**Compatibility**: `mmap(MAP_NORESERVE)` works everywhere including
+containers. No special syscalls required.
+
+This is the approach we should implement. It gives us ~4-8x improvement on
+memory-heavy code compared to helper calls, while staying fully in-process.
+
+#### Option B: Signal-handler page protection
+
+Map the backing buffer and use `mprotect` to match PVM page permissions to
+real OS page permissions (PROT_NONE for inaccessible, PROT_READ for
+read-only, PROT_READ|PROT_WRITE for read-write). Guest accesses become a
+single `mov` instruction; page faults are caught by a SIGSEGV handler.
+
+```x86
+; load_u32 rd, [ra + imm]  —  1 instruction
+mov  rd_reg, dword [buf_base + ra_reg + imm]
+; page fault → SIGSEGV → handler sets exit_reason, longjmp/siglongjmp back
+```
+
+**Pros**: Lowest possible per-access cost (1 instruction, same as polkavm).
+No permission check overhead for valid accesses.
+
+**Cons**:
+- Signal handlers are **global and non-composable** — a SIGSEGV from a host
+  bug is indistinguishable from a guest page fault
+- `mprotect` must be called on every `sbrk` or page-mode change (syscall)
+- `siglongjmp` from signal handler is technically unsafe in Rust
+- Signal handler races in multi-threaded host code
+- This is exactly what polkavm's "experimental" generic-sandbox does, and
+  it's marked non-production for good reason
+
+**Verdict**: Not recommended unless the permission-check overhead from
+Option A proves to be a bottleneck (it shouldn't be — the `test`+`jz` is
+essentially free on modern CPUs with branch prediction).
+
+#### Option C: Keep helpers, but optimize them
+
+Minimal change: replace the `BTreeMap` in `Memory` with a flat array and
+remove the `std::env::var()` calls from helper functions.
+
+**Improvement**: BTreeMap lookup (O(log n)) → array index (O(1)). The helper
+call overhead (~20 instructions for save/restore) remains.
+
+**Verdict**: Quick win as a stepping stone. Not sufficient long-term for
+memory-heavy workloads due to the inherent function call overhead.
+
+### Implementation Plan for Option A
+
+Changes required:
+
+1. **New `FlatMemory` struct** (or refactor `Memory`):
+   - `buf: *mut u8` — mmap'd backing buffer (up to 4GB, MAP_NORESERVE)
+   - `perms: Vec<u8>` — page permission table (1 byte per page)
+   - Methods to sync with the existing `Memory` API (map_page, sbrk, etc.)
+
+2. **New JitContext fields**:
+   - `guest_buf: *mut u8` (offset 192) — backing buffer base
+   - `guest_perms: *const u8` (offset 200) — permission table base
+
+3. **Codegen changes** — for each load/store instruction:
+   - Emit inline permission check + direct memory access (fast path)
+   - Emit jump to page-fault exit (cold path)
+   - Remove helper function calls for loads/stores
+
+4. **Permission encoding** — one byte per page:
+   - `0x00` = inaccessible
+   - `0x01` = read-only
+   - `0x03` = read-write
+   - (bit 0 = readable, bit 1 = writable)
+
+5. **Cross-page access handling** — PVM allows unaligned cross-page reads.
+   The inline fast path can check `(addr & 0xFFF) + size <= 0x1000` to detect
+   same-page accesses (common case). Cross-page accesses fall back to a
+   helper.
+
+### Cost Summary
+
+| Approach | Per-access cost | Portability | Complexity |
+|----------|----------------|-------------|------------|
+| Current (BTreeMap helper) | ~25 insn + O(log n) | Everywhere | Low |
+| Option A (flat + inline) | ~6 insn + O(1) | Everywhere | Medium |
+| Option B (signal handler) | ~1 insn | Fragile | High |
+| PolkaVM (separate process) | ~1 insn | Containers broken | Very high |
+
+Option A is the sweet spot: 4-8x faster than the current approach on memory
+accesses, works everywhere, and keeps the safety invariant that the JIT
+compiler fully controls what memory instructions are emitted.
+
 ## Summary
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | Execution model | In-process JIT | Portability, performance, simplicity |
-| Memory safety | Software-mediated helpers | Sufficient for PVM threat model |
+| Memory safety | Inline permission check + flat buffer | Fast path without function calls |
 | OS sandboxing | None required | Breaks containers, minimal benefit |
 | W^X | Already enforced (RW→RX) | Defense in depth |
 | Hardening | Instruction scan + guard pages | Catches compiler bugs |
@@ -239,6 +406,7 @@ applied opportunistically (best-effort, not required).
 Our recompiler's in-process model is not a security compromise — it's a
 **deliberate architectural choice** that trades OS-level isolation (which
 polkavm proves is fragile in practice) for portability, determinism, and
-simplicity. The software boundary (helper-mediated memory access) is the
-right abstraction for a deterministic VM where the instruction set is fully
-controlled by the compiler.
+simplicity. The flat-buffer approach closes the memory-access performance gap
+to within ~6x of polkavm's direct mapping, while preserving the property
+that **all guest memory accesses are compiler-controlled** — the JIT never
+emits raw addresses from guest registers without adding the buffer base.
