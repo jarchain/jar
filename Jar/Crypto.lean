@@ -214,20 +214,23 @@ def seqFromHash (l : Nat) (h : Hash) : Array Nat :=
     b0 + b1 * 256 + b2 * 65536 + b3 * 16777216
 
 /-- Fisher-Yates shuffle with numeric randomness source. GP Appendix F eq (F.1).
-    F(s, r) : ⟦T⟧_l × ⟦ℕ⟧_{l:} → ⟦T⟧_l -/
-def fisherYatesShuffle (s : Array α) (r : Array Nat) : Array α := Id.run do
-  let mut arr := s
-  for h : idx in [:arr.size] do
-    let remaining := arr.size - idx
-    let j := idx + (r[idx]! % remaining)
-    if hIdx : idx < arr.size then
-      if hj : j < arr.size then
-        arr := arr.swap idx j
-  return arr
+    F(s, r) : ⟦T⟧_l × ⟦ℕ⟧_{l:} → ⟦T⟧_l
+    Selection variant: pick element at random index j from working copy,
+    place it in output[i], fill gap at j with last remaining element. -/
+def fisherYatesShuffle [Inhabited α] (s : Array α) (r : Array Nat) : Array α := Id.run do
+  let n := s.size
+  let mut working := s
+  let mut result : Array α := #[]
+  for idx in [:n] do
+    let remaining := n - idx
+    let j := r[idx]! % remaining
+    result := result.push working[j]!
+    working := working.set! j working[remaining - 1]!
+  return result
 
 /-- Fisher-Yates shuffle with hash entropy. GP Appendix F eq (F.3).
     F(s, h) : ⟦T⟧_l × ℍ → ⟦T⟧_l -/
-def shuffle (s : Array α) (h : Hash) : Array α :=
+def shuffle [Inhabited α] (s : Array α) (h : Hash) : Array α :=
   fisherYatesShuffle s (seqFromHash s.size h)
 
 end Jar.Crypto

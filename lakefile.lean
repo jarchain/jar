@@ -90,3 +90,11 @@ lean_exe preimagestest where
     "-ljar_crypto_ffi",
     "-lpthread", "-ldl", "-lm"
   ]
+
+lean_exe reportstest where
+  root := `Jar.Test.ReportsVectors
+  moreLinkArgs := #[
+    "-L", "crypto-ffi/target/release",
+    "-ljar_crypto_ffi",
+    "-lpthread", "-ldl", "-lm"
+  ]
