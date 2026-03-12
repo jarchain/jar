@@ -40,7 +40,7 @@ private def parseTPServiceAccount (j : Json) : Except String TPServiceAccount :=
     | _ => .error "expected array for preimage_requests"
   return { serviceId, blobHashes, requests }
 
-private def parseTPState (j : Json) : Except String TPState := do
+def parseTPState (j : Json) : Except String TPState := do
   let accountsJson ← j.getObjVal? "accounts"
   let accounts ← match accountsJson with
     | Json.arr items => items.toList.mapM parseTPServiceAccount |>.map Array.mk
@@ -71,6 +71,31 @@ instance : FromJson TPResult where
       return .err e
     else
       .error "TPResult: expected 'ok' or 'err'"
+
+-- ============================================================================
+-- ToJson instances for STF server output
+-- ============================================================================
+
+private def toJsonTPServiceAccount (a : TPServiceAccount) : Json :=
+  Json.mkObj [
+    ("id", Json.num a.serviceId),
+    ("data", Json.mkObj [
+      ("preimage_blobs", Json.arr (a.blobHashes.map fun h =>
+        Json.mkObj [("hash", toJson h)])),
+      ("preimage_requests", Json.arr (a.requests.map fun r =>
+        Json.mkObj [
+          ("key", Json.mkObj [
+            ("hash", toJson r.hash),
+            ("length", toJson r.length)]),
+          ("value", Json.arr (r.timeslots.map fun t => toJson t))]))])]
+
+def toJsonTPState (s : TPState) : Json :=
+  Json.mkObj [("accounts", Json.arr (s.accounts.map toJsonTPServiceAccount))]
+
+instance : ToJson TPResult where
+  toJson
+    | .ok => Json.mkObj [("ok", Json.mkObj [])]
+    | .err e => Json.mkObj [("err", Json.str e)]
 
 -- ============================================================================
 -- JSON Test Runner

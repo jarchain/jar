@@ -35,6 +35,15 @@ instance : FromJson AuthInput where
     return { slot, auths }
 
 -- ============================================================================
+-- ToJson instances for STF server output
+-- ============================================================================
+
+instance : ToJson FlatAuthState where
+  toJson s := Json.mkObj [
+    ("auth_pools", toJson s.authPools),
+    ("auth_queues", toJson s.authQueues)]
+
+-- ============================================================================
 -- JSON Test Runner
 -- ============================================================================
 

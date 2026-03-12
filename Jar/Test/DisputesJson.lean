@@ -83,6 +83,22 @@ instance : FromJson TDResult where
       .error "TDResult: expected 'ok' or 'err'"
 
 -- ============================================================================
+-- ToJson instances for STF server output
+-- ============================================================================
+
+instance : ToJson TDJudgments where
+  toJson j := Json.mkObj [
+    ("good", toJson j.good),
+    ("bad", toJson j.bad),
+    ("wonky", toJson j.wonky),
+    ("offenders", toJson j.offenders)]
+
+instance : ToJson TDResult where
+  toJson
+    | .ok offenders => Json.mkObj [("ok", Json.mkObj [("offenders_mark", toJson offenders)])]
+    | .err e => Json.mkObj [("err", Json.str e)]
+
+-- ============================================================================
 -- JSON Test Runner
 -- ============================================================================
 

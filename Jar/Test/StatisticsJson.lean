@@ -86,6 +86,25 @@ instance : FromJson StatsInput where
     return { slot, authorIndex, extrinsic }
 
 -- ============================================================================
+-- ToJson instances for STF server output
+-- ============================================================================
+
+instance : ToJson FlatValidatorRecord where
+  toJson r := Json.mkObj [
+    ("blocks", toJson r.blocks),
+    ("tickets", toJson r.tickets),
+    ("pre_images", toJson r.preImages),
+    ("pre_images_size", toJson r.preImagesSize),
+    ("guarantees", toJson r.guarantees),
+    ("assurances", toJson r.assurances)]
+
+instance : ToJson FlatStatisticsState where
+  toJson s := Json.mkObj [
+    ("vals_curr_stats", toJson s.valsCurrStats),
+    ("vals_last_stats", toJson s.valsLastStats),
+    ("slot", toJson s.slot)]
+
+-- ============================================================================
 -- JSON Test Runner
 -- ============================================================================
 

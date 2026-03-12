@@ -214,7 +214,7 @@ private def parseGreyAccounts (j : Json) : Except String (Dict ServiceId Service
   | _ => .error "expected array for accounts"
 
 /-- Parse TAState from Grey format. -/
-private def parseGreyState (j : Json) : Except String TAState := do
+def parseGreyState (j : Json) : Except String TAState := do
   let slot ← (← j.getObjVal? "slot").getNat?
   let entropy ← @fromJson? Hash _ (← j.getObjVal? "entropy")
 
@@ -250,13 +250,83 @@ private def parseGreyState (j : Json) : Except String TAState := do
   return { slot, entropy, readyQueue, accumulated, privileges, statistics, accounts }
 
 /-- Parse TAInput from Grey format. -/
-private def parseGreyInput (j : Json) : Except String TAInput := do
+def parseGreyInput (j : Json) : Except String TAInput := do
   let slot ← (← j.getObjVal? "slot").getNat?
   let reportsJson ← j.getObjVal? "reports"
   let reports ← match reportsJson with
     | Json.arr items => items.toList.mapM parseGreyWorkReport |>.map Array.mk
     | _ => .error "expected array for reports"
   return { slot, reports }
+
+-- ============================================================================
+-- ToJson instances for STF server output
+-- ============================================================================
+
+private def toJsonGreyServiceAccount (sid : ServiceId) (acct : ServiceAccount) : Json :=
+  let storageEntries := acct.storage.entries.map fun (k, v) =>
+    Json.mkObj [("key", toJson k), ("value", toJson v)]
+  let blobEntries := acct.preimages.entries.map fun (h, b) =>
+    Json.mkObj [("hash", toJson h), ("blob", toJson b)]
+  let reqEntries := acct.preimageInfo.entries.map fun ((h, len), ts) =>
+    Json.mkObj [
+      ("key", Json.mkObj [("hash", toJson h), ("length", toJson len)]),
+      ("value", Json.arr (ts.map fun t => toJson t))]
+  Json.mkObj [
+    ("id", toJson sid),
+    ("data", Json.mkObj [
+      ("service", Json.mkObj [
+        ("code_hash", toJson acct.codeHash),
+        ("balance", toJson acct.balance),
+        ("min_item_gas", toJson acct.minAccGas),
+        ("min_memo_gas", toJson acct.minOnTransferGas),
+        ("creation_slot", toJson acct.created),
+        ("last_accumulation_slot", toJson acct.lastAccumulation),
+        ("parent_service", toJson acct.parent)]),
+      ("storage", Json.arr storageEntries.toArray),
+      ("preimage_blobs", Json.arr blobEntries.toArray),
+      ("preimage_requests", Json.arr reqEntries.toArray)])]
+
+private def toJsonGreyServiceStats (s : TAServiceStats) : Json :=
+  Json.mkObj [
+    ("id", toJson s.serviceId),
+    ("record", Json.mkObj [
+      ("provided_count", toJson s.providedCount),
+      ("provided_size", toJson s.providedSize),
+      ("refinement_count", toJson s.refinementCount),
+      ("refinement_gas_used", toJson s.refinementGasUsed),
+      ("imports", toJson s.imports),
+      ("extrinsic_count", toJson s.extrinsicCount),
+      ("extrinsic_size", toJson s.extrinsicSize),
+      ("exports", toJson s.exports),
+      ("accumulate_count", toJson s.accumulateCount),
+      ("accumulate_gas_used", toJson s.accumulateGasUsed)])]
+
+private def toJsonGreyPrivileges (p : TAPrivileges) : Json :=
+  Json.mkObj [
+    ("bless", toJson p.bless),
+    ("assign", Json.arr (p.assign.map fun a => toJson a)),
+    ("designate", toJson p.designate),
+    ("register", toJson p.register),
+    ("always_acc", Json.arr (p.alwaysAcc.map fun (s, g) =>
+      Json.arr #[toJson s, toJson g]))]
+
+def toJsonGreyState (s : TAState) : Json :=
+  let readyQueueJson := Json.arr (s.readyQueue.map fun slot =>
+    Json.arr (slot.map fun r => Json.mkObj [
+      ("report", toJson r.report),
+      ("dependencies", toJson r.dependencies)]))
+  let accumulatedJson := Json.arr (s.accumulated.map fun slot =>
+    Json.arr (slot.map fun h => toJson h))
+  let accountsJson := Json.arr (s.accounts.entries.map fun (sid, acct) =>
+    toJsonGreyServiceAccount sid acct).toArray
+  Json.mkObj [
+    ("slot", toJson s.slot),
+    ("entropy", toJson s.entropy),
+    ("ready_queue", readyQueueJson),
+    ("accumulated", accumulatedJson),
+    ("privileges", toJsonGreyPrivileges s.privileges),
+    ("statistics", Json.arr (s.statistics.map toJsonGreyServiceStats)),
+    ("accounts", accountsJson)]
 
 -- ============================================================================
 -- JSON Test Runner

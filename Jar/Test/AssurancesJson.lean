@@ -70,6 +70,28 @@ instance : FromJson TAResult where
       .error "TAResult: expected 'ok' or 'err'"
 
 -- ============================================================================
+-- ToJson instances for STF server output
+-- ============================================================================
+
+instance : ToJson TAAvailAssignment where
+  toJson a := Json.mkObj [
+    ("report", Json.mkObj [
+      ("package_spec", Json.mkObj [("hash", toJson a.reportPackageHash)]),
+      ("core_index", toJson a.coreIndex)]),
+    ("timeout", toJson a.timeout)]
+
+private instance : ToJson (Option TAAvailAssignment) where
+  toJson
+    | none => Json.null
+    | some a => toJson a
+
+instance : ToJson TAResult where
+  toJson
+    | .ok cores => Json.mkObj [("ok", Json.mkObj [
+        ("reported", Json.arr (cores.map fun c => Json.mkObj [("core_index", toJson c)]))])]
+    | .err e => Json.mkObj [("err", Json.str e)]
+
+-- ============================================================================
 -- JSON Test Runner
 -- ============================================================================
 

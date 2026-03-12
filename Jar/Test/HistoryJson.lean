@@ -51,6 +51,32 @@ instance : FromJson HistoryInput where
     return { headerHash, parentStateRoot, accumulateRoot, workPackages }
 
 -- ============================================================================
+-- ToJson instances for STF server output
+-- ============================================================================
+
+instance : ToJson ReportedPackage where
+  toJson r := Json.mkObj [
+    ("hash", toJson r.hash),
+    ("exports_root", toJson r.exportsRoot)]
+
+instance : ToJson HistoryEntry where
+  toJson e := Json.mkObj [
+    ("header_hash", toJson e.headerHash),
+    ("beefy_root", toJson e.beefyRoot),
+    ("state_root", toJson e.stateRoot),
+    ("reported", toJson e.reported)]
+
+private instance : ToJson (Option Hash) where
+  toJson
+    | none => Json.null
+    | some h => toJson h
+
+instance : ToJson FlatHistoryState where
+  toJson s := Json.mkObj [
+    ("history", toJson s.history),
+    ("mmr", Json.mkObj [("peaks", toJson s.mmrPeaks)])]
+
+-- ============================================================================
 -- JSON Test Runner
 -- ============================================================================
 

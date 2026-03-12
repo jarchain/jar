@@ -245,6 +245,26 @@ instance : FromJson TRResult where
       .error "TRResult: expected 'ok' or 'err'"
 
 -- ============================================================================
+-- ToJson instances for STF server output
+-- ============================================================================
+
+instance : ToJson TRAvailAssignment where
+  toJson a := Json.mkObj [
+    ("report", Json.mkObj [
+      ("package_spec", Json.mkObj [("hash", toJson a.packageHash)])]),
+    ("timeout", toJson a.timeout)]
+
+private instance : ToJson (Option TRAvailAssignment) where
+  toJson
+    | none => Json.null
+    | some a => toJson a
+
+instance : ToJson TRResult where
+  toJson
+    | .ok => Json.mkObj [("ok", Json.mkObj [])]
+    | .err e => Json.mkObj [("err", Json.str e)]
+
+-- ============================================================================
 -- JSON Test Runner
 -- ============================================================================
 
