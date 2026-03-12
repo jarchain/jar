@@ -1,9 +1,15 @@
-# JAR — JAM Axiomatic Reference
+# JAR — Join-Accumulate Refine
 
 [![Matrix](https://img.shields.io/matrix/jar%3Amatrix.org?logo=matrix&label=chat)](https://matrix.to/#/#jar:matrix.org)
 
-Lean 4 formalization of the JAM (Join-Accumulate Machine) protocol as specified
-in the [Gray Paper v0.7.2](https://github.com/gavofyork/graypaper/releases/download/v0.7.2/graypaper-0.7.2.pdf).
+Lean 4 formalization of the JAR protocol, based on the JAM (Join-Accumulate Machine)
+[Gray Paper v0.7.2](https://github.com/gavofyork/graypaper/releases/download/v0.7.2/graypaper-0.7.2.pdf).
+
+## About the name
+
+JAR stands for **Join-Accumulate Refine**. It describes the core data flow of the protocol: work packages are *refined* off-chain, then *join-accumulated* on-chain into the global state.
+
+JAR is based on the JAM (Join-Accumulate Machine) protocol as specified in the Gray Paper, with independent improvements to areas such as the PVM.
 
 ## Goals
 
