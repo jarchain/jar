@@ -44,7 +44,11 @@ lake build
 ### Conformance Tests (JSON Vectors)
 
 Jar tests against JSON test vectors derived from Grey's STF conformance suite.
-Each vector is a single JSON file containing `pre_state`, `input`, `output`, and `post_state`.
+Each test case is a pair of files with separate input and output:
+
+- `*.input.json` — `{ "pre_state": {...}, "input": {...} }`
+- `*.output.json` — `{ "output": {...}, "post_state": {...} }`
+
 Vectors live in `tests/vectors/<sub-transition>/tiny/`.
 
 Run all tests for a single sub-transition:
@@ -65,15 +69,16 @@ Run tests from a custom directory:
 
 ### Bless Mode
 
-When the spec changes, recompute expected outputs from Jar and overwrite the test vectors:
+When the spec changes, recompute expected outputs from Jar and overwrite the output files:
 
 ```sh
 lake build jarstf
 .lake/build/bin/jarstf --bless safrole tests/vectors/safrole/tiny
 ```
 
-This re-runs each transition on the existing `pre_state` + `input` and overwrites
-`output` + `post_state` in-place.
+This reads each `*.input.json` (pre_state + input), runs the transition, and writes
+the computed output + post_state to the corresponding `*.output.json`. Input files
+are never modified.
 
 ### Property Tests
 
@@ -90,7 +95,7 @@ The `jarstf` executable runs any sub-transition on a JSON input file and prints 
 
 ```sh
 lake build jarstf
-.lake/build/bin/jarstf safrole tests/vectors/safrole/tiny/progress-1.json
+.lake/build/bin/jarstf safrole tests/vectors/safrole/tiny/publish-tickets-no-mark-1.input.json
 ```
 
 Supported sub-transitions: `safrole`, `statistics`, `authorizations`, `history`,

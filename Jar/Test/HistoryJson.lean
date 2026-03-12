@@ -80,24 +80,27 @@ instance : ToJson FlatHistoryState where
 -- JSON Test Runner
 -- ============================================================================
 
-/-- Run a single history test from a JSON file. Returns true if passed. -/
-def runJsonTest (path : System.FilePath) : IO Bool := do
-  let content ← IO.FS.readFile path
-  let json ← IO.ofExcept (Json.parse content)
-  let preStateJson ← IO.ofExcept (json.getObjVal? "pre_state")
+/-- Run a single history test from separate input/output JSON files. -/
+def runJsonTest (inputPath : System.FilePath) : IO Bool := do
+  let inputContent ← IO.FS.readFile inputPath
+  let inputJson ← IO.ofExcept (Json.parse inputContent)
+  let outputPath := System.FilePath.mk (inputPath.toString.replace ".input.json" ".output.json")
+  let outputContent ← IO.FS.readFile outputPath
+  let outputJson ← IO.ofExcept (Json.parse outputContent)
+  let preStateJson ← IO.ofExcept (inputJson.getObjVal? "pre_state")
   let betaPre ← IO.ofExcept (preStateJson.getObjVal? "beta")
   let pre ← IO.ofExcept (@fromJson? FlatHistoryState _ betaPre)
-  let input ← IO.ofExcept (@fromJson? HistoryInput _ (← IO.ofExcept (json.getObjVal? "input")))
-  let postStateJson ← IO.ofExcept (json.getObjVal? "post_state")
+  let input ← IO.ofExcept (@fromJson? HistoryInput _ (← IO.ofExcept (inputJson.getObjVal? "input")))
+  let postStateJson ← IO.ofExcept (outputJson.getObjVal? "post_state")
   let betaPost ← IO.ofExcept (postStateJson.getObjVal? "beta")
   let post ← IO.ofExcept (@fromJson? FlatHistoryState _ betaPost)
-  let name := path.fileName.getD (toString path)
+  let name := inputPath.fileName.getD (toString inputPath)
   History.runTest name pre input post
 
 /-- Run all JSON tests in a directory. -/
 def runJsonTestDir (dir : System.FilePath) : IO UInt32 := do
   let entries ← dir.readDir
-  let jsonFiles := entries.filter (fun e => e.fileName.endsWith ".json")
+  let jsonFiles := entries.filter (fun e => e.fileName.endsWith ".input.json")
   let sorted := jsonFiles.qsort (fun a b => a.fileName < b.fileName)
   let mut passed := 0
   let mut failed := 0

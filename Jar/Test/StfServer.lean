@@ -165,27 +165,19 @@ def runSubTransition (name : String) (json : Json) : IO Json :=
   | "accumulate" => runAccumulate json
   | other => throw (IO.userError s!"unknown sub-transition: {other}\nSupported: {allTransitions}")
 
-private def blessFile (subTransition : String) (path : System.FilePath) : IO Unit := do
-  let content ← IO.FS.readFile path
+private def blessFile (subTransition : String) (inputPath : System.FilePath) : IO Unit := do
+  let content ← IO.FS.readFile inputPath
   let json ← IO.ofExcept (Json.parse content)
   -- Run transition on pre_state + input
   let result ← runSubTransition subTransition json
-  -- Merge computed output/post_state back into original JSON
-  let outputVal ← IO.ofExcept (result.getObjVal? "output")
-  let postStateVal ← IO.ofExcept (result.getObjVal? "post_state")
-  let preState ← IO.ofExcept (json.getObjVal? "pre_state")
-  let input ← IO.ofExcept (json.getObjVal? "input")
-  let merged := Json.mkObj [
-    ("pre_state", preState),
-    ("input", input),
-    ("output", outputVal),
-    ("post_state", postStateVal)]
-  IO.FS.writeFile path (merged.pretty ++ "\n")
-  IO.println s!"  blessed: {path.fileName.getD (toString path)}"
+  -- Write computed output/post_state to the output file only
+  let outputPath := System.FilePath.mk (inputPath.toString.replace ".input.json" ".output.json")
+  IO.FS.writeFile outputPath (result.pretty ++ "\n")
+  IO.println s!"  blessed: {inputPath.fileName.getD (toString inputPath)}"
 
 private def blessDir (subTransition : String) (dir : System.FilePath) : IO UInt32 := do
   let entries ← dir.readDir
-  let jsonFiles := entries.filter (fun e => e.fileName.endsWith ".json")
+  let jsonFiles := entries.filter (fun e => e.fileName.endsWith ".input.json")
   let sorted := jsonFiles.qsort (fun a b => a.fileName < b.fileName)
   IO.println s!"Blessing {sorted.size} test vectors in: {dir}"
   for entry in sorted do

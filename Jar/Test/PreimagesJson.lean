@@ -101,21 +101,24 @@ instance : ToJson TPResult where
 -- JSON Test Runner
 -- ============================================================================
 
-/-- Run a single preimages test from a JSON file. Returns true if passed. -/
-def runJsonTest (path : System.FilePath) : IO Bool := do
-  let content ← IO.FS.readFile path
-  let json ← IO.ofExcept (Json.parse content)
-  let pre ← IO.ofExcept (parseTPState (← IO.ofExcept (json.getObjVal? "pre_state")))
-  let input ← IO.ofExcept (@fromJson? TPInput _ (← IO.ofExcept (json.getObjVal? "input")))
-  let expectedResult ← IO.ofExcept (@fromJson? TPResult _ (← IO.ofExcept (json.getObjVal? "output")))
-  let expectedPost ← IO.ofExcept (parseTPState (← IO.ofExcept (json.getObjVal? "post_state")))
-  let name := path.fileName.getD (toString path)
+/-- Run a single preimages test from separate input/output JSON files. -/
+def runJsonTest (inputPath : System.FilePath) : IO Bool := do
+  let inputContent ← IO.FS.readFile inputPath
+  let inputJson ← IO.ofExcept (Json.parse inputContent)
+  let outputPath := System.FilePath.mk (inputPath.toString.replace ".input.json" ".output.json")
+  let outputContent ← IO.FS.readFile outputPath
+  let outputJson ← IO.ofExcept (Json.parse outputContent)
+  let pre ← IO.ofExcept (parseTPState (← IO.ofExcept (inputJson.getObjVal? "pre_state")))
+  let input ← IO.ofExcept (@fromJson? TPInput _ (← IO.ofExcept (inputJson.getObjVal? "input")))
+  let expectedResult ← IO.ofExcept (@fromJson? TPResult _ (← IO.ofExcept (outputJson.getObjVal? "output")))
+  let expectedPost ← IO.ofExcept (parseTPState (← IO.ofExcept (outputJson.getObjVal? "post_state")))
+  let name := inputPath.fileName.getD (toString inputPath)
   Preimages.runTest name pre input expectedResult expectedPost
 
 /-- Run all JSON tests in a directory. -/
 def runJsonTestDir (dir : System.FilePath) : IO UInt32 := do
   let entries ← dir.readDir
-  let jsonFiles := entries.filter (fun e => e.fileName.endsWith ".json")
+  let jsonFiles := entries.filter (fun e => e.fileName.endsWith ".input.json")
   let sorted := jsonFiles.qsort (fun a b => a.fileName < b.fileName)
   let mut passed := 0
   let mut failed := 0

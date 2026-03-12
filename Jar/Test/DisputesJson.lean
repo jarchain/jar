@@ -102,21 +102,24 @@ instance : ToJson TDResult where
 -- JSON Test Runner
 -- ============================================================================
 
-def runJsonTest (path : System.FilePath) : IO Bool := do
-  let content ← IO.FS.readFile path
-  let json ← IO.ofExcept (Json.parse content)
-  let pre ← IO.ofExcept (@fromJson? TDState _ (← IO.ofExcept (json.getObjVal? "pre_state")))
+def runJsonTest (inputPath : System.FilePath) : IO Bool := do
+  let inputContent ← IO.FS.readFile inputPath
+  let inputJson ← IO.ofExcept (Json.parse inputContent)
+  let outputPath := System.FilePath.mk (inputPath.toString.replace ".input.json" ".output.json")
+  let outputContent ← IO.FS.readFile outputPath
+  let outputJson ← IO.ofExcept (Json.parse outputContent)
+  let pre ← IO.ofExcept (@fromJson? TDState _ (← IO.ofExcept (inputJson.getObjVal? "pre_state")))
   -- input wraps in "disputes" object
-  let inputJson ← IO.ofExcept (json.getObjVal? "input")
-  let inp ← IO.ofExcept (@fromJson? TDInput _ (← IO.ofExcept (inputJson.getObjVal? "disputes")))
-  let expectedResult ← IO.ofExcept (@fromJson? TDResult _ (← IO.ofExcept (json.getObjVal? "output")))
-  let postPsi ← IO.ofExcept (@fromJson? TDJudgments _ (← IO.ofExcept ((← IO.ofExcept (json.getObjVal? "post_state")).getObjVal? "psi")))
-  let name := path.fileName.getD (toString path)
+  let inputObj ← IO.ofExcept (inputJson.getObjVal? "input")
+  let inp ← IO.ofExcept (@fromJson? TDInput _ (← IO.ofExcept (inputObj.getObjVal? "disputes")))
+  let expectedResult ← IO.ofExcept (@fromJson? TDResult _ (← IO.ofExcept (outputJson.getObjVal? "output")))
+  let postPsi ← IO.ofExcept (@fromJson? TDJudgments _ (← IO.ofExcept ((← IO.ofExcept (outputJson.getObjVal? "post_state")).getObjVal? "psi")))
+  let name := inputPath.fileName.getD (toString inputPath)
   Disputes.runTest name pre inp expectedResult postPsi
 
 def runJsonTestDir (dir : System.FilePath) : IO UInt32 := do
   let entries ← dir.readDir
-  let jsonFiles := entries.filter (fun e => e.fileName.endsWith ".json")
+  let jsonFiles := entries.filter (fun e => e.fileName.endsWith ".input.json")
   let sorted := jsonFiles.qsort (fun a b => a.fileName < b.fileName)
   let mut passed := 0
   let mut failed := 0

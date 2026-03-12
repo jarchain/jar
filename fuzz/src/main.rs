@@ -181,7 +181,7 @@ fn main() {
             .unwrap_or_else(|e| panic!("cannot read {}: {}", dir.display(), e))
             .filter_map(|e| e.ok())
             .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|ext| ext == "json"))
+            .filter(|p| p.to_str().is_some_and(|s| s.ends_with(".input.json")))
             .collect();
         files.sort();
         files
