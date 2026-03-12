@@ -114,263 +114,274 @@
  "<code>Jar.SafroleState.mk (pendingKeys : Array Jar.ValidatorKey) (ringRoot : BandersnatchRingRoot)\n  (sealKeys : Jar.SealKeySeries) (ticketAccumulator : Array Jar.Ticket) : Jar.SafroleState</code>",
  "46":
  "<code>Jar.SealKeySeries : Type</code><span class=\"sep\"></span><code class=\"docstring\">The seal-key series γ_s is either a sequence of E tickets (normal mode)\nor a sequence of E Bandersnatch keys (fallback mode). GP eq (39–41). </code>",
+ "450": "<code>Array (ByteArray × Nat)</code>",
  "45":
  "<code>Jar.Ticket : Type</code><span class=\"sep\"></span><code class=\"docstring\">𝕋 : Safrole seal-key ticket. GP eq (42).\nT = ⟨id ∈ ℍ, entry_index ∈ ℕ_N⟩ </code>",
- "444": "<code>Array (ByteArray × Nat)</code>",
- "443":
+ "449":
  "<code>Jar.Erasure.GF16 : Type</code><span class=\"sep\"></span><code class=\"docstring\">Element of GF(2^16). Represented as a 16-bit integer.\nField polynomial: x^16 + x^5 + x^3 + x^2 + 1. </code>",
- "442": "<code>GF16</code>",
- "441":
+ "448": "<code>GF16</code>",
+ "447":
  "<code>Jar.Merkle.MerkleMountainRange : Type</code><span class=\"sep\"></span><code class=\"docstring\">MMR peak computation. GP Appendix E eq (E.7).\nA Merkle Mountain Range is a collection of perfect binary trees\n(peaks) whose sizes correspond to the binary representation of n. </code>",
- "440": "<code>MerkleMountainRange</code>",
+ "446": "<code>MerkleMountainRange</code>",
+ "445":
+ "<code>Array Hash</code><span class=\"sep\"></span><code class=\"docstring\">The peaks of the MMR, each a hash. </code>",
+ "444":
+ "<code>Jar.Merkle.MerkleMountainRange.mk (peaks : Array Hash) : MerkleMountainRange</code>",
+ "443": "<code>Array (OctetSeq 31 × ByteArray)</code>",
+ "442": "<code>OctetSeq 31</code>",
+ "441":
+ "<code>Jar.Merkle.Node : Type</code><span class=\"sep\"></span><code class=\"docstring\">A Merkle trie node is always 64 bytes (512 bits). GP Appendix D.\nEncoded as the first bit distinguishing branch (0) from leaf (1). </code>",
+ "440": "<code>Jar.EpochMarker</code>",
  "44":
  "<code>Jar.TicketEntryIndex : Type</code><span class=\"sep\"></span><code class=\"docstring\">Ticket entry index: ℕ_{N} where N = 2. </code>",
  "439":
- "<code>Array Hash</code><span class=\"sep\"></span><code class=\"docstring\">The peaks of the MMR, each a hash. </code>",
- "438":
- "<code>Jar.Merkle.MerkleMountainRange.mk (peaks : Array Hash) : MerkleMountainRange</code>",
- "437": "<code>Array (OctetSeq 31 × ByteArray)</code>",
- "436": "<code>OctetSeq 31</code>",
- "435":
- "<code>Jar.Merkle.Node : Type</code><span class=\"sep\"></span><code class=\"docstring\">A Merkle trie node is always 64 bytes (512 bits). GP Appendix D.\nEncoded as the first bit distinguishing branch (0) from leaf (1). </code>",
- "434": "<code>Jar.EpochMarker</code>",
- "433":
  "<code>Jar.Guarantee : Type</code><span class=\"sep\"></span><code class=\"docstring\">A guarantee: a work report with validator credentials. GP §11.5. </code>",
- "432": "<code>Jar.Guarantee</code>",
- "431":
+ "438": "<code>Jar.Guarantee</code>",
+ "437":
  "<code>Jar.Assurance : Type</code><span class=\"sep\"></span><code class=\"docstring\">An availability assurance by a validator. GP §11.3. </code>",
- "430": "<code>Jar.Assurance</code>",
+ "436": "<code>Jar.Assurance</code>",
+ "435": "<code>Jar.WorkDigest</code>",
+ "434": "<code>Jar.AvailabilitySpec</code>",
+ "433": "<code>Jar.WorkResult</code>",
+ "432": "<code>Array Bool</code>",
+ "431": "<code>α → ByteArray</code>",
+ "430":
+ "<code>Jar.Accumulation.AccumulationResult : Type</code><span class=\"sep\"></span><code class=\"docstring\">Result of block-level accumulation. </code>",
  "43":
  "<code>Jar.TicketEntryIndex</code><span class=\"sep\"></span><code class=\"docstring\">a : Attempt/entry index ∈ {0, 1}. </code>",
- "429": "<code>Jar.WorkDigest</code>",
- "428": "<code>Jar.AvailabilitySpec</code>",
- "427": "<code>Jar.WorkResult</code>",
- "426": "<code>Array Bool</code>",
- "425": "<code>α → ByteArray</code>",
- "424":
- "<code>Jar.Accumulation.AccumulationResult : Type</code><span class=\"sep\"></span><code class=\"docstring\">Result of block-level accumulation. </code>",
- "423":
+ "429":
  "<code>Dict Jar.ServiceId Jar.Gas</code><span class=\"sep\"></span><code class=\"docstring\">Per-service gas usage. </code>",
- "422":
+ "428":
  "<code>Array (Jar.ServiceId × Hash)</code><span class=\"sep\"></span><code class=\"docstring\">Accumulation output pairs (service → hash). </code>",
- "421":
+ "427":
  "<code>Array Jar.ValidatorKey</code><span class=\"sep\"></span><code class=\"docstring\">Updated staging validator keys. </code>",
- "420":
+ "426":
  "<code>Array (Array Hash)</code><span class=\"sep\"></span><code class=\"docstring\">Updated authorization queue. </code>",
+ "425":
+ "<code>Jar.PrivilegedServices</code><span class=\"sep\"></span><code class=\"docstring\">Updated privileged services. </code>",
+ "424":
+ "<code>Dict Jar.ServiceId Jar.ServiceAccount</code><span class=\"sep\"></span><code class=\"docstring\">Updated service accounts. </code>",
+ "423":
+ "<code>Jar.Accumulation.AccumulationResult.mk (services : Dict Jar.ServiceId Jar.ServiceAccount)\n  (privileged : Jar.PrivilegedServices) (authQueue : Array (Array Hash)) (stagingKeys : Array Jar.ValidatorKey)\n  (outputs : Array (Jar.ServiceId × Hash)) (gasUsage : Dict Jar.ServiceId Jar.Gas) : AccumulationResult</code>",
+ "422": "<code>Dict Jar.ServiceId Jar.Gas</code>",
+ "421":
+ "<code>Jar.Accumulation.AccOneOutput : Type</code><span class=\"sep\"></span><code class=\"docstring\">Output of a single-service accumulation. GP §12. </code>",
+ "420": "<code>Array Jar.DeferredTransfer</code>",
  "42":
  "<code>Hash</code><span class=\"sep\"></span><code class=\"docstring\">y : VRF output (ticket identifier). </code>",
- "419":
- "<code>Jar.PrivilegedServices</code><span class=\"sep\"></span><code class=\"docstring\">Updated privileged services. </code>",
- "418":
- "<code>Dict Jar.ServiceId Jar.ServiceAccount</code><span class=\"sep\"></span><code class=\"docstring\">Updated service accounts. </code>",
+ "419": "<code>Array OperandTuple</code>",
+ "418": "<code>PartialState</code>",
  "417":
- "<code>Jar.Accumulation.AccumulationResult.mk (services : Dict Jar.ServiceId Jar.ServiceAccount)\n  (privileged : Jar.PrivilegedServices) (authQueue : Array (Array Hash)) (stagingKeys : Array Jar.ValidatorKey)\n  (outputs : Array (Jar.ServiceId × Hash)) (gasUsage : Dict Jar.ServiceId Jar.Gas) : AccumulationResult</code>",
- "416": "<code>Dict Jar.ServiceId Jar.Gas</code>",
- "415":
- "<code>Jar.Accumulation.AccOneOutput : Type</code><span class=\"sep\"></span><code class=\"docstring\">Output of a single-service accumulation. GP §12. </code>",
- "414": "<code>Array Jar.DeferredTransfer</code>",
- "413": "<code>Array OperandTuple</code>",
- "412": "<code>PartialState</code>",
- "411":
  "<code>Jar.Accumulation.AccContext : Type</code><span class=\"sep\"></span><code class=\"docstring\">Mutable context during a single accumulation invocation. </code>",
- "410": "<code>AccContext</code>",
+ "416": "<code>AccContext</code>",
+ "415":
+ "<code>Array ByteArray</code><span class=\"sep\"></span><code class=\"docstring\">Individual encoded items for fetch mode 15. </code>",
+ "414":
+ "<code>ByteArray</code><span class=\"sep\"></span><code class=\"docstring\">Encoded items blob for fetch mode 14. </code>",
+ "413":
+ "<code>ByteArray</code><span class=\"sep\"></span><code class=\"docstring\">Protocol configuration blob for fetch mode 0. </code>",
+ "412":
+ "<code>Hash</code><span class=\"sep\"></span><code class=\"docstring\">Entropy η'₀ for fetch mode 1. </code>",
+ "411":
+ "<code>Option (Dict Jar.ServiceId Jar.ServiceAccount)</code><span class=\"sep\"></span><code class=\"docstring\">\"Regular\" dimension state (for checkpoint). </code>",
+ "410":
+ "<code>Jar.ServiceId</code><span class=\"sep\"></span><code class=\"docstring\">Next service ID for new service creation. </code>",
  "41":
  "<code>Jar.Ticket.mk (id : Hash) (attempt : Jar.TicketEntryIndex) : Jar.Ticket</code>",
  "409":
- "<code>Option (Dict Jar.ServiceId Jar.ServiceAccount)</code><span class=\"sep\"></span><code class=\"docstring\">\"Regular\" dimension state (for checkpoint). </code>",
- "408":
- "<code>Jar.ServiceId</code><span class=\"sep\"></span><code class=\"docstring\">Next service ID for new service creation. </code>",
- "407":
  "<code>Jar.Timeslot</code><span class=\"sep\"></span><code class=\"docstring\">Current timeslot. </code>",
- "406":
+ "408":
  "<code>Jar.Accumulation.OperandTuple : Type</code><span class=\"sep\"></span><code class=\"docstring\">Combined work-digest/report operand for accumulation. GP §12. </code>",
- "405":
+ "407":
  "<code>Array OperandTuple</code><span class=\"sep\"></span><code class=\"docstring\">Operand tuples for this service. </code>",
- "404":
+ "406":
  "<code>Jar.Gas</code><span class=\"sep\"></span><code class=\"docstring\">Gas used so far. </code>",
- "403":
+ "405":
  "<code>Array (Jar.ServiceId × ByteArray)</code><span class=\"sep\"></span><code class=\"docstring\">Preimage provisions. </code>",
- "402":
+ "404":
  "<code>Option Hash</code><span class=\"sep\"></span><code class=\"docstring\">Yield value (accumulation output). </code>",
- "401":
+ "403":
  "<code>Array Jar.DeferredTransfer</code><span class=\"sep\"></span><code class=\"docstring\">Deferred transfers generated so far. </code>",
- "400":
+ "402":
  "<code>PartialState</code><span class=\"sep\"></span><code class=\"docstring\">Current partial state. </code>",
+ "401":
+ "<code>Jar.ServiceId</code><span class=\"sep\"></span><code class=\"docstring\">Service ID being accumulated. </code>",
+ "400":
+ "<code>Jar.Accumulation.AccContext.mk (serviceId : Jar.ServiceId) (state : PartialState)\n  (transfers : Array Jar.DeferredTransfer) (yieldHash : Option Hash) (provisions : Array (Jar.ServiceId × ByteArray))\n  (gasUsed : Jar.Gas) (operands : Array OperandTuple) (timeslot : Jar.Timeslot) (nextServiceId : Jar.ServiceId)\n  (checkpoint : Option (Dict Jar.ServiceId Jar.ServiceAccount)) (entropy : Hash) (configBlob itemsBlob : ByteArray)\n  (items : Array ByteArray) : AccContext</code>",
  "40":
  "<code>OctetSeq (n : Nat) : Type</code><span class=\"sep\"></span><code class=\"docstring\">𝔹_n : octet strings of exactly n bytes. GP §3.7.4. </code>",
  "4": "<code>Type</code>",
- "399":
- "<code>Jar.ServiceId</code><span class=\"sep\"></span><code class=\"docstring\">Service ID being accumulated. </code>",
- "398":
- "<code>Jar.Accumulation.AccContext.mk (serviceId : Jar.ServiceId) (state : PartialState)\n  (transfers : Array Jar.DeferredTransfer) (yieldHash : Option Hash) (provisions : Array (Jar.ServiceId × ByteArray))\n  (gasUsed : Jar.Gas) (operands : Array OperandTuple) (timeslot : Jar.Timeslot) (nextServiceId : Jar.ServiceId)\n  (checkpoint : Option (Dict Jar.ServiceId Jar.ServiceAccount)) : AccContext</code>",
- "397": "<code>Array (Jar.ServiceId × ByteArray)</code>",
- "396": "<code>Option Hash</code>",
- "395": "<code>Array Jar.DeferredTransfer</code>",
- "394":
+ "399": "<code>Array (Jar.ServiceId × ByteArray)</code>",
+ "398": "<code>Option Hash</code>",
+ "397": "<code>Array Jar.DeferredTransfer</code>",
+ "396":
  "<code>Jar.Accumulation.PartialState : Type</code><span class=\"sep\"></span><code class=\"docstring\">Partial state threaded through accumulation. GP §12. </code>",
- "393": "<code>PartialState</code>",
- "392":
+ "395": "<code>PartialState</code>",
+ "394":
  "<code>Jar.Accumulation.AccOneOutput.mk (postState : PartialState) (deferredTransfers : Array Jar.DeferredTransfer)\n  (yieldHash : Option Hash) (gasUsed : Jar.Gas) (provisions : Array (Jar.ServiceId × ByteArray)) : AccOneOutput</code>",
- "391": "<code>Dict Jar.ServiceId Jar.Gas</code>",
- "390": "<code>Array Jar.ServiceId</code>",
+ "393": "<code>Dict Jar.ServiceId Jar.Gas</code>",
+ "392": "<code>Array Jar.ServiceId</code>",
+ "391": "<code>Jar.ServiceId</code>",
+ "390": "<code>Array (Array Hash)</code>",
  "39":
  "<code>OctetSeq 128</code><span class=\"sep\"></span><code class=\"docstring\">k_m : Metadata (hardware address etc). 𝔹_128. </code>",
- "389": "<code>Jar.ServiceId</code>",
- "388": "<code>Array (Array Hash)</code>",
- "387": "<code>Array Jar.ValidatorKey</code>",
- "386": "<code>Dict Jar.ServiceId Jar.ServiceAccount</code>",
- "385":
+ "389": "<code>Array Jar.ValidatorKey</code>",
+ "388": "<code>Dict Jar.ServiceId Jar.ServiceAccount</code>",
+ "387":
  "<code>Jar.Accumulation.PartialState.mk (accounts : Dict Jar.ServiceId Jar.ServiceAccount)\n  (stagingKeys : Array Jar.ValidatorKey) (authQueue : Array (Array Hash)) (manager : Jar.ServiceId)\n  (assigners : Array Jar.ServiceId) (designator registrar : Jar.ServiceId)\n  (alwaysAccumulate : Dict Jar.ServiceId Jar.Gas) : PartialState</code>",
- "384": "<code>Jar.WorkResult</code>",
- "383": "<code>Jar.Gas</code>",
- "382":
+ "386": "<code>Jar.WorkResult</code>",
+ "385": "<code>Jar.Gas</code>",
+ "384":
  "<code>Jar.Accumulation.OperandTuple.mk (packageHash segmentRoot authorizerHash payloadHash : Hash) (gasLimit : Jar.Gas)\n  (authOutput : ByteArray) (result : Jar.WorkResult) : OperandTuple</code>",
- "381":
+ "383":
  "<code>Sum.{u, v} (α : Type u) (β : Type v) : Type (max u v)</code><span class=\"sep\"></span><code class=\"docstring\">The disjoint union of types `α` and `β`, ordinarily written `α ⊕ β`.\n\nAn element of `α ⊕ β` is either an `a : α` wrapped in `Sum.inl` or a `b : β` wrapped in `Sum.inr`.\n`α ⊕ β` is not equivalent to the set-theoretic union of `α` and `β` because its values include an\nindication of which of the two types was chosen. The union of a singleton set with itself contains\none element, while `Unit ⊕ Unit` contains distinct values `inl ()` and `inr ()`.\n</code>",
- "380": "<code>ctx</code>",
+ "382": "<code>ctx</code>",
+ "381":
+ "<code>Jar.PVM.HostCallHandler (ctx : Type) : Type</code><span class=\"sep\"></span><code class=\"docstring\">Host-call handler type. Takes call id, gas, registers, memory,\nand returns updated state. The host context is parameterized. </code>",
+ "380": "<code>Jar.PVM.HostCallHandler ctx</code>",
  "38": "<code>BlsPublicKey : Type</code>",
  "379":
- "<code>Jar.PVM.HostCallHandler (ctx : Type) : Type</code><span class=\"sep\"></span><code class=\"docstring\">Host-call handler type. Takes call id, gas, registers, memory,\nand returns updated state. The host context is parameterized. </code>",
- "378": "<code>Jar.PVM.HostCallHandler ctx</code>",
- "377":
- "<code>Inhabited.{u} (α : Sort u) : Sort (max 1 u)</code><span class=\"sep\"></span><code class=\"docstring\">`Inhabited α` is a typeclass that says that `α` has a designated element,\ncalled `(default : α)`. This is sometimes referred to as a \"pointed type\".\n\nThis class is used by functions that need to return a value of the type\nwhen called \"out of domain\". For example, `Array.get! arr i : α` returns\na value of type `α` when `arr : Array α`, but if `i` is not in range of\nthe array, it reports a panic message, but this does not halt the program,\nso it must still return a value of type `α` (and in fact this is required\nfor logical consistency), so in this case it returns `default`.\n</code>",
- "376":
  "<code>Jar.PVM.InvocationResult : Type</code><span class=\"sep\"></span><code class=\"docstring\">Result of a PVM invocation. </code>",
- "375":
+ "378":
  "<code>Jar.PVM.ProgramBlob : Type</code><span class=\"sep\"></span><code class=\"docstring\">Decoded program blob components. </code>",
- "374": "<code>Jar.PVM.ProgramBlob</code>",
- "373":
+ "377": "<code>Jar.PVM.ProgramBlob</code>",
+ "376":
  "<code>Jar.PVM.StepResult : Type</code><span class=\"sep\"></span><code class=\"docstring\">Result of executing one instruction step. </code>",
- "372": "<code>Jar.PVM.Registers</code>",
- "371": "<code>Array UInt32</code>",
- "370": "<code>Int64</code>",
+ "375": "<code>Jar.PVM.Registers</code>",
+ "374": "<code>Array UInt32</code>",
+ "373": "<code>Int64</code>",
+ "372":
+ "<code>Int64 : Type</code><span class=\"sep\"></span><code class=\"docstring\">Signed 64-bit integers.\n\nThis type has special support in the compiler so it can be represented by an unboxed 64-bit value.\n</code>",
+ "371":
+ "<code>Jar.PVM.MemResult (α : Type) : Type</code><span class=\"sep\"></span><code class=\"docstring\">Result of a memory access: success or fault. </code>",
+ "370":
+ "<code>UInt64 : Type</code><span class=\"sep\"></span><code class=\"docstring\">Unsigned 64-bit integers.\n\nThis type has special support in the compiler so it can be represented by an unboxed 64-bit value\nrather than wrapping a `BitVec 64`.\n</code>",
  "37":
  "<code>BlsPublicKey</code><span class=\"sep\"></span><code class=\"docstring\">k_l : BLS key for Beefy commitments. 𝔹_144. </code>",
- "369":
- "<code>Int64 : Type</code><span class=\"sep\"></span><code class=\"docstring\">Signed 64-bit integers.\n\nThis type has special support in the compiler so it can be represented by an unboxed 64-bit value.\n</code>",
- "368":
- "<code>Jar.PVM.MemResult (α : Type) : Type</code><span class=\"sep\"></span><code class=\"docstring\">Result of a memory access: success or fault. </code>",
+ "369": "<code>UInt64</code>",
+ "368": "<code>Jar.PVM.Memory</code>",
  "367":
- "<code>UInt64 : Type</code><span class=\"sep\"></span><code class=\"docstring\">Unsigned 64-bit integers.\n\nThis type has special support in the compiler so it can be represented by an unboxed 64-bit value\nrather than wrapping a `BitVec 64`.\n</code>",
- "366": "<code>UInt64</code>",
- "365": "<code>Jar.PVM.Memory</code>",
- "364":
  "<code>Array Nat</code><span class=\"sep\"></span><code class=\"docstring\">Jump table for dynamic jumps. </code>",
- "363":
+ "366":
  "<code>Array Bool</code><span class=\"sep\"></span><code class=\"docstring\">Bitmask: one bit per code byte, marking opcode positions. </code>",
- "362":
+ "365":
  "<code>ByteArray</code><span class=\"sep\"></span><code class=\"docstring\">Code bytes. </code>",
- "361":
+ "364":
  "<code>Jar.PVM.Program.mk (code : ByteArray) (bitmask : Array Bool) (jumpTable : Array Nat) : Jar.PVM.Program</code>",
- "360":
+ "363":
  "<code>Jar.PVM.InstructionCategory : Type</code><span class=\"sep\"></span><code class=\"docstring\">PVM instruction categories (for documentation; not used in execution). </code>",
+ "362":
+ "<code>Nat</code><span class=\"sep\"></span><code class=\"docstring\">Next PC (valid after hostCall, for resumption). </code>",
+ "361":
+ "<code>Jar.PVM.Memory</code><span class=\"sep\"></span><code class=\"docstring\">Final memory state. </code>",
+ "360":
+ "<code>Jar.PVM.Registers</code><span class=\"sep\"></span><code class=\"docstring\">Final register file. </code>",
  "36": "<code>Ed25519PublicKey : Type</code>",
  "359":
- "<code>Jar.PVM.Memory</code><span class=\"sep\"></span><code class=\"docstring\">Final memory state. </code>",
- "358":
- "<code>Jar.PVM.Registers</code><span class=\"sep\"></span><code class=\"docstring\">Final register file. </code>",
- "357":
  "<code>Jar.SignedGas</code><span class=\"sep\"></span><code class=\"docstring\">Gas counter at exit (may be negative for OOG). </code>",
- "356":
+ "358":
  "<code>Jar.PVM.Reg</code><span class=\"sep\"></span><code class=\"docstring\">ω_7 : Value in register 7 at exit (status/return value). </code>",
- "355":
+ "357":
  "<code>Jar.PVM.ExitReason</code><span class=\"sep\"></span><code class=\"docstring\">Exit reason (halt/panic/oog/fault/host). </code>",
+ "356":
+ "<code>Jar.PVM.InvocationResult.mk (exitReason : Jar.PVM.ExitReason) (exitValue : Jar.PVM.Reg) (gas : Jar.SignedGas)\n  (registers : Jar.PVM.Registers) (memory : Jar.PVM.Memory) (nextPC : Nat) : Jar.PVM.InvocationResult</code>",
+ "355": "<code>Jar.PVM.Reg</code>",
  "354":
- "<code>Jar.PVM.InvocationResult.mk (exitReason : Jar.PVM.ExitReason) (exitValue : Jar.PVM.Reg) (gas : Jar.SignedGas)\n  (registers : Jar.PVM.Registers) (memory : Jar.PVM.Memory) : Jar.PVM.InvocationResult</code>",
- "353": "<code>Jar.PVM.Reg</code>",
- "352":
  "<code>Jar.PVM.ExitReason : Type</code><span class=\"sep\"></span><code class=\"docstring\">PVM exit reason. GP Appendix A. </code>",
- "351":
+ "353":
  "<code>Jar.PVM.Reg : Type</code><span class=\"sep\"></span><code class=\"docstring\">𝕣 : Register value. ℕ_{2^64}. GP eq (A.1). </code>",
- "350":
+ "352":
  "<code>Jar.PVM.Reg</code><span class=\"sep\"></span><code class=\"docstring\">ι : Program counter. </code>",
+ "351":
+ "<code>Jar.SignedGas : Type</code><span class=\"sep\"></span><code class=\"docstring\">ℤ_G ≡ ℤ_{-2^63..2^63} : Signed gas values (64-bit signed). GP eq (24). </code>",
+ "350":
+ "<code>Jar.SignedGas</code><span class=\"sep\"></span><code class=\"docstring\">ζ : Gas remaining. </code>",
  "35":
  "<code>Ed25519PublicKey</code><span class=\"sep\"></span><code class=\"docstring\">k_e : Ed25519 key for signing guarantees, assurances, judgments. 𝔹_32. </code>",
  "349":
- "<code>Jar.SignedGas : Type</code><span class=\"sep\"></span><code class=\"docstring\">ℤ_G ≡ ℤ_{-2^63..2^63} : Signed gas values (64-bit signed). GP eq (24). </code>",
+ "<code>Jar.PVM.Memory : Type</code><span class=\"sep\"></span><code class=\"docstring\">μ : RAM state. GP eq (4.17).\nμ ≡ ⟨μ_v : 𝔹_{2^32}, μ_a : ⟦{W, R, ∅}⟧_p⟩ where p = 2^32 / Z_P.\nUses sparse page storage: only materialized pages are stored. </code>",
  "348":
- "<code>Jar.SignedGas</code><span class=\"sep\"></span><code class=\"docstring\">ζ : Gas remaining. </code>",
- "347":
- "<code>Jar.PVM.Memory : Type</code><span class=\"sep\"></span><code class=\"docstring\">μ : RAM state. GP eq (4.17).\nμ ≡ ⟨μ_v : 𝔹_{2^32}, μ_a : ⟦{W, R, ∅}⟧_p⟩ where p = 2^32 / Z_P. </code>",
- "346":
  "<code>Jar.PVM.Memory</code><span class=\"sep\"></span><code class=\"docstring\">μ : RAM. </code>",
- "345":
+ "347":
  "<code>Jar.PVM.Registers : Type</code><span class=\"sep\"></span><code class=\"docstring\">Register file: 13 × 64-bit registers. ⟦𝕣⟧_13. </code>",
- "344":
+ "346":
  "<code>Jar.PVM.Registers</code><span class=\"sep\"></span><code class=\"docstring\">ω : Register file. ⟦𝕣⟧_13. </code>",
- "343":
+ "345":
  "<code>Jar.PVM.MachineState.mk (registers : Jar.PVM.Registers) (memory : Jar.PVM.Memory) (gas : Jar.SignedGas)\n  (pc : Jar.PVM.Reg) : Jar.PVM.MachineState</code>",
- "342":
+ "344":
  "<code>Array Jar.PVM.PageAccess</code><span class=\"sep\"></span><code class=\"docstring\">μ_a : Per-page access flags. </code>",
+ "343":
+ "<code>Dict Nat ByteArray</code><span class=\"sep\"></span><code class=\"docstring\">μ_v : Memory contents, sparse by page. Dict from page index to page data. </code>",
+ "342":
+ "<code>Jar.PVM.Memory.mk (pages : Dict Nat ByteArray) (access : Array Jar.PVM.PageAccess) : Jar.PVM.Memory</code>",
  "341":
- "<code>ByteArray</code><span class=\"sep\"></span><code class=\"docstring\">μ_v : Memory contents, 2^32 addressable bytes. </code>",
- "340":
- "<code>Jar.PVM.Memory.mk (value : ByteArray) (access : Array Jar.PVM.PageAccess) : Jar.PVM.Memory</code>",
+ "<code>Jar.PVM.PageAccess : Type</code><span class=\"sep\"></span><code class=\"docstring\">Page access mode. GP eq (4.17). </code>",
+ "340": "<code>Jar.WorkReport</code>",
  "34": "<code>BandersnatchPublicKey : Type</code>",
  "339":
- "<code>Jar.PVM.PageAccess : Type</code><span class=\"sep\"></span><code class=\"docstring\">Page access mode. GP eq (4.17). </code>",
- "338": "<code>Jar.WorkReport</code>",
- "337":
  "<code>Jar.DeferredTransfer : Type</code><span class=\"sep\"></span><code class=\"docstring\">𝕏 : Deferred transfer. GP eq (12.3).\nX = ⟨s, d, a, m, g⟩ </code>",
- "336": "<code>Jar.DeferredTransfer</code>",
- "335": "<code>Jar.ServiceId</code>",
- "334": "<code>Jar.RefinementContext</code>",
- "333":
+ "338": "<code>Jar.DeferredTransfer</code>",
+ "337": "<code>Jar.ServiceId</code>",
+ "336": "<code>Jar.RefinementContext</code>",
+ "335":
  "<code>Jar.WorkPackage : Type</code><span class=\"sep\"></span><code class=\"docstring\">ℙ : Work package. GP eq (64–74).\nP = ⟨j, h, u, f, c, w⟩ </code>",
- "332": "<code>Jar.WorkPackage</code>",
- "331": "<code>Array ByteArray</code>",
- "330": "<code>Jar.Gas</code>",
+ "334": "<code>Jar.WorkPackage</code>",
+ "333": "<code>Array ByteArray</code>",
+ "332": "<code>Jar.Gas</code>",
+ "331": "<code>Jar.ServiceAccount</code>",
+ "330":
+ "<code>Jar.Block : Type</code><span class=\"sep\"></span><code class=\"docstring\">B : Block. GP eq (3).\nB ≡ (H, E) </code>",
  "33":
  "<code>BandersnatchPublicKey</code><span class=\"sep\"></span><code class=\"docstring\">k_b : Bandersnatch key for block sealing and VRF. 𝔹_32. </code>",
- "329": "<code>Jar.ServiceAccount</code>",
- "328":
- "<code>Jar.Block : Type</code><span class=\"sep\"></span><code class=\"docstring\">B : Block. GP eq (3).\nB ≡ (H, E) </code>",
- "327": "<code>Jar.Block</code>",
- "326": "<code>Dict Jar.ServiceId Jar.ServiceStatistics</code>",
- "325": "<code>Jar.ActivityStatistics</code>",
- "324": "<code>Jar.PreimagesExtrinsic</code>",
- "323": "<code>Dict Jar.ServiceId Jar.ServiceAccount</code>",
- "322":
+ "329": "<code>Jar.Block</code>",
+ "328": "<code>Dict Jar.ServiceId Jar.ServiceStatistics</code>",
+ "327": "<code>Jar.ActivityStatistics</code>",
+ "326": "<code>Jar.PreimagesExtrinsic</code>",
+ "325": "<code>Dict Jar.ServiceId Jar.ServiceAccount</code>",
+ "324":
  "<code>Jar.AccumulationResult : Type</code><span class=\"sep\"></span><code class=\"docstring\">Accumulation result: the combined outputs of processing available work reports. </code>",
- "321": "<code>Array Jar.WorkReport</code>",
- "320": "<code>Array (Array Hash)</code>",
+ "323": "<code>Array Jar.WorkReport</code>",
+ "322": "<code>Array (Array Hash)</code>",
+ "321": "<code>Jar.AssurancesExtrinsic</code>",
+ "320": "<code>Array Hash</code>",
  "32":
  "<code>Jar.ValidatorKey.mk (bandersnatch : BandersnatchPublicKey) (ed25519 : Ed25519PublicKey) (bls : BlsPublicKey)\n  (metadata : OctetSeq 128) : Jar.ValidatorKey</code>",
- "319": "<code>Jar.AssurancesExtrinsic</code>",
- "318": "<code>Array Hash</code>",
- "317": "<code>Array (Option Jar.PendingReport)</code>",
- "316": "<code>Jar.DisputesExtrinsic</code>",
- "315": "<code>Jar.JudgmentsState</code>",
- "314": "<code>Array Ed25519PublicKey</code>",
- "313": "<code>Jar.GuaranteesExtrinsic</code>",
- "312": "<code>Jar.AccumulationOutputs</code>",
- "311": "<code>Jar.RecentHistory</code>",
- "310": "<code>Jar.Extrinsic</code>",
+ "319": "<code>Array (Option Jar.PendingReport)</code>",
+ "318": "<code>Jar.DisputesExtrinsic</code>",
+ "317": "<code>Jar.JudgmentsState</code>",
+ "316": "<code>Array Ed25519PublicKey</code>",
+ "315": "<code>Jar.GuaranteesExtrinsic</code>",
+ "314": "<code>Jar.AccumulationOutputs</code>",
+ "313": "<code>Jar.RecentHistory</code>",
+ "312": "<code>Jar.Extrinsic</code>",
+ "311":
+ "<code>Jar.State : Type</code><span class=\"sep\"></span><code class=\"docstring\">σ : Complete chain state. GP eq (6).\nσ ≡ (α, β, θ, γ, δ, η, ι, κ, λ, ρ, τ, ϕ, χ, ψ, π, ω, ξ) </code>",
+ "310": "<code>Jar.State</code>",
  "31":
  "<code>Hash : Type</code><span class=\"sep\"></span><code class=\"docstring\">ℍ ≡ 𝔹_32 : 256-bit hash values. GP §3.8.1. </code>",
- "309":
- "<code>Jar.State : Type</code><span class=\"sep\"></span><code class=\"docstring\">σ : Complete chain state. GP eq (6).\nσ ≡ (α, β, θ, γ, δ, η, ι, κ, λ, ρ, τ, ϕ, χ, ψ, π, ω, ξ) </code>",
- "308": "<code>Jar.State</code>",
- "307": "<code>Jar.Timeslot</code>",
- "306": "<code>Jar.Header</code>",
- "305": "<code>Jar.Entropy</code>",
- "304": "<code>Jar.TicketsExtrinsic</code>",
- "303": "<code>Jar.SafroleState</code>",
- "302": "<code>Bool</code>",
- "301":
+ "309": "<code>Jar.Timeslot</code>",
+ "308": "<code>Jar.Header</code>",
+ "307": "<code>Jar.Entropy</code>",
+ "306": "<code>Jar.TicketsExtrinsic</code>",
+ "305": "<code>Jar.SafroleState</code>",
+ "304": "<code>Bool</code>",
+ "303":
  "<code>Jar.TicketProof : Type</code><span class=\"sep\"></span><code class=\"docstring\">A ticket proof submitted in the tickets extrinsic. GP eq (6.29). </code>",
- "300": "<code>Jar.TicketProof</code>",
+ "302": "<code>Jar.TicketProof</code>",
+ "301": "<code>Jar.Ticket</code>",
+ "300": "<code>Array Jar.ValidatorKey</code>",
  "30":
  "<code>Eq.{u_1} {α : Sort u_1} : α → α → Prop</code><span class=\"sep\"></span><code class=\"docstring\">The equality relation. It has one introduction rule, `Eq.refl`.\nWe use `a = b` as notation for `Eq a b`.\nA fundamental property of equality is that it is an equivalence relation.\n```\nvariable (α : Type) (a b c d : α)\nvariable (hab : a = b) (hcb : c = b) (hcd : c = d)\n\nexample : a = d :=\n  Eq.trans (Eq.trans hab (Eq.symm hcb)) hcd\n```\nEquality is much more than an equivalence relation, however. It has the important property that every assertion\nrespects the equivalence, in the sense that we can substitute equal expressions without changing the truth value.\nThat is, given `h1 : a = b` and `h2 : p a`, we can construct a proof for `p b` using substitution: `Eq.subst h1 h2`.\nExample:\n```\nexample (α : Type) (a b : α) (p : α → Prop)\n        (h1 : a = b) (h2 : p a) : p b :=\n  Eq.subst h1 h2\n\nexample (α : Type) (a b : α) (p : α → Prop)\n    (h1 : a = b) (h2 : p a) : p b :=\n  h1 ▸ h2\n```\nThe triangle in the second presentation is a macro built on top of `Eq.subst` and `Eq.symm`, and you can enter it by typing `\\t`.\nFor more information: [Equality](https://lean-lang.org/theorem_proving_in_lean4/quantifiers_and_equality.html#equality)\n\n\nConventions for notations in identifiers:\n\n * The recommended spelling of `=` in identifiers is `eq`.</code>",
  "3":
  "<code>Option.{u} (α : Type u) : Type u</code><span class=\"sep\"></span><code class=\"docstring\">Optional values, which are either `some` around a value from the underlying type or `none`.\n\n`Option` can represent nullable types or computations that might fail. In the codomain of a function\ntype, it can also represent partiality.\n</code>",
- "299": "<code>Jar.Ticket</code>",
- "298": "<code>Array Jar.ValidatorKey</code>",
- "297": "<code>Array Jar.Ticket</code>",
- "296": "<code>Hash</code>",
- "295": "<code>BlsSignature : Type</code>",
- "294": "<code>BlsSignature</code>",
- "293": "<code>BlsPublicKey</code>",
+ "299": "<code>Array Jar.Ticket</code>",
+ "298":
+ "<code>Inhabited.{u} (α : Sort u) : Sort (max 1 u)</code><span class=\"sep\"></span><code class=\"docstring\">`Inhabited α` is a typeclass that says that `α` has a designated element,\ncalled `(default : α)`. This is sometimes referred to as a \"pointed type\".\n\nThis class is used by functions that need to return a value of the type\nwhen called \"out of domain\". For example, `Array.get! arr i : α` returns\na value of type `α` when `arr : Array α`, but if `i` is not in range of\nthe array, it reports a panic message, but this does not halt the program,\nso it must still return a value of type `α` (and in fact this is required\nfor logical consistency), so in this case it returns `default`.\n</code>",
+ "297": "<code>Hash</code>",
+ "296": "<code>BlsSignature : Type</code>",
+ "295": "<code>BlsSignature</code>",
+ "294": "<code>BlsPublicKey</code>",
+ "293": "<code>UInt32</code>",
  "292": "<code>BandersnatchRingVrfProof</code>",
  "291": "<code>BandersnatchRingRoot</code>",
  "290": "<code>Array BandersnatchPublicKey</code>",

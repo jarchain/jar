@@ -1711,36 +1711,37 @@ window.onload = () => {
                 <h1>
                   Constructors</h1>
                 <div class="constructor">
-                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">writable</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___PageAccess___writable" title="Documentation for Jar.PVM.PageAccess"><span class="const token" data-binding="const-Jar.PVM.PageAccess" data-verso-hover="339">Jar.PVM.PageAccess</span></a></pre><div class="docs"></div>
+                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">writable</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___PageAccess___writable" title="Documentation for Jar.PVM.PageAccess"><span class="const token" data-binding="const-Jar.PVM.PageAccess" data-verso-hover="341">Jar.PVM.PageAccess</span></a></pre><div class="docs"></div>
                   </div>
                 <div class="constructor">
-                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">readable</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___PageAccess___writable" title="Documentation for Jar.PVM.PageAccess"><span class="const token" data-binding="const-Jar.PVM.PageAccess" data-verso-hover="339">Jar.PVM.PageAccess</span></a></pre><div class="docs"></div>
+                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">readable</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___PageAccess___writable" title="Documentation for Jar.PVM.PageAccess"><span class="const token" data-binding="const-Jar.PVM.PageAccess" data-verso-hover="341">Jar.PVM.PageAccess</span></a></pre><div class="docs"></div>
                   </div>
                 <div class="constructor">
-                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">inaccessible</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___PageAccess___writable" title="Documentation for Jar.PVM.PageAccess"><span class="const token" data-binding="const-Jar.PVM.PageAccess" data-verso-hover="339">Jar.PVM.PageAccess</span></a></pre><div class="docs"></div>
+                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">inaccessible</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___PageAccess___writable" title="Documentation for Jar.PVM.PageAccess"><span class="const token" data-binding="const-Jar.PVM.PageAccess" data-verso-hover="341">Jar.PVM.PageAccess</span></a></pre><div class="docs"></div>
                   </div>
                 </div>
               </div>
             <div class="namedocs" id="Jar___PVM___Memory___mk">
-              <span class="permalink-widget block"><a href="find/?domain=Verso.Genre.Manual.doc&amp;name=Jar.PVM.Memory.value" title="Permalink">🔗</a></span><span class="label">structure</span><pre class="signature hl lean block"><div class="wide-only"><span class="unknown token" data-binding="">Jar.PVM.Memory</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><span class="sort token" data-binding="sort-7243200735919010059" data-verso-hover="1">Type</span></div><div class="narrow-only"><span class="unknown token" data-binding="">Jar.PVM.Memory</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><span class="sort token" data-binding="sort-7243200735919010059" data-verso-hover="1">Type</span></div></pre><div class="text">
+              <span class="permalink-widget block"><a href="find/?domain=Verso.Genre.Manual.doc&amp;name=Jar.PVM.Memory.access" title="Permalink">🔗</a></span><span class="label">structure</span><pre class="signature hl lean block"><div class="wide-only"><span class="unknown token" data-binding="">Jar.PVM.Memory</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><span class="sort token" data-binding="sort-7243200735919010059" data-verso-hover="1">Type</span></div><div class="narrow-only"><span class="unknown token" data-binding="">Jar.PVM.Memory</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><span class="sort token" data-binding="sort-7243200735919010059" data-verso-hover="1">Type</span></div></pre><div class="text">
                 <p>
                   μ : RAM state. GP eq (4.17).
-μ ≡ ⟨μ_v : 𝔹_{2^32}, μ_a : ⟦{W, R, ∅}⟧_p⟩ where p = 2^32 / Z_P.</p>
+μ ≡ ⟨μ_v : 𝔹_{2^32}, μ_a : ⟦{W, R, ∅}⟧_p⟩ where p = 2^32 / Z_P.
+Uses sparse page storage: only materialized pages are stored.</p>
                 <h1>
                   Constructor</h1>
                 <section class="subdocs">
-                  <pre class="name-and-type hl lean"><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___Memory___mk" title="Documentation for Jar.PVM.Memory.mk"><span class="const token" data-binding="const-Jar.PVM.Memory.mk" data-verso-hover="340">Jar.PVM.Memory.mk</span></a></pre><div class="docs"></div>
+                  <pre class="name-and-type hl lean"><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___Memory___mk" title="Documentation for Jar.PVM.Memory.mk"><span class="const token" data-binding="const-Jar.PVM.Memory.mk" data-verso-hover="342">Jar.PVM.Memory.mk</span></a></pre><div class="docs"></div>
                   </section>
                 <h1>
                   Fields</h1>
                 <section class="subdocs">
-                  <pre class="name-and-type hl lean"><span class="const token" data-binding="const-Jar.PVM.Memory.value" data-verso-hover="341">value</span> : <span class="const token" data-binding="const-ByteArray" data-verso-hover="25">ByteArray</span></pre><div class="docs">
+                  <pre class="name-and-type hl lean"><span class="const token" data-binding="const-Jar.PVM.Memory.pages" data-verso-hover="343">pages</span> : <a href="Notation-and-Conventions/Dictionaries/#Dict___mk" title="Documentation for Dict"><span class="const token" data-binding="const-Dict" data-verso-hover="11">Dict</span></a><span class="inter-text"> </span><span class="const token" data-binding="const-Nat" data-verso-hover="15">Nat</span><span class="inter-text"> </span><span class="const token" data-binding="const-ByteArray" data-verso-hover="25">ByteArray</span></pre><div class="docs">
                     <p>
-                      μ_v : Memory contents, 2^32 addressable bytes.</p>
+                      μ_v : Memory contents, sparse by page. Dict from page index to page data.</p>
                     </div>
                   </section>
                 <section class="subdocs">
-                  <pre class="name-and-type hl lean"><span class="const token" data-binding="const-Jar.PVM.Memory.access" data-verso-hover="342">access</span> : <span class="const token" data-binding="const-Array" data-verso-hover="18">Array</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___PageAccess___writable" title="Documentation for Jar.PVM.PageAccess"><span class="const token" data-binding="const-Jar.PVM.PageAccess" data-verso-hover="339">Jar.PVM.PageAccess</span></a></pre><div class="docs">
+                  <pre class="name-and-type hl lean"><span class="const token" data-binding="const-Jar.PVM.Memory.access" data-verso-hover="344">access</span> : <span class="const token" data-binding="const-Array" data-verso-hover="18">Array</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___PageAccess___writable" title="Documentation for Jar.PVM.PageAccess"><span class="const token" data-binding="const-Jar.PVM.PageAccess" data-verso-hover="341">Jar.PVM.PageAccess</span></a></pre><div class="docs">
                     <p>
                       μ_a : Per-page access flags.</p>
                     </div>
@@ -1754,30 +1755,30 @@ window.onload = () => {
                 <h1>
                   Constructor</h1>
                 <section class="subdocs">
-                  <pre class="name-and-type hl lean"><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___MachineState___mk" title="Documentation for Jar.PVM.MachineState.mk"><span class="const token" data-binding="const-Jar.PVM.MachineState.mk" data-verso-hover="343">Jar.PVM.MachineState.mk</span></a></pre><div class="docs"></div>
+                  <pre class="name-and-type hl lean"><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___MachineState___mk" title="Documentation for Jar.PVM.MachineState.mk"><span class="const token" data-binding="const-Jar.PVM.MachineState.mk" data-verso-hover="345">Jar.PVM.MachineState.mk</span></a></pre><div class="docs"></div>
                   </section>
                 <h1>
                   Fields</h1>
                 <section class="subdocs">
-                  <pre class="name-and-type hl lean"><span class="const token" data-binding="const-Jar.PVM.MachineState.registers" data-verso-hover="344">registers</span> : <a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___Registers" title="Documentation for Jar.PVM.Registers"><span class="const token" data-binding="const-Jar.PVM.Registers" data-verso-hover="345">Jar.PVM.Registers</span></a></pre><div class="docs">
+                  <pre class="name-and-type hl lean"><span class="const token" data-binding="const-Jar.PVM.MachineState.registers" data-verso-hover="346">registers</span> : <a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___Registers" title="Documentation for Jar.PVM.Registers"><span class="const token" data-binding="const-Jar.PVM.Registers" data-verso-hover="347">Jar.PVM.Registers</span></a></pre><div class="docs">
                     <p>
                       ω : Register file. ⟦𝕣⟧_13.</p>
                     </div>
                   </section>
                 <section class="subdocs">
-                  <pre class="name-and-type hl lean"><span class="const token" data-binding="const-Jar.PVM.MachineState.memory" data-verso-hover="346">memory</span> : <a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___Memory___mk" title="Documentation for Jar.PVM.Memory"><span class="const token" data-binding="const-Jar.PVM.Memory" data-verso-hover="347">Jar.PVM.Memory</span></a></pre><div class="docs">
+                  <pre class="name-and-type hl lean"><span class="const token" data-binding="const-Jar.PVM.MachineState.memory" data-verso-hover="348">memory</span> : <a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___Memory___mk" title="Documentation for Jar.PVM.Memory"><span class="const token" data-binding="const-Jar.PVM.Memory" data-verso-hover="349">Jar.PVM.Memory</span></a></pre><div class="docs">
                     <p>
                       μ : RAM.</p>
                     </div>
                   </section>
                 <section class="subdocs">
-                  <pre class="name-and-type hl lean"><span class="const token" data-binding="const-Jar.PVM.MachineState.gas" data-verso-hover="348">gas</span> : <a href="Numeric-Types/Resource-Quantities/#Jar___SignedGas" title="Documentation for Jar.SignedGas"><span class="const token" data-binding="const-Jar.SignedGas" data-verso-hover="349">Jar.SignedGas</span></a></pre><div class="docs">
+                  <pre class="name-and-type hl lean"><span class="const token" data-binding="const-Jar.PVM.MachineState.gas" data-verso-hover="350">gas</span> : <a href="Numeric-Types/Resource-Quantities/#Jar___SignedGas" title="Documentation for Jar.SignedGas"><span class="const token" data-binding="const-Jar.SignedGas" data-verso-hover="351">Jar.SignedGas</span></a></pre><div class="docs">
                     <p>
                       ζ : Gas remaining.</p>
                     </div>
                   </section>
                 <section class="subdocs">
-                  <pre class="name-and-type hl lean"><span class="const token" data-binding="const-Jar.PVM.MachineState.pc" data-verso-hover="350">pc</span> : <a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___Reg" title="Documentation for Jar.PVM.Reg"><span class="const token" data-binding="const-Jar.PVM.Reg" data-verso-hover="351">Jar.PVM.Reg</span></a></pre><div class="docs">
+                  <pre class="name-and-type hl lean"><span class="const token" data-binding="const-Jar.PVM.MachineState.pc" data-verso-hover="352">pc</span> : <a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___Reg" title="Documentation for Jar.PVM.Reg"><span class="const token" data-binding="const-Jar.PVM.Reg" data-verso-hover="353">Jar.PVM.Reg</span></a></pre><div class="docs">
                     <p>
                       ι : Program counter.</p>
                     </div>
@@ -1791,31 +1792,31 @@ window.onload = () => {
                 <h1>
                   Constructors</h1>
                 <div class="constructor">
-                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">halt</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___ExitReason___halt" title="Documentation for Jar.PVM.ExitReason"><span class="const token" data-binding="const-Jar.PVM.ExitReason" data-verso-hover="352">Jar.PVM.ExitReason</span></a></pre><div class="docs">
+                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">halt</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___ExitReason___halt" title="Documentation for Jar.PVM.ExitReason"><span class="const token" data-binding="const-Jar.PVM.ExitReason" data-verso-hover="354">Jar.PVM.ExitReason</span></a></pre><div class="docs">
                     <p>
                       Regular termination (halt instruction).</p>
                     </div>
                   </div>
                 <div class="constructor">
-                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">panic</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___ExitReason___halt" title="Documentation for Jar.PVM.ExitReason"><span class="const token" data-binding="const-Jar.PVM.ExitReason" data-verso-hover="352">Jar.PVM.ExitReason</span></a></pre><div class="docs">
+                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">panic</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___ExitReason___halt" title="Documentation for Jar.PVM.ExitReason"><span class="const token" data-binding="const-Jar.PVM.ExitReason" data-verso-hover="354">Jar.PVM.ExitReason</span></a></pre><div class="docs">
                     <p>
                       Irregular termination (exceptional circumstance).</p>
                     </div>
                   </div>
                 <div class="constructor">
-                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">outOfGas</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___ExitReason___halt" title="Documentation for Jar.PVM.ExitReason"><span class="const token" data-binding="const-Jar.PVM.ExitReason" data-verso-hover="352">Jar.PVM.ExitReason</span></a></pre><div class="docs">
+                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">outOfGas</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___ExitReason___halt" title="Documentation for Jar.PVM.ExitReason"><span class="const token" data-binding="const-Jar.PVM.ExitReason" data-verso-hover="354">Jar.PVM.ExitReason</span></a></pre><div class="docs">
                     <p>
                       Gas exhaustion.</p>
                     </div>
                   </div>
                 <div class="constructor">
-                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">pageFault</span><span class="inter-text"> </span><span class="unknown token" data-binding="">(</span><span class="var token" data-binding="var-_uniq.31" data-verso-hover="353">address</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___Reg" title="Documentation for Jar.PVM.Reg"><span class="const token" data-binding="const-Jar.PVM.Reg" data-verso-hover="351">Jar.PVM.Reg</span></a><span class="unknown token" data-binding="">)</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___ExitReason___halt" title="Documentation for Jar.PVM.ExitReason"><span class="const token" data-binding="const-Jar.PVM.ExitReason" data-verso-hover="352">Jar.PVM.ExitReason</span></a></pre><div class="docs">
+                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">pageFault</span><span class="inter-text"> </span><span class="unknown token" data-binding="">(</span><span class="var token" data-binding="var-_uniq.31" data-verso-hover="355">address</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___Reg" title="Documentation for Jar.PVM.Reg"><span class="const token" data-binding="const-Jar.PVM.Reg" data-verso-hover="353">Jar.PVM.Reg</span></a><span class="unknown token" data-binding="">)</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___ExitReason___halt" title="Documentation for Jar.PVM.ExitReason"><span class="const token" data-binding="const-Jar.PVM.ExitReason" data-verso-hover="354">Jar.PVM.ExitReason</span></a></pre><div class="docs">
                     <p>
                       Page fault: attempt to access inaccessible address.</p>
                     </div>
                   </div>
                 <div class="constructor">
-                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">hostCall</span><span class="inter-text"> </span><span class="unknown token" data-binding="">(</span><span class="var token" data-binding="var-_uniq.32" data-verso-hover="353">id</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___Reg" title="Documentation for Jar.PVM.Reg"><span class="const token" data-binding="const-Jar.PVM.Reg" data-verso-hover="351">Jar.PVM.Reg</span></a><span class="unknown token" data-binding="">)</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___ExitReason___halt" title="Documentation for Jar.PVM.ExitReason"><span class="const token" data-binding="const-Jar.PVM.ExitReason" data-verso-hover="352">Jar.PVM.ExitReason</span></a></pre><div class="docs">
+                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">hostCall</span><span class="inter-text"> </span><span class="unknown token" data-binding="">(</span><span class="var token" data-binding="var-_uniq.32" data-verso-hover="355">id</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___Reg" title="Documentation for Jar.PVM.Reg"><span class="const token" data-binding="const-Jar.PVM.Reg" data-verso-hover="353">Jar.PVM.Reg</span></a><span class="unknown token" data-binding="">)</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___ExitReason___halt" title="Documentation for Jar.PVM.ExitReason"><span class="const token" data-binding="const-Jar.PVM.ExitReason" data-verso-hover="354">Jar.PVM.ExitReason</span></a></pre><div class="docs">
                     <p>
                       Host-call request: ecalli instruction with identifier.</p>
                     </div>
@@ -1829,38 +1830,44 @@ window.onload = () => {
                 <h1>
                   Constructor</h1>
                 <section class="subdocs">
-                  <pre class="name-and-type hl lean"><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___InvocationResult___mk" title="Documentation for Jar.PVM.InvocationResult.mk"><span class="const token" data-binding="const-Jar.PVM.InvocationResult.mk" data-verso-hover="354">Jar.PVM.InvocationResult.mk</span></a></pre><div class="docs"></div>
+                  <pre class="name-and-type hl lean"><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___InvocationResult___mk" title="Documentation for Jar.PVM.InvocationResult.mk"><span class="const token" data-binding="const-Jar.PVM.InvocationResult.mk" data-verso-hover="356">Jar.PVM.InvocationResult.mk</span></a></pre><div class="docs"></div>
                   </section>
                 <h1>
                   Fields</h1>
                 <section class="subdocs">
-                  <pre class="name-and-type hl lean"><span class="const token" data-binding="const-Jar.PVM.InvocationResult.exitReason" data-verso-hover="355">exitReason</span> : <a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___ExitReason___halt" title="Documentation for Jar.PVM.ExitReason"><span class="const token" data-binding="const-Jar.PVM.ExitReason" data-verso-hover="352">Jar.PVM.ExitReason</span></a></pre><div class="docs">
+                  <pre class="name-and-type hl lean"><span class="const token" data-binding="const-Jar.PVM.InvocationResult.exitReason" data-verso-hover="357">exitReason</span> : <a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___ExitReason___halt" title="Documentation for Jar.PVM.ExitReason"><span class="const token" data-binding="const-Jar.PVM.ExitReason" data-verso-hover="354">Jar.PVM.ExitReason</span></a></pre><div class="docs">
                     <p>
                       Exit reason (halt/panic/oog/fault/host).</p>
                     </div>
                   </section>
                 <section class="subdocs">
-                  <pre class="name-and-type hl lean"><span class="const token" data-binding="const-Jar.PVM.InvocationResult.exitValue" data-verso-hover="356">exitValue</span> : <a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___Reg" title="Documentation for Jar.PVM.Reg"><span class="const token" data-binding="const-Jar.PVM.Reg" data-verso-hover="351">Jar.PVM.Reg</span></a></pre><div class="docs">
+                  <pre class="name-and-type hl lean"><span class="const token" data-binding="const-Jar.PVM.InvocationResult.exitValue" data-verso-hover="358">exitValue</span> : <a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___Reg" title="Documentation for Jar.PVM.Reg"><span class="const token" data-binding="const-Jar.PVM.Reg" data-verso-hover="353">Jar.PVM.Reg</span></a></pre><div class="docs">
                     <p>
                       ω_7 : Value in register 7 at exit (status/return value).</p>
                     </div>
                   </section>
                 <section class="subdocs">
-                  <pre class="name-and-type hl lean"><span class="const token" data-binding="const-Jar.PVM.InvocationResult.gas" data-verso-hover="357">gas</span> : <a href="Numeric-Types/Resource-Quantities/#Jar___SignedGas" title="Documentation for Jar.SignedGas"><span class="const token" data-binding="const-Jar.SignedGas" data-verso-hover="349">Jar.SignedGas</span></a></pre><div class="docs">
+                  <pre class="name-and-type hl lean"><span class="const token" data-binding="const-Jar.PVM.InvocationResult.gas" data-verso-hover="359">gas</span> : <a href="Numeric-Types/Resource-Quantities/#Jar___SignedGas" title="Documentation for Jar.SignedGas"><span class="const token" data-binding="const-Jar.SignedGas" data-verso-hover="351">Jar.SignedGas</span></a></pre><div class="docs">
                     <p>
                       Gas counter at exit (may be negative for OOG).</p>
                     </div>
                   </section>
                 <section class="subdocs">
-                  <pre class="name-and-type hl lean"><span class="const token" data-binding="const-Jar.PVM.InvocationResult.registers" data-verso-hover="358">registers</span> : <a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___Registers" title="Documentation for Jar.PVM.Registers"><span class="const token" data-binding="const-Jar.PVM.Registers" data-verso-hover="345">Jar.PVM.Registers</span></a></pre><div class="docs">
+                  <pre class="name-and-type hl lean"><span class="const token" data-binding="const-Jar.PVM.InvocationResult.registers" data-verso-hover="360">registers</span> : <a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___Registers" title="Documentation for Jar.PVM.Registers"><span class="const token" data-binding="const-Jar.PVM.Registers" data-verso-hover="347">Jar.PVM.Registers</span></a></pre><div class="docs">
                     <p>
                       Final register file.</p>
                     </div>
                   </section>
                 <section class="subdocs">
-                  <pre class="name-and-type hl lean"><span class="const token" data-binding="const-Jar.PVM.InvocationResult.memory" data-verso-hover="359">memory</span> : <a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___Memory___mk" title="Documentation for Jar.PVM.Memory"><span class="const token" data-binding="const-Jar.PVM.Memory" data-verso-hover="347">Jar.PVM.Memory</span></a></pre><div class="docs">
+                  <pre class="name-and-type hl lean"><span class="const token" data-binding="const-Jar.PVM.InvocationResult.memory" data-verso-hover="361">memory</span> : <a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___Memory___mk" title="Documentation for Jar.PVM.Memory"><span class="const token" data-binding="const-Jar.PVM.Memory" data-verso-hover="349">Jar.PVM.Memory</span></a></pre><div class="docs">
                     <p>
                       Final memory state.</p>
+                    </div>
+                  </section>
+                <section class="subdocs">
+                  <pre class="name-and-type hl lean"><span class="const token" data-binding="const-Jar.PVM.InvocationResult.nextPC" data-verso-hover="362">nextPC</span> : <span class="const token" data-binding="const-Nat" data-verso-hover="15">Nat</span></pre><div class="docs">
+                    <p>
+                      Next PC (valid after hostCall, for resumption).</p>
                     </div>
                   </section>
                 </div>
@@ -1872,28 +1879,28 @@ window.onload = () => {
                 <h1>
                   Constructors</h1>
                 <div class="constructor">
-                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">noArgs</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___InstructionCategory___noArgs" title="Documentation for Jar.PVM.InstructionCategory"><span class="const token" data-binding="const-Jar.PVM.InstructionCategory" data-verso-hover="360">Jar.PVM.InstructionCategory</span></a></pre><div class="docs"></div>
+                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">noArgs</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___InstructionCategory___noArgs" title="Documentation for Jar.PVM.InstructionCategory"><span class="const token" data-binding="const-Jar.PVM.InstructionCategory" data-verso-hover="363">Jar.PVM.InstructionCategory</span></a></pre><div class="docs"></div>
                   </div>
                 <div class="constructor">
-                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">oneImmediate</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___InstructionCategory___noArgs" title="Documentation for Jar.PVM.InstructionCategory"><span class="const token" data-binding="const-Jar.PVM.InstructionCategory" data-verso-hover="360">Jar.PVM.InstructionCategory</span></a></pre><div class="docs"></div>
+                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">oneImmediate</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___InstructionCategory___noArgs" title="Documentation for Jar.PVM.InstructionCategory"><span class="const token" data-binding="const-Jar.PVM.InstructionCategory" data-verso-hover="363">Jar.PVM.InstructionCategory</span></a></pre><div class="docs"></div>
                   </div>
                 <div class="constructor">
-                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">regImm64</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___InstructionCategory___noArgs" title="Documentation for Jar.PVM.InstructionCategory"><span class="const token" data-binding="const-Jar.PVM.InstructionCategory" data-verso-hover="360">Jar.PVM.InstructionCategory</span></a></pre><div class="docs"></div>
+                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">regImm64</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___InstructionCategory___noArgs" title="Documentation for Jar.PVM.InstructionCategory"><span class="const token" data-binding="const-Jar.PVM.InstructionCategory" data-verso-hover="363">Jar.PVM.InstructionCategory</span></a></pre><div class="docs"></div>
                   </div>
                 <div class="constructor">
-                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">twoImm</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___InstructionCategory___noArgs" title="Documentation for Jar.PVM.InstructionCategory"><span class="const token" data-binding="const-Jar.PVM.InstructionCategory" data-verso-hover="360">Jar.PVM.InstructionCategory</span></a></pre><div class="docs"></div>
+                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">twoImm</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___InstructionCategory___noArgs" title="Documentation for Jar.PVM.InstructionCategory"><span class="const token" data-binding="const-Jar.PVM.InstructionCategory" data-verso-hover="363">Jar.PVM.InstructionCategory</span></a></pre><div class="docs"></div>
                   </div>
                 <div class="constructor">
-                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">offset</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___InstructionCategory___noArgs" title="Documentation for Jar.PVM.InstructionCategory"><span class="const token" data-binding="const-Jar.PVM.InstructionCategory" data-verso-hover="360">Jar.PVM.InstructionCategory</span></a></pre><div class="docs"></div>
+                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">offset</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___InstructionCategory___noArgs" title="Documentation for Jar.PVM.InstructionCategory"><span class="const token" data-binding="const-Jar.PVM.InstructionCategory" data-verso-hover="363">Jar.PVM.InstructionCategory</span></a></pre><div class="docs"></div>
                   </div>
                 <div class="constructor">
-                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">regImm</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___InstructionCategory___noArgs" title="Documentation for Jar.PVM.InstructionCategory"><span class="const token" data-binding="const-Jar.PVM.InstructionCategory" data-verso-hover="360">Jar.PVM.InstructionCategory</span></a></pre><div class="docs"></div>
+                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">regImm</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___InstructionCategory___noArgs" title="Documentation for Jar.PVM.InstructionCategory"><span class="const token" data-binding="const-Jar.PVM.InstructionCategory" data-verso-hover="363">Jar.PVM.InstructionCategory</span></a></pre><div class="docs"></div>
                   </div>
                 <div class="constructor">
-                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">twoReg</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___InstructionCategory___noArgs" title="Documentation for Jar.PVM.InstructionCategory"><span class="const token" data-binding="const-Jar.PVM.InstructionCategory" data-verso-hover="360">Jar.PVM.InstructionCategory</span></a></pre><div class="docs"></div>
+                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">twoReg</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___InstructionCategory___noArgs" title="Documentation for Jar.PVM.InstructionCategory"><span class="const token" data-binding="const-Jar.PVM.InstructionCategory" data-verso-hover="363">Jar.PVM.InstructionCategory</span></a></pre><div class="docs"></div>
                   </div>
                 <div class="constructor">
-                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">threeReg</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___InstructionCategory___noArgs" title="Documentation for Jar.PVM.InstructionCategory"><span class="const token" data-binding="const-Jar.PVM.InstructionCategory" data-verso-hover="360">Jar.PVM.InstructionCategory</span></a></pre><div class="docs"></div>
+                  <pre class="name-and-type hl lean"><span class="unknown token" data-binding="">threeReg</span><span class="inter-text"> </span><span class="unknown token" data-binding="">:</span><span class="inter-text"> </span><a href="Polkadot-Virtual-Machine/Machine-Model/#Jar___PVM___InstructionCategory___noArgs" title="Documentation for Jar.PVM.InstructionCategory"><span class="const token" data-binding="const-Jar.PVM.InstructionCategory" data-verso-hover="363">Jar.PVM.InstructionCategory</span></a></pre><div class="docs"></div>
                   </div>
                 </div>
               </div>

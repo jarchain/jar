@@ -1,2 +1,5 @@
-.lake
-_out
+/.lake
+/.claude/settings.local.json
+/_out
+/crypto-ffi/target/
+/tools/__pycache__/
