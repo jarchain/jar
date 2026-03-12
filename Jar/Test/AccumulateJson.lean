@@ -63,8 +63,8 @@ private def parseGreySegmentRootLookup (j : Json) : Except String (Dict Hash Has
     for item in items do
       let k ← @fromJson? Hash _ (← item.getObjVal? "work_package_hash")
       let v ← @fromJson? Hash _ (← item.getObjVal? "segment_tree_root")
-      entries := entries ++ [(k, v)]
-    return ⟨entries⟩
+      entries := (k, v) :: entries
+    return ⟨entries.reverse⟩
   | _ => .error "expected array for segment_root_lookup"
 
 /-- Parse WorkReport from Grey format. -/
@@ -101,8 +101,8 @@ private def parseGreyServiceAccount (dataJson : Json) : Except String ServiceAcc
       for item in items do
         let k ← @fromJson? ByteArray _ (← item.getObjVal? "key")
         let v ← @fromJson? ByteArray _ (← item.getObjVal? "value")
-        entries := entries ++ [(k, v)]
-      pure (⟨entries⟩ : Dict ByteArray ByteArray)
+        entries := (k, v) :: entries
+      pure (⟨entries.reverse⟩ : Dict ByteArray ByteArray)
     | _ => .error "expected array for storage"
 
   -- Parse preimage_blobs: [{hash, blob}] -> Dict Hash ByteArray
@@ -113,8 +113,8 @@ private def parseGreyServiceAccount (dataJson : Json) : Except String ServiceAcc
       for item in items do
         let h ← @fromJson? Hash _ (← item.getObjVal? "hash")
         let b ← @fromJson? ByteArray _ (← item.getObjVal? "blob")
-        entries := entries ++ [(h, b)]
-      pure (⟨entries⟩ : Dict Hash ByteArray)
+        entries := (h, b) :: entries
+      pure (⟨entries.reverse⟩ : Dict Hash ByteArray)
     | _ => .error "expected array for preimage_blobs"
 
   -- Parse preimage_requests: [{key: {hash, length}, value: [timeslots]}]
@@ -132,8 +132,8 @@ private def parseGreyServiceAccount (dataJson : Json) : Except String ServiceAcc
           | Json.arr ts => ts.toList.mapM (fun (t : Json) => do
               let n ← t.getNat?; pure (Nat.toUInt32 n)) |>.map Array.mk
           | _ => .error "expected array for timeslots"
-        entries := entries ++ [((h, Nat.toUInt32 len), timeslots)]
-      pure (⟨entries⟩ : Dict (Hash × BlobLength) (Array Timeslot))
+        entries := ((h, Nat.toUInt32 len), timeslots) :: entries
+      pure (⟨entries.reverse⟩ : Dict (Hash × BlobLength) (Array Timeslot))
     | _ => .error "expected array for preimage_requests"
 
   return {
@@ -209,8 +209,8 @@ private def parseGreyAccounts (j : Json) : Except String (Dict ServiceId Service
       let sid ← (← item.getObjVal? "id").getNat?
       let dataJson ← item.getObjVal? "data"
       let acct ← parseGreyServiceAccount dataJson
-      entries := entries ++ [(sid.toUInt32, acct)]
-    return ⟨entries⟩
+      entries := (sid.toUInt32, acct) :: entries
+    return ⟨entries.reverse⟩
   | _ => .error "expected array for accounts"
 
 /-- Parse TAState from Grey format. -/
@@ -333,14 +333,17 @@ def toJsonGreyState (s : TAState) : Json :=
 -- ============================================================================
 
 /-- Run a single accumulate test from separate input/output JSON files. -/
-def runJsonTest (inputPath : System.FilePath) : IO Bool := do
+def runJsonTest (inputPath : System.FilePath) (verbose := false) : IO Bool := do
+  let t0 ← IO.monoMsNow
   let inputContent ← IO.FS.readFile inputPath
   let inputJson ← IO.ofExcept (Json.parse inputContent)
   let outputPath := System.FilePath.mk (inputPath.toString.replace ".input.json" ".output.json")
   let outputContent ← IO.FS.readFile outputPath
   let outputJson ← IO.ofExcept (Json.parse outputContent)
+  let t1 ← IO.monoMsNow
   let pre ← IO.ofExcept (parseGreyState (← IO.ofExcept (inputJson.getObjVal? "pre_state")))
   let input ← IO.ofExcept (parseGreyInput (← IO.ofExcept (inputJson.getObjVal? "input")))
+  let t2 ← IO.monoMsNow
 
   -- Parse output: {ok: hash}
   let expOutputJson ← IO.ofExcept (outputJson.getObjVal? "output")
@@ -349,19 +352,26 @@ def runJsonTest (inputPath : System.FilePath) : IO Bool := do
     @fromJson? Hash _ okVal)
 
   let post ← IO.ofExcept (parseGreyState (← IO.ofExcept (outputJson.getObjVal? "post_state")))
+  let t3 ← IO.monoMsNow
   let name := inputPath.fileName.getD (toString inputPath)
-  Accumulate.runTest name pre input expectedHash post
+  let ok ← Accumulate.runTest name pre input expectedHash post
+  let t4 ← IO.monoMsNow
+  if verbose then
+    IO.println s!"    [parse_json={t1-t0}ms parse_state={t2-t1}ms parse_output={t3-t2}ms transition+compare={t4-t3}ms]"
+  return ok
 
-/-- Run all JSON tests in a directory. -/
-def runJsonTestDir (dir : System.FilePath) : IO UInt32 := do
+/-- Run all JSON tests in a directory (in parallel). -/
+def runJsonTestDir (dir : System.FilePath) (verbose := false) : IO UInt32 := do
   let entries ← dir.readDir
   let jsonFiles := entries.filter (fun e => e.fileName.endsWith ".input.json")
   let sorted := jsonFiles.qsort (fun a b => a.fileName < b.fileName)
+  -- Launch all tests in parallel
+  let tasks ← sorted.mapM fun entry => IO.asTask (runJsonTest entry.path verbose)
   let mut passed := 0
   let mut failed := 0
-  for entry in sorted do
-    let ok ← runJsonTest entry.path
-    if ok then passed := passed + 1 else failed := failed + 1
+  for task in tasks do
+    let result ← IO.ofExcept (← IO.wait task)
+    if result then passed := passed + 1 else failed := failed + 1
   IO.println s!"\nAccumulate JSON tests: {passed} passed, {failed} failed, {passed + failed} total"
   return if failed > 0 then 1 else 0
 
