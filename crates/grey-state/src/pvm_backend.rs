@@ -192,18 +192,18 @@ impl PvmInstance {
     pub fn read_byte(&self, addr: u32) -> Option<u8> {
         match &self.inner {
             Backend::Interpreter(pvm) => pvm.memory.read_u8(addr),
-            Backend::Recompiler(pvm) => pvm.memory().read_u8(addr),
-            Backend::Compare { recomp, .. } => recomp.memory().read_u8(addr),
+            Backend::Recompiler(pvm) => pvm.read_byte(addr),
+            Backend::Compare { recomp, .. } => recomp.read_byte(addr),
         }
     }
 
     pub fn write_byte(&mut self, addr: u32, value: u8) {
         match &mut self.inner {
             Backend::Interpreter(pvm) => { pvm.memory.write_u8(addr, value); }
-            Backend::Recompiler(pvm) => { pvm.memory_mut().write_u8(addr, value); }
+            Backend::Recompiler(pvm) => { pvm.write_byte(addr, value); }
             Backend::Compare { interp, recomp, .. } => {
                 interp.memory.write_u8(addr, value);
-                recomp.memory_mut().write_u8(addr, value);
+                recomp.write_byte(addr, value);
             }
         }
     }
@@ -217,12 +217,12 @@ impl PvmInstance {
             }
             Backend::Recompiler(pvm) => {
                 (0..len)
-                    .map(|i| pvm.memory().read_u8(addr + i).unwrap_or(0))
+                    .map(|i| pvm.read_byte(addr + i).unwrap_or(0))
                     .collect()
             }
             Backend::Compare { recomp, .. } => {
                 (0..len)
-                    .map(|i| recomp.memory().read_u8(addr + i).unwrap_or(0))
+                    .map(|i| recomp.read_byte(addr + i).unwrap_or(0))
                     .collect()
             }
         }
@@ -232,8 +232,8 @@ impl PvmInstance {
     pub fn try_read_bytes(&self, addr: u32, len: u32) -> Option<Vec<u8>> {
         match &self.inner {
             Backend::Interpreter(pvm) => pvm.memory.read_bytes(addr, len),
-            Backend::Recompiler(pvm) => pvm.memory().read_bytes(addr, len),
-            Backend::Compare { recomp, .. } => recomp.memory().read_bytes(addr, len),
+            Backend::Recompiler(pvm) => pvm.read_bytes(addr, len),
+            Backend::Compare { recomp, .. } => recomp.read_bytes(addr, len),
         }
     }
 
@@ -245,15 +245,13 @@ impl PvmInstance {
                 }
             }
             Backend::Recompiler(pvm) => {
-                for (i, &byte) in data.iter().enumerate() {
-                    pvm.memory_mut().write_u8(addr + i as u32, byte);
-                }
+                pvm.write_bytes(addr, data);
             }
             Backend::Compare { interp, recomp, .. } => {
                 for (i, &byte) in data.iter().enumerate() {
                     interp.memory.write_u8(addr + i as u32, byte);
-                    recomp.memory_mut().write_u8(addr + i as u32, byte);
                 }
+                recomp.write_bytes(addr, data);
             }
         }
     }
@@ -272,24 +270,17 @@ impl PvmInstance {
                 Some(())
             }
             Backend::Recompiler(pvm) => {
-                for (i, &byte) in data.iter().enumerate() {
-                    match pvm.memory_mut().write_u8(addr.wrapping_add(i as u32), byte) {
-                        MemoryAccess::Ok => {}
-                        MemoryAccess::PageFault(_) => return None,
-                    }
-                }
-                Some(())
+                if pvm.write_bytes(addr, data) { Some(()) } else { None }
             }
             Backend::Compare { interp, recomp, .. } => {
                 for (i, &byte) in data.iter().enumerate() {
                     let addr_i = addr.wrapping_add(i as u32);
-                    let r1 = interp.memory.write_u8(addr_i, byte);
-                    let r2 = recomp.memory_mut().write_u8(addr_i, byte);
-                    match (r1, r2) {
-                        (MemoryAccess::Ok, MemoryAccess::Ok) => {}
-                        (MemoryAccess::PageFault(_), _) | (_, MemoryAccess::PageFault(_)) => return None,
+                    match interp.memory.write_u8(addr_i, byte) {
+                        MemoryAccess::Ok => {}
+                        MemoryAccess::PageFault(_) => return None,
                     }
                 }
+                if !recomp.write_bytes(addr, data) { return None; }
                 Some(())
             }
         }

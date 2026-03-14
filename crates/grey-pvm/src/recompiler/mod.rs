@@ -664,9 +664,10 @@ impl RecompiledPvm {
                 3 => return ExitReason::PageFault(self.ctx.exit_arg),
                 4 => {
                     // Host call — flat buffer is the source of truth.
-                    // Don't write_back eagerly — it's expensive for frequent host calls.
-                    // Instead, memory() and memory_mut() do lazy write_back when called.
+                    // Host handlers use read_byte/write_byte which access flat buffer
+                    // directly. No write_back needed unless memory()/memory_mut() is called.
                     self.needs_write_back = self.flat_memory.is_some();
+                    self.needs_flat_sync = false; // flat buffer is already current
                     self.ctx.entry_pc = self.ctx.pc;
                     return ExitReason::HostCall(self.ctx.exit_arg);
                 }
@@ -741,6 +742,87 @@ impl RecompiledPvm {
         }
         self.needs_flat_sync = true;
         unsafe { &mut *self.ctx.memory }
+    }
+
+    /// Read a byte directly from the flat buffer (no BTreeMap sync).
+    /// Returns None on inaccessible page.
+    pub fn read_byte(&self, addr: u32) -> Option<u8> {
+        if let Some(ref fm) = self.flat_memory {
+            let page = addr as usize / 4096;
+            if page < NUM_PAGES {
+                let perm = unsafe { *fm.perms.add(page) };
+                if perm >= 1 {
+                    return Some(unsafe { *fm.buf.add(addr as usize) });
+                }
+            }
+            return None;
+        }
+        unsafe { &*self.ctx.memory }.read_u8(addr)
+    }
+
+    /// Write a byte directly to the flat buffer (no BTreeMap sync).
+    /// Returns true on success, false on page fault.
+    pub fn write_byte(&mut self, addr: u32, value: u8) -> bool {
+        if let Some(ref fm) = self.flat_memory {
+            let page = addr as usize / 4096;
+            if page < NUM_PAGES {
+                let perm = unsafe { *fm.perms.add(page) };
+                if perm >= 2 {
+                    unsafe { *fm.buf.add(addr as usize) = value; }
+                    return true;
+                }
+            }
+            return false;
+        }
+        matches!(unsafe { &mut *self.ctx.memory }.write_u8(addr, value),
+                 crate::memory::MemoryAccess::Ok)
+    }
+
+    /// Read bytes directly from flat buffer. Returns None on page fault.
+    pub fn read_bytes(&self, addr: u32, len: u32) -> Option<Vec<u8>> {
+        if let Some(ref fm) = self.flat_memory {
+            let mut result = Vec::with_capacity(len as usize);
+            for i in 0..len {
+                let a = addr.wrapping_add(i);
+                let page = a as usize / 4096;
+                if page >= NUM_PAGES {
+                    return None;
+                }
+                let perm = unsafe { *fm.perms.add(page) };
+                if perm < 1 {
+                    return None;
+                }
+                result.push(unsafe { *fm.buf.add(a as usize) });
+            }
+            return Some(result);
+        }
+        unsafe { &*self.ctx.memory }.read_bytes(addr, len)
+    }
+
+    /// Write bytes directly to flat buffer. Returns false on page fault.
+    pub fn write_bytes(&mut self, addr: u32, data: &[u8]) -> bool {
+        if let Some(ref fm) = self.flat_memory {
+            for (i, &byte) in data.iter().enumerate() {
+                let a = addr.wrapping_add(i as u32);
+                let page = a as usize / 4096;
+                if page >= NUM_PAGES {
+                    return false;
+                }
+                let perm = unsafe { *fm.perms.add(page) };
+                if perm < 2 {
+                    return false;
+                }
+                unsafe { *fm.buf.add(a as usize) = byte; }
+            }
+            return true;
+        }
+        for (i, &byte) in data.iter().enumerate() {
+            if !matches!(unsafe { &mut *self.ctx.memory }.write_u8(addr.wrapping_add(i as u32), byte),
+                         crate::memory::MemoryAccess::Ok) {
+                return false;
+            }
+        }
+        true
     }
 
     /// Get the program counter (last known PC on exit).
