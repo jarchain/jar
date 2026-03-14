@@ -27,6 +27,8 @@ use crate::instruction::Opcode;
 use std::collections::HashMap;
 
 /// Map PVM register index (0..12) to x86-64 register.
+/// phi[12] is SPILLED — it lives in context memory, not in a register.
+/// RCX is freed as SCRATCH2 for the permission check fast path.
 const REG_MAP: [Reg; 13] = [
     Reg::RBX,  // φ[0]
     Reg::RBP,  // φ[1]
@@ -40,37 +42,51 @@ const REG_MAP: [Reg; 13] = [
     Reg::R10,  // φ[9]
     Reg::R11,  // φ[10]
     Reg::RAX,  // φ[11]
-    Reg::RCX,  // φ[12]
+    Reg::RCX,  // φ[12] — SPILLED: load/store from ctx on use, RCX is scratch between uses
 ];
+
+/// Index of the spilled PVM register (phi[12]).
+const SPILLED_REG: usize = 12;
 
 /// Scratch register (not mapped to any PVM register).
 const SCRATCH: Reg = Reg::RDX;
-/// Context pointer register.
+/// Second scratch register (freed by spilling phi[12]).
+const SCRATCH2: Reg = Reg::RCX;
+/// R15 = base of guest memory (flat buffer). JitContext is at negative offset.
 const CTX: Reg = Reg::R15;
 
 /// Caller-saved PVM registers that need saving around helper calls.
-const CALLER_SAVED: [Reg; 8] = [
-    Reg::RSI, Reg::RDI, Reg::R8, Reg::R9, Reg::R10, Reg::R11, Reg::RAX, Reg::RCX,
+/// RCX is excluded — it's scratch, not a live PVM register.
+const CALLER_SAVED: [Reg; 7] = [
+    Reg::RSI, Reg::RDI, Reg::R8, Reg::R9, Reg::R10, Reg::R11, Reg::RAX,
 ];
 
-/// JitContext field offsets (must match the #[repr(C)] struct in mod.rs).
-pub const CTX_REGS: i32 = 0;        // [u64; 13] = 104 bytes
-pub const CTX_GAS: i32 = 104;       // i64
-pub const CTX_MEMORY: i32 = 112;    // *mut Memory
-pub const CTX_EXIT_REASON: i32 = 120; // u32
-pub const CTX_EXIT_ARG: i32 = 124;  // u32
-pub const CTX_HEAP_BASE: i32 = 128; // u32
-pub const CTX_HEAP_TOP: i32 = 132;  // u32
-pub const CTX_JT_PTR: i32 = 136;    // *const u32 (jump table pointer)
-pub const CTX_JT_LEN: i32 = 144;    // u32 (jump table length)
-pub const CTX_BB_STARTS: i32 = 152; // *const u8 (basic block starts)
-pub const CTX_BB_LEN: i32 = 160;    // u32
-pub const CTX_ENTRY_PC: i32 = 168;  // u32 (entry PC for re-entry)
-pub const CTX_PC: i32 = 172;        // u32 (current PC on exit)
-pub const CTX_DISPATCH_TABLE: i32 = 176; // *const i32 (PVM PC → native offset)
-pub const CTX_CODE_BASE: i32 = 184; // u64 (base address of native code)
-pub const CTX_FLAT_BUF: i32 = 192;  // *mut u8 (flat guest memory buffer)
-pub const CTX_FLAT_PERMS: i32 = 200; // *const u8 (permission table)
+/// JitContext field offsets — all NEGATIVE from R15 (guest memory base).
+///
+/// Memory layout (contiguous mmap):
+///   R15 - PERMS_OFFSET .. R15 - CTX_OFFSET:  permission table (1MB)
+///   R15 - CTX_OFFSET   .. R15:               JitContext (~208 bytes, padded to page)
+///   R15                .. R15 + 4GB:          guest memory (flat buffer)
+///
+/// CTX_OFFSET is the page-aligned distance from R15 to JitContext start.
+pub const CTX_OFFSET: i32 = 4096;         // JitContext at R15 - 4096
+pub const PERMS_OFFSET: i32 = CTX_OFFSET + (1 << 20); // perms at R15 - 1052672
+
+pub const CTX_REGS: i32 = -CTX_OFFSET;          // offset 0 in JitContext
+pub const CTX_GAS: i32 = -CTX_OFFSET + 104;
+pub const CTX_MEMORY: i32 = -CTX_OFFSET + 112;
+pub const CTX_EXIT_REASON: i32 = -CTX_OFFSET + 120;
+pub const CTX_EXIT_ARG: i32 = -CTX_OFFSET + 124;
+pub const CTX_HEAP_BASE: i32 = -CTX_OFFSET + 128;
+pub const CTX_HEAP_TOP: i32 = -CTX_OFFSET + 132;
+pub const CTX_JT_PTR: i32 = -CTX_OFFSET + 136;
+pub const CTX_JT_LEN: i32 = -CTX_OFFSET + 144;
+pub const CTX_BB_STARTS: i32 = -CTX_OFFSET + 152;
+pub const CTX_BB_LEN: i32 = -CTX_OFFSET + 160;
+pub const CTX_ENTRY_PC: i32 = -CTX_OFFSET + 168;
+pub const CTX_PC: i32 = -CTX_OFFSET + 172;
+pub const CTX_DISPATCH_TABLE: i32 = -CTX_OFFSET + 176;
+pub const CTX_CODE_BASE: i32 = -CTX_OFFSET + 184;
 
 /// Exit reason codes (matching ExitReason enum).
 pub const EXIT_HALT: u32 = 0;
@@ -231,7 +247,34 @@ impl Compiler {
         (self.asm.finalize(), dispatch_table)
     }
 
+    /// Load spilled phi[12] from context into RCX (before reading it).
+    fn load_spilled(&mut self) {
+        self.asm.mov_load64(SCRATCH2, CTX, CTX_REGS + (SPILLED_REG as i32) * 8);
+    }
+
+    /// Store RCX to context as phi[12] (after writing it).
+    fn store_spilled(&mut self) {
+        self.asm.mov_store64(CTX, CTX_REGS + (SPILLED_REG as i32) * 8, SCRATCH2);
+    }
+
+    /// Get the x86 register for a PVM register, emitting a load if spilled.
+    /// Returns the register. Caller must call `finish_pvm_write(idx)` after writing.
+    fn pvm_reg_read(&mut self, idx: usize) -> Reg {
+        if idx == SPILLED_REG {
+            self.load_spilled();
+        }
+        REG_MAP[idx]
+    }
+
+    /// Emit a store-back if the PVM register is spilled.
+    fn pvm_reg_written(&mut self, idx: usize) {
+        if idx == SPILLED_REG {
+            self.store_spilled();
+        }
+    }
+
     /// Save caller-saved registers (PVM registers in caller-saved x86-64 regs).
+    /// RCX is NOT saved — it's scratch, not a live PVM register.
     fn save_caller_saved(&mut self) {
         for &reg in &CALLER_SAVED {
             self.asm.push(reg);
@@ -274,11 +317,16 @@ impl Compiler {
         self.asm.jcc_label(Cc::NE, fault_label);
     }
 
+    /// Load the JitContext pointer (R15 - CTX_OFFSET) into a register.
+    fn emit_ctx_ptr(&mut self, dst: Reg) {
+        self.asm.lea(dst, CTX, -CTX_OFFSET);
+    }
+
     /// Emit a memory read via helper function call (slow path).
     /// Address should be in SCRATCH (RDX). Result goes into dst.
     fn emit_mem_read_helper(&mut self, dst: Reg, addr_reg: Reg, fn_addr: u64) {
         self.save_caller_saved();
-        self.asm.mov_rr(Reg::RDI, CTX);
+        self.emit_ctx_ptr(Reg::RDI);
         self.asm.mov_rr(Reg::RSI, addr_reg);
         self.asm.mov_ri64(Reg::RAX, fn_addr);
         self.asm.call_reg(Reg::RAX);
@@ -299,9 +347,10 @@ impl Compiler {
         self.asm.push(SCRATCH);
         self.asm.push(val_reg);
         self.save_caller_saved();
-        self.asm.mov_load64(Reg::RDX, Reg::RSP, 64);
-        self.asm.mov_load64(Reg::RSI, Reg::RSP, 72);
-        self.asm.mov_rr(Reg::RDI, CTX);
+        // Stack: [7 caller-saved regs (56 bytes)] [value] [addr]
+        self.asm.mov_load64(Reg::RDX, Reg::RSP, 56);  // value (7 regs * 8 = 56)
+        self.asm.mov_load64(Reg::RSI, Reg::RSP, 64);  // addr
+        self.emit_ctx_ptr(Reg::RDI);
         self.asm.mov_ri64(Reg::RAX, fn_addr);
         self.asm.call_reg(Reg::RAX);
         self.restore_caller_saved();
@@ -331,42 +380,28 @@ impl Compiler {
         };
 
         // SCRATCH (RDX) = guest address (32-bit clean)
+        // Uses SCRATCH2 (RCX) as temp — no push/pop needed.
         let done_label = self.asm.new_label();
         let fault_label = self.asm.new_label();
 
-        // Push RAX (phi[11]) — we use it as scratch for permission check + buf base.
-        self.asm.push(Reg::RAX);
+        // Permission check: cmp byte [R15 + page_index - PERMS_OFFSET], 1
+        self.asm.mov_rr(SCRATCH2, SCRATCH);          // ecx = guest addr
+        self.asm.shr_ri32(SCRATCH2, 12);             // ecx = page index
+        self.asm.cmp_byte_sib_disp32(CTX, SCRATCH2, -PERMS_OFFSET, 1);
+        self.asm.jcc_label(Cc::B, fault_label);
 
-        // Permission check: page_index = addr >> 12, then compare byte in-memory.
-        // No cross-page check — flat buffer is contiguous so multi-byte loads work.
-        self.asm.mov_rr(Reg::RAX, SCRATCH);          // mov eax, edx (zero-extends)
-        self.asm.shr_ri32(Reg::RAX, 12);             // eax = page index
-        self.asm.add_r64_mem(Reg::RAX, CTX, CTX_FLAT_PERMS); // rax = &perms[page]
-        self.asm.cmp_byte_deref_imm(Reg::RAX, 1);   // cmp byte [rax], 1
-        self.asm.jcc_label(Cc::B, fault_label);      // inaccessible → fault
-
-        // Direct load from flat buffer
-        self.asm.mov_load64(Reg::RAX, CTX, CTX_FLAT_BUF);
+        // Direct load: [R15 + guest_addr]
         match _w {
-            1 => self.asm.movzx_load8_sib(Reg::RAX, Reg::RAX, SCRATCH),
-            2 => self.asm.movzx_load16_sib(Reg::RAX, Reg::RAX, SCRATCH),
-            4 => self.asm.mov_load32_sib(Reg::RAX, Reg::RAX, SCRATCH),
-            8 => self.asm.mov_load64_sib(Reg::RAX, Reg::RAX, SCRATCH),
+            1 => self.asm.movzx_load8_sib(dst, CTX, SCRATCH),
+            2 => self.asm.movzx_load16_sib(dst, CTX, SCRATCH),
+            4 => self.asm.mov_load32_sib(dst, CTX, SCRATCH),
+            8 => self.asm.mov_load64_sib(dst, CTX, SCRATCH),
             _ => unreachable!(),
-        }
-
-        // Move result to dst, restore RAX
-        if dst == Reg::RAX {
-            self.asm.add_ri(Reg::RSP, 8); // discard saved RAX (PVM overwrites phi[11])
-        } else {
-            self.asm.mov_rr(dst, Reg::RAX);
-            self.asm.pop(Reg::RAX);
         }
         self.asm.jmp_label(done_label);
 
-        // === Fault path ===
+        // Fault path
         self.asm.bind_label(fault_label);
-        self.asm.pop(Reg::RAX);
         self.asm.mov_store32_imm(CTX, CTX_EXIT_REASON, EXIT_PAGE_FAULT as i32);
         self.asm.mov_store32(CTX, CTX_EXIT_ARG, SCRATCH);
         self.asm.jmp_label(self.exit_label);
@@ -384,46 +419,24 @@ impl Compiler {
         let done_label = self.asm.new_label();
         let fault_label = self.asm.new_label();
 
-        self.asm.push(Reg::RAX);
-
-        // Permission check (>= 2 for write) — no cross-page check needed
-        self.asm.mov_rr(Reg::RAX, SCRATCH);
-        self.asm.shr_ri32(Reg::RAX, 12);
-        self.asm.add_r64_mem(Reg::RAX, CTX, CTX_FLAT_PERMS);
-        self.asm.cmp_byte_deref_imm(Reg::RAX, 2);   // cmp byte [rax], 2
+        // Permission check (>= 2 for write) using SCRATCH2 (RCX)
+        self.asm.mov_rr(SCRATCH2, SCRATCH);
+        self.asm.shr_ri32(SCRATCH2, 12);
+        self.asm.cmp_byte_sib_disp32(CTX, SCRATCH2, -PERMS_OFFSET, 2);
         self.asm.jcc_label(Cc::B, fault_label);
 
-        // Direct store to flat buffer
-        if val_reg == Reg::RAX {
-            // val_reg is RAX which we clobbered. Use RCX as buf base instead.
-            self.asm.push(Reg::RCX);
-            self.asm.mov_load64(Reg::RCX, CTX, CTX_FLAT_BUF);
-            self.asm.mov_load64(Reg::RAX, Reg::RSP, 8); // reload saved RAX (value)
-            match w {
-                1 => self.asm.mov_store8_sib(Reg::RCX, SCRATCH, Reg::RAX),
-                2 => self.asm.mov_store16_sib(Reg::RCX, SCRATCH, Reg::RAX),
-                4 => self.asm.mov_store32_sib(Reg::RCX, SCRATCH, Reg::RAX),
-                8 => self.asm.mov_store64_sib(Reg::RCX, SCRATCH, Reg::RAX),
-                _ => unreachable!(),
-            }
-            self.asm.pop(Reg::RCX);
-        } else {
-            self.asm.mov_load64(Reg::RAX, CTX, CTX_FLAT_BUF);
-            match w {
-                1 => self.asm.mov_store8_sib(Reg::RAX, SCRATCH, val_reg),
-                2 => self.asm.mov_store16_sib(Reg::RAX, SCRATCH, val_reg),
-                4 => self.asm.mov_store32_sib(Reg::RAX, SCRATCH, val_reg),
-                8 => self.asm.mov_store64_sib(Reg::RAX, SCRATCH, val_reg),
-                _ => unreachable!(),
-            }
+        // Direct store: [R15 + guest_addr]
+        match w {
+            1 => self.asm.mov_store8_sib(CTX, SCRATCH, val_reg),
+            2 => self.asm.mov_store16_sib(CTX, SCRATCH, val_reg),
+            4 => self.asm.mov_store32_sib(CTX, SCRATCH, val_reg),
+            8 => self.asm.mov_store64_sib(CTX, SCRATCH, val_reg),
+            _ => unreachable!(),
         }
-
-        self.asm.pop(Reg::RAX);
         self.asm.jmp_label(done_label);
 
         // Fault path
         self.asm.bind_label(fault_label);
-        self.asm.pop(Reg::RAX);
         self.asm.mov_store32_imm(CTX, CTX_EXIT_REASON, EXIT_PAGE_FAULT as i32);
         self.asm.mov_store32(CTX, CTX_EXIT_ARG, SCRATCH);
         self.asm.jmp_label(self.exit_label);
@@ -1776,31 +1789,28 @@ impl Compiler {
         self.asm.push(Reg::R14);
         self.asm.push(Reg::R15);
 
-        // Align stack to 16 bytes. After 6 pushes + return address (7 * 8 = 56 bytes),
-        // RSP mod 16 = 8. Sub 8 to make it mod 16 = 0. This ensures that after
-        // save_caller_saved (8 pushes = 64 bytes), RSP is still 16-aligned before CALL.
-        self.asm.sub_ri(Reg::RSP, 8);
+        // Stack alignment: after 6 callee-saved pushes + return address (7 * 8 = 56),
+        // RSP mod 16 = 8. With save_caller_saved (7 pushes = 56 bytes), total
+        // displacement = 56 + 56 = 112, RSP mod 16 = 0 — aligned for CALL.
+        // No alignment padding needed.
 
-        // R15 = context pointer (first argument, RDI in SysV ABI)
-        self.asm.mov_rr(CTX, Reg::RDI);
+        // RDI = JitContext pointer. R15 = guest memory base = RDI + CTX_OFFSET.
+        self.asm.lea(CTX, Reg::RDI, CTX_OFFSET);
 
         // Clear exit reason
         self.asm.mov_store32_imm(CTX, CTX_EXIT_REASON as i32, 0);
 
         // --- O(1) dispatch via table lookup (before loading PVM regs) ---
-        // RAX = dispatch_table pointer, RDX = entry_pc (zero-extended)
-        self.asm.mov_load32(SCRATCH, CTX, CTX_ENTRY_PC);        // edx = entry_pc
-        self.asm.mov_load64(Reg::RAX, CTX, CTX_DISPATCH_TABLE); // rax = dispatch_table
-        // movsxd rax, dword [rax + rdx*4]  — load native code offset
+        self.asm.mov_load32(SCRATCH, CTX, CTX_ENTRY_PC);
+        self.asm.mov_load64(Reg::RAX, CTX, CTX_DISPATCH_TABLE);
         self.asm.movsxd_load_sib4(Reg::RAX, Reg::RAX, SCRATCH);
-        // rax += code_base
         self.asm.mov_load64(SCRATCH, CTX, CTX_CODE_BASE);
         self.asm.add_rr(Reg::RAX, SCRATCH);
-        // Save dispatch target on stack (we'll jump to it after loading PVM regs)
         self.asm.push(Reg::RAX);
 
-        // Load PVM registers from context
+        // Load PVM registers from context (skip phi[12] — it stays in context memory)
         for i in 0..13 {
+            if i == SPILLED_REG { continue; }
             self.asm.mov_load64(REG_MAP[i], CTX, CTX_REGS + (i as i32) * 8);
         }
 
@@ -1831,13 +1841,12 @@ impl Compiler {
         // fall through to exit_label
 
         // Common exit: save PVM registers to context, restore callee-saved, return
+        // phi[12] is already in context (spilled), skip it.
         self.asm.bind_label(self.exit_label);
         for i in 0..13 {
+            if i == SPILLED_REG { continue; }
             self.asm.mov_store64(CTX, CTX_REGS + (i as i32) * 8, REG_MAP[i]);
         }
-
-        // Remove stack alignment padding
-        self.asm.add_ri(Reg::RSP, 8);
 
         // Restore callee-saved
         self.asm.pop(Reg::R15);

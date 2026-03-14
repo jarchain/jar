@@ -119,56 +119,51 @@ impl Drop for NativeCode {
 
 /// Flat memory backing buffer for inline JIT memory access.
 ///
-/// Maps the entire 32-bit guest address space into a contiguous virtual region
-/// using MAP_NORESERVE (lazy physical allocation). A separate permission table
-/// tracks per-page access modes for inline bounds checking.
+/// Contiguous mmap layout (R15 = guest memory base = region + HEADER_SIZE):
+///   [perm table, 1MB] [JitContext page, 4KB] [guest memory, 4GB]
+///   ^                  ^                      ^
+///   region             ctx_ptr                 R15 (buf)
+///
+/// R15-relative offsets:
+///   perms:  R15 - CTX_PAGE - NUM_PAGES  = R15 - PERMS_OFFSET
+///   ctx:    R15 - CTX_PAGE              = R15 - CTX_OFFSET
+///   guest:  R15 + 0 .. R15 + 4GB
 struct FlatMemory {
-    /// mmap'd 4GB backing buffer.
+    /// Base of the entire mmap'd region.
+    region: *mut u8,
+    /// Total mmap size.
+    region_size: usize,
+    /// Pointer to the guest memory base (= region + HEADER_SIZE).
     buf: *mut u8,
-    /// Permission table: mmap'd 1MB (1 byte per 4KB page, 2^20 entries).
-    /// 0=inaccessible, 1=read-only, 2=read-write.
-    /// Using mmap instead of Vec for lazy zero-initialization.
+    /// Pointer to the permission table (= region).
     perms: *mut u8,
 }
 
 const FLAT_BUF_SIZE: usize = 1 << 32; // 4GB virtual
 const NUM_PAGES: usize = 1 << 20;     // 2^20 = 1M pages
+const CTX_PAGE: usize = 4096;         // JitContext page
+const HEADER_SIZE: usize = NUM_PAGES + CTX_PAGE; // perms + ctx page before guest mem
 
 impl FlatMemory {
     /// Create a flat memory from the interpreter's Memory struct.
     fn new(memory: &Memory) -> Option<Self> {
-        // mmap both the 4GB data buffer and 1MB permission table.
-        // MAP_NORESERVE ensures only touched pages consume physical memory.
-        let buf = unsafe {
+        let region_size = HEADER_SIZE + FLAT_BUF_SIZE;
+        let region = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
-                FLAT_BUF_SIZE,
+                region_size,
                 libc::PROT_READ | libc::PROT_WRITE,
                 libc::MAP_ANONYMOUS | libc::MAP_PRIVATE | libc::MAP_NORESERVE,
                 -1,
                 0,
             )
         };
-        if buf == libc::MAP_FAILED {
+        if region == libc::MAP_FAILED {
             return None;
         }
-        let buf = buf as *mut u8;
-
-        let perms = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                NUM_PAGES,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_ANONYMOUS | libc::MAP_PRIVATE | libc::MAP_NORESERVE,
-                -1,
-                0,
-            )
-        };
-        if perms == libc::MAP_FAILED {
-            unsafe { libc::munmap(buf as *mut libc::c_void, FLAT_BUF_SIZE); }
-            return None;
-        }
-        let perms = perms as *mut u8;
+        let region = region as *mut u8;
+        let perms = region; // permission table at start
+        let buf = unsafe { region.add(HEADER_SIZE) }; // guest memory after header
 
         // Copy page data and permissions from Memory
         for (page_idx, access, data) in memory.pages_iter() {
@@ -188,7 +183,12 @@ impl FlatMemory {
             }
         }
 
-        Some(Self { buf, perms })
+        Some(Self { region, region_size, buf, perms })
+    }
+
+    /// Get the pointer where JitContext should be placed (buf - CTX_PAGE).
+    fn ctx_ptr(&self) -> *mut u8 {
+        unsafe { self.buf.sub(CTX_PAGE) }
     }
 
     /// Sync from flat buffer back to Memory (after JIT execution).
@@ -214,8 +214,7 @@ impl FlatMemory {
 impl Drop for FlatMemory {
     fn drop(&mut self) {
         unsafe {
-            libc::munmap(self.buf as *mut libc::c_void, FLAT_BUF_SIZE);
-            libc::munmap(self.perms as *mut libc::c_void, NUM_PAGES);
+            libc::munmap(self.region as *mut libc::c_void, self.region_size);
         }
     }
 }
@@ -252,19 +251,23 @@ fn flat_check_perm(ctx: &JitContext, addr: u32, len: u32, min_perm: u8) -> bool 
 
 /// Read from flat buffer. Caller must have checked permissions.
 unsafe fn flat_read(ctx: &JitContext, addr: u32, len: usize) -> u64 {
-    let ptr = ctx.flat_buf.add(addr as usize);
-    match len {
-        1 => *ptr as u64,
-        2 => u16::from_le_bytes([*ptr, *ptr.add(1)]) as u64,
-        4 => u32::from_le_bytes([*ptr, *ptr.add(1), *ptr.add(2), *ptr.add(3)]) as u64,
-        8 => u64::from_le_bytes(std::ptr::read_unaligned(ptr as *const [u8; 8])),
-        _ => 0,
+    unsafe {
+        let ptr = ctx.flat_buf.add(addr as usize);
+        match len {
+            1 => *ptr as u64,
+            2 => u16::from_le_bytes([*ptr, *ptr.add(1)]) as u64,
+            4 => u32::from_le_bytes([*ptr, *ptr.add(1), *ptr.add(2), *ptr.add(3)]) as u64,
+            8 => u64::from_le_bytes(std::ptr::read_unaligned(ptr as *const [u8; 8])),
+            _ => 0,
+        }
     }
 }
 
 /// Write to flat buffer. Caller must have checked permissions.
 unsafe fn flat_write(ctx: &JitContext, addr: u32, bytes: &[u8]) {
-    std::ptr::copy_nonoverlapping(bytes.as_ptr(), ctx.flat_buf.add(addr as usize), bytes.len());
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), ctx.flat_buf.add(addr as usize), bytes.len());
+    }
 }
 
 /// Memory read helper — reads from flat buffer (source of truth during JIT).
@@ -458,8 +461,8 @@ extern "sysv64" fn sbrk_helper(ctx: *mut JitContext, size: u64) -> u64 {
 pub struct RecompiledPvm {
     /// Native code buffer.
     native_code: NativeCode,
-    /// JIT context.
-    ctx: Box<JitContext>,
+    /// JIT context — lives inside the flat_memory mmap region, NOT heap-allocated.
+    ctx: *mut JitContext,
     /// PVM code (for fallback/debugging).
     code: Vec<u8>,
     /// Bitmask.
@@ -502,29 +505,38 @@ impl RecompiledPvm {
         let memory = Box::new(memory);
         let memory_ptr = Box::into_raw(memory);
 
-        let mut ctx = Box::new(JitContext {
-            regs: registers,
-            gas: gas as i64,
-            memory: memory_ptr,
-            exit_reason: 0,
-            exit_arg: 0,
-            heap_base: 0,
-            heap_top: 0,
-            jt_ptr: std::ptr::null(),
-            jt_len: jump_table.len() as u32,
-            _pad0: 0,
-            bb_starts: std::ptr::null(),
-            bb_len: basic_block_starts.len() as u32,
-            _pad1: 0,
-            entry_pc: 0,
-            pc: 0,
-            dispatch_table: std::ptr::null(),
-            code_base: 0,
-            flat_buf: std::ptr::null_mut(),
-            flat_perms: std::ptr::null(),
-        });
+        // Initialize flat memory — JitContext will live inside this region
+        let flat_memory = FlatMemory::new(unsafe { &*memory_ptr })
+            .ok_or("failed to mmap flat memory region")?;
 
-        // Set up pointers (will be updated after Box stabilizes)
+        // Place JitContext inside the flat memory region (at buf - CTX_PAGE)
+        let ctx_raw = flat_memory.ctx_ptr() as *mut JitContext;
+        unsafe {
+            ctx_raw.write(JitContext {
+                regs: registers,
+                gas: gas as i64,
+                memory: memory_ptr,
+                exit_reason: 0,
+                exit_arg: 0,
+                heap_base: 0,
+                heap_top: 0,
+                jt_ptr: std::ptr::null(),
+                jt_len: jump_table.len() as u32,
+                _pad0: 0,
+                bb_starts: std::ptr::null(),
+                bb_len: basic_block_starts.len() as u32,
+                _pad1: 0,
+                entry_pc: 0,
+                pc: 0,
+                dispatch_table: std::ptr::null(),
+                code_base: 0,
+                flat_buf: flat_memory.buf,
+                flat_perms: flat_memory.perms,
+            });
+        }
+        let ctx = unsafe { &mut *ctx_raw };
+
+        // Set up pointers
         ctx.jt_ptr = jump_table.as_ptr();
         ctx.bb_starts = basic_block_starts.as_ptr() as *const u8;
 
@@ -566,16 +578,9 @@ impl RecompiledPvm {
         // Set dispatch table pointer and code base in context
         ctx.code_base = native_code.ptr as u64;
 
-        // Initialize flat memory for inline JIT access
-        let flat_memory = FlatMemory::new(unsafe { &*memory_ptr });
-        if let Some(ref fm) = flat_memory {
-            ctx.flat_buf = fm.buf;
-            ctx.flat_perms = fm.perms;
-        }
-
         let mut result = Self {
             native_code,
-            ctx,
+            ctx: ctx_raw,
             code,
             bitmask,
             jump_table,
@@ -583,13 +588,22 @@ impl RecompiledPvm {
             initial_gas: gas,
             dispatch_table,
             debug,
-            flat_memory,
+            flat_memory: Some(flat_memory),
         };
 
         // Set dispatch_table pointer (must point to the Vec's data in Self)
-        result.ctx.dispatch_table = result.dispatch_table.as_ptr();
+        result.ctx_mut().dispatch_table = result.dispatch_table.as_ptr();
 
         Ok(result)
+    }
+
+    #[inline(always)]
+    fn ctx(&self) -> &JitContext {
+        unsafe { &*self.ctx }
+    }
+    #[inline(always)]
+    fn ctx_mut(&mut self) -> &mut JitContext {
+        unsafe { &mut *self.ctx }
     }
 
     /// Run the compiled code until exit (halt, panic, OOG, page fault, or host call).
@@ -600,40 +614,39 @@ impl RecompiledPvm {
         loop {
             if self.debug {
                 eprintln!("recompiler::run() entry_pc={} gas={} heap_base=0x{:08x} heap_top=0x{:08x}",
-                    self.ctx.entry_pc, self.ctx.gas, self.ctx.heap_base, self.ctx.heap_top);
-                eprintln!("  initial regs: {:?}", &self.ctx.regs);
-                self.ctx.exit_reason = 0xDEAD;
+                    self.ctx().entry_pc, self.ctx().gas, self.ctx().heap_base, self.ctx().heap_top);
+                eprintln!("  initial regs: {:?}", &self.ctx().regs);
+                self.ctx_mut().exit_reason = 0xDEAD;
             }
 
             // Execute native code
             let entry = self.native_code.entry();
-            let ctx_ptr = &mut *self.ctx as *mut JitContext;
-            unsafe { entry(ctx_ptr); }
+            unsafe { entry(self.ctx); }
 
             if self.debug {
                 eprintln!("recompiler::run() exit_reason={} exit_arg={} gas={} pc={}",
-                    self.ctx.exit_reason, self.ctx.exit_arg, self.ctx.gas, self.ctx.pc);
-                eprintln!("  regs: {:?}", &self.ctx.regs);
+                    self.ctx().exit_reason, self.ctx().exit_arg, self.ctx().gas, self.ctx().pc);
+                eprintln!("  regs: {:?}", &self.ctx().regs);
             }
 
             // Read exit reason from context
-            match self.ctx.exit_reason {
+            match self.ctx().exit_reason {
                 0 => return ExitReason::Halt,
                 1 => return ExitReason::Panic,
                 2 => {
-                    self.ctx.entry_pc = self.ctx.pc;
+                    self.ctx_mut().entry_pc = self.ctx().pc;
                     return ExitReason::OutOfGas;
                 }
-                3 => return ExitReason::PageFault(self.ctx.exit_arg),
+                3 => return ExitReason::PageFault(self.ctx().exit_arg),
                 4 => {
-                    self.ctx.entry_pc = self.ctx.pc;
-                    return ExitReason::HostCall(self.ctx.exit_arg);
+                    self.ctx_mut().entry_pc = self.ctx().pc;
+                    return ExitReason::HostCall(self.ctx().exit_arg);
                 }
                 5 => {
                     // Dynamic jump — resolve and re-enter
-                    let idx = self.ctx.exit_arg;
+                    let idx = self.ctx().exit_arg;
                     if let Some(target) = self.resolve_djump(idx) {
-                        self.ctx.entry_pc = target;
+                        self.ctx_mut().entry_pc = target;
                         continue;
                     } else {
                         return ExitReason::Panic;
@@ -661,16 +674,16 @@ impl RecompiledPvm {
 
     /// Access the PVM registers.
     pub fn registers(&self) -> &[u64; 13] {
-        &self.ctx.regs
+        &self.ctx().regs
     }
 
     pub fn registers_mut(&mut self) -> &mut [u64; 13] {
-        &mut self.ctx.regs
+        &mut self.ctx_mut().regs
     }
 
     /// Access remaining gas.
     pub fn gas(&self) -> u64 {
-        self.ctx.gas.max(0) as u64
+        self.ctx().gas.max(0) as u64
     }
 
     /// Access the BTreeMap Memory (syncs flat buffer → Memory first).
@@ -678,16 +691,16 @@ impl RecompiledPvm {
     /// use read_byte/write_byte which access the flat buffer directly.
     pub fn memory(&self) -> &Memory {
         if let Some(ref fm) = self.flat_memory {
-            fm.write_back(unsafe { &mut *self.ctx.memory });
+            fm.write_back(unsafe { &mut *self.ctx().memory });
         }
-        unsafe { &*self.ctx.memory }
+        unsafe { &*self.ctx().memory }
     }
 
     pub fn memory_mut(&mut self) -> &mut Memory {
         if let Some(ref fm) = self.flat_memory {
-            fm.write_back(unsafe { &mut *self.ctx.memory });
+            fm.write_back(unsafe { &mut *self.ctx().memory });
         }
-        unsafe { &mut *self.ctx.memory }
+        unsafe { &mut *self.ctx().memory }
     }
 
     /// Read a byte directly from the flat buffer (no BTreeMap sync).
@@ -703,7 +716,7 @@ impl RecompiledPvm {
             }
             return None;
         }
-        unsafe { &*self.ctx.memory }.read_u8(addr)
+        unsafe { &*self.ctx().memory }.read_u8(addr)
     }
 
     /// Write a byte directly to the flat buffer (no BTreeMap sync).
@@ -720,7 +733,7 @@ impl RecompiledPvm {
             }
             return false;
         }
-        matches!(unsafe { &mut *self.ctx.memory }.write_u8(addr, value),
+        matches!(unsafe { &mut *self.ctx().memory }.write_u8(addr, value),
                  crate::memory::MemoryAccess::Ok)
     }
 
@@ -742,7 +755,7 @@ impl RecompiledPvm {
             }
             return Some(result);
         }
-        unsafe { &*self.ctx.memory }.read_bytes(addr, len)
+        unsafe { &*self.ctx().memory }.read_bytes(addr, len)
     }
 
     /// Write bytes directly to flat buffer. Returns false on page fault.
@@ -763,7 +776,7 @@ impl RecompiledPvm {
             return true;
         }
         for (i, &byte) in data.iter().enumerate() {
-            if !matches!(unsafe { &mut *self.ctx.memory }.write_u8(addr.wrapping_add(i as u32), byte),
+            if !matches!(unsafe { &mut *self.ctx().memory }.write_u8(addr.wrapping_add(i as u32), byte),
                          crate::memory::MemoryAccess::Ok) {
                 return false;
             }
@@ -773,18 +786,18 @@ impl RecompiledPvm {
 
     /// Get the program counter (last known PC on exit).
     pub fn pc(&self) -> u32 {
-        self.ctx.pc
+        self.ctx().pc
     }
 
     /// Set the program counter for re-entry.
     pub fn set_pc(&mut self, pc: u32) {
-        self.ctx.entry_pc = pc;
-        self.ctx.pc = pc;
+        self.ctx_mut().entry_pc = pc;
+        self.ctx_mut().pc = pc;
     }
 
     /// Set gas.
     pub fn set_gas(&mut self, gas: Gas) {
-        self.ctx.gas = gas as i64;
+        self.ctx_mut().gas = gas as i64;
     }
 
     /// Get the native code bytes (for disassembly / debugging).
@@ -797,7 +810,7 @@ impl Drop for RecompiledPvm {
     fn drop(&mut self) {
         // Re-take ownership of the memory
         unsafe {
-            let _ = Box::from_raw(self.ctx.memory);
+            let _ = Box::from_raw(self.ctx().memory);
         }
     }
 }
@@ -822,8 +835,8 @@ pub fn initialize_program_recompiled(
     ).ok()?;
 
     // Transfer heap state from interpreter
-    rpvm.ctx.heap_base = pvm.heap_base;
-    rpvm.ctx.heap_top = pvm.heap_top;
+    rpvm.ctx_mut().heap_base = pvm.heap_base;
+    rpvm.ctx_mut().heap_top = pvm.heap_top;
 
     Some(rpvm)
 }
@@ -833,11 +846,14 @@ mod tests {
     use super::*;
     use crate::memory::PageAccess;
     use codegen::{CTX_REGS, CTX_GAS, CTX_EXIT_REASON, CTX_EXIT_ARG, CTX_ENTRY_PC, CTX_PC,
-                  CTX_DISPATCH_TABLE, CTX_CODE_BASE, CTX_FLAT_BUF, CTX_FLAT_PERMS};
+                  CTX_DISPATCH_TABLE, CTX_CODE_BASE, CTX_OFFSET};
 
     #[test]
     fn test_jit_context_layout() {
-        // Verify field offsets match codegen constants
+        // Verify field offsets match codegen constants.
+        // Codegen offsets are negative from R15 (guest memory base).
+        // JitContext is at R15 - CTX_OFFSET. So field offset from R15 =
+        // -CTX_OFFSET + field_offset_in_struct.
         let ctx = JitContext {
             regs: [0; 13],
             gas: 0,
@@ -860,17 +876,18 @@ mod tests {
             flat_perms: std::ptr::null(),
         };
         let base = &ctx as *const JitContext as usize;
+        // Convert codegen offset (negative from R15) to struct offset:
+        // struct_offset = codegen_offset - (-CTX_OFFSET) = codegen_offset + CTX_OFFSET
+        let so = |codegen_off: i32| -> usize { (codegen_off + CTX_OFFSET) as usize };
 
-        assert_eq!(&ctx.regs as *const _ as usize - base, CTX_REGS as usize);
-        assert_eq!(&ctx.gas as *const _ as usize - base, CTX_GAS as usize);
-        assert_eq!(&ctx.exit_reason as *const _ as usize - base, CTX_EXIT_REASON as usize);
-        assert_eq!(&ctx.exit_arg as *const _ as usize - base, CTX_EXIT_ARG as usize);
-        assert_eq!(&ctx.entry_pc as *const _ as usize - base, CTX_ENTRY_PC as usize);
-        assert_eq!(&ctx.pc as *const _ as usize - base, CTX_PC as usize);
-        assert_eq!(&ctx.dispatch_table as *const _ as usize - base, CTX_DISPATCH_TABLE as usize);
-        assert_eq!(&ctx.code_base as *const _ as usize - base, CTX_CODE_BASE as usize);
-        assert_eq!(&ctx.flat_buf as *const _ as usize - base, CTX_FLAT_BUF as usize);
-        assert_eq!(&ctx.flat_perms as *const _ as usize - base, CTX_FLAT_PERMS as usize);
+        assert_eq!(&ctx.regs as *const _ as usize - base, so(CTX_REGS));
+        assert_eq!(&ctx.gas as *const _ as usize - base, so(CTX_GAS));
+        assert_eq!(&ctx.exit_reason as *const _ as usize - base, so(CTX_EXIT_REASON));
+        assert_eq!(&ctx.exit_arg as *const _ as usize - base, so(CTX_EXIT_ARG));
+        assert_eq!(&ctx.entry_pc as *const _ as usize - base, so(CTX_ENTRY_PC));
+        assert_eq!(&ctx.pc as *const _ as usize - base, so(CTX_PC));
+        assert_eq!(&ctx.dispatch_table as *const _ as usize - base, so(CTX_DISPATCH_TABLE));
+        assert_eq!(&ctx.code_base as *const _ as usize - base, so(CTX_CODE_BASE));
     }
 
     #[test]

@@ -400,6 +400,20 @@ impl Assembler {
         }
     }
 
+    /// cmp byte [base + index + disp32], imm8 — compare memory byte with SIB+displacement
+    pub fn cmp_byte_sib_disp32(&mut self, base: Reg, index: Reg, disp: i32, imm: u8) {
+        // REX prefix for extended registers
+        let rex = 0x40 | (index.hi() << 1) | base.hi();
+        if rex != 0x40 { self.emit(rex); }
+        self.emit(0x80); // ALU r/m8, imm8
+        // ModR/M: mod=10 (disp32), reg=/7 (CMP), rm=100 (SIB)
+        self.emit(0xBC); // 10_111_100
+        // SIB: scale=00, index, base
+        self.emit((index.lo() << 3) | base.lo());
+        self.emit_i32(disp);
+        self.emit(imm);
+    }
+
     /// cmp byte [reg], imm8 — compare memory byte with immediate
     pub fn cmp_byte_deref_imm(&mut self, base: Reg, imm: u8) {
         // REX prefix needed for R8-R15 base
