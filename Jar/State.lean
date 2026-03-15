@@ -468,37 +468,17 @@ def performAccumulation
       queue := queue.set! m (queue[m]! ++ edited)
     return queue
 
-  -- Build per-service statistics from gas usage and work report digests.
-  -- GP §13: collect refinement stats (gas, imports, extrinsics, exports) from digests,
-  -- plus accumulation stats (item count, gas used) from the accumulation result.
-  -- First: collect refinement statistics from accumulatable report digests
-  let refinementStats := accumulatable.foldl (init := Dict.empty (K := ServiceId) (V := ServiceStatistics))
-    fun acc wr =>
-      wr.digests.foldl (init := acc) fun acc' d =>
-        let existing := match acc'.lookup d.serviceId with
-          | some ss => ss
-          | none => { provided := (0, 0), refinement := (0, 0), imports := 0,
-                      extrinsicCount := 0, extrinsicSize := 0, exports := 0,
-                      accumulation := (0, 0) }
-        acc'.insert d.serviceId {
-          existing with
-          refinement := (existing.refinement.1 + 1, existing.refinement.2 + d.gasUsed)
-          imports := existing.imports + d.importsCount
-          extrinsicCount := existing.extrinsicCount + d.extrinsicsCount
-          extrinsicSize := existing.extrinsicSize + d.extrinsicsSize
-          exports := existing.exports + d.exportsCount
-        }
-  -- Second: merge in accumulation gas usage and item counts
-  let accStatsAll := result.gasUsage.entries.foldl (init := refinementStats)
+  -- Build per-service accumulation statistics from gas usage.
+  -- GP §13: A(s) = (N(s), G(s)) where N = work item count, G = gas used.
+  -- Refinement stats are computed separately in updateStatistics from guarantees.
+  let accStatsAll := result.gasUsage.entries.foldl (init := Dict.empty (K := ServiceId) (V := ServiceStatistics))
     fun acc (sid, gas) =>
       let itemCount := accumulatable.foldl (init := 0) fun cnt wr =>
         cnt + (wr.digests.filter fun d => d.serviceId == sid).size
-      let existing := match acc.lookup sid with
-        | some ss => ss
-        | none => { provided := (0, 0), refinement := (0, 0), imports := 0,
-                    extrinsicCount := 0, extrinsicSize := 0, exports := 0,
-                    accumulation := (0, 0) }
-      acc.insert sid { existing with accumulation := (itemCount, gas) }
+      acc.insert sid {
+        provided := (0, 0), refinement := (0, 0), imports := 0,
+        extrinsicCount := 0, extrinsicSize := 0, exports := 0,
+        accumulation := (itemCount, gas) }
   -- Filter: G(s) + N(s) != 0
   let accStats := accStatsAll.entries.foldl (init := Dict.empty (K := ServiceId) (V := ServiceStatistics))
     fun acc (sid, ss) =>
@@ -604,13 +584,20 @@ def updateStatistics
     else cur
   else cur
 
-  -- §13.1: Guarantee stats — credit each guarantor
-  let cur := e.guarantees.foldl (init := cur) fun c g =>
-    g.credentials.foldl (init := c) fun c' (vi, _) =>
-      if hv : vi.val < c'.size then
-        let r := c'[vi.val]
-        c'.set vi.val { r with guarantees := r.guarantees + 1 }
-      else c'
+  -- §13.1: Guarantee stats — credit each guarantor (boolean per block, not per guarantee)
+  -- GP: π_V'[v]_g ≡ a[v]_g + (κ'_v ∈ G) — G is the SET of validator indices
+  -- across ALL guarantees, so each validator counts at most once per block.
+  let guarantorSet : Array Nat := Id.run do
+    let mut seen : Array Nat := #[]
+    for g in e.guarantees do
+      for (vi, _) in g.credentials do
+        if !seen.contains vi.val then seen := seen.push vi.val
+    return seen
+  let cur := guarantorSet.foldl (init := cur) fun c vi =>
+    if hv : vi < c.size then
+      let r := c[vi]
+      c.set vi { r with guarantees := r.guarantees + 1 }
+    else c
 
   -- §13.1: Assurance stats — credit each assuring validator
   let cur := e.assurances.foldl (init := cur) fun c a =>
