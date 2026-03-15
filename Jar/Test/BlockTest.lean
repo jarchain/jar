@@ -556,15 +556,31 @@ def runBlockTestDirSeq [JamConfig] (dir : String) : IO UInt32 := do
       continue
     | some (state, opaqueData) =>
 
-    -- Parse block
-    let block ← IO.ofExcept (do
+    -- Parse block (may fail for invalid blocks, e.g. out-of-range author index)
+    let blockResult := do
       let blockJson ← inputJson.getObjVal? "block"
-      blockFromTraceJson blockJson)
+      blockFromTraceJson blockJson
 
     -- Check expected output
     let isError := match outputJson.getObjVal? "error" with
       | .ok _ => true
       | .error _ => false
+
+    -- If block parsing fails, treat as rejected block
+    match blockResult with
+    | .error parseErr =>
+      if isError then
+        IO.println s!"  PASS {name} (parse error: {parseErr})"
+        passed := passed + 1
+        continue
+      else
+        IO.println s!"  FAIL {name}: block parse failed: {parseErr}"
+        failed := failed + 1
+        currentState := none
+        continue
+    | .ok _ => pure ()
+
+    let block ← IO.ofExcept blockResult
 
     -- Run transition
     let result := @stateTransitionNoSealCheck _ state block
@@ -597,8 +613,22 @@ def runBlockTestDirSeq [JamConfig] (dir : String) : IO UInt32 := do
           IO.println s!"  FAIL {name}: post_state root mismatch"
           IO.println s!"    expected: {bytesToHex expectedPostRoot.data}"
           IO.println s!"    got:      {bytesToHex computedRoot.data}"
+          -- Debug: show serialized component sizes and hashes
+          for (k, v) in allPostKvs do
+            let idx := k.get! 0
+            if idx >= 1 && idx <= 16 || idx == 255 then
+              let h := Crypto.blake2b v
+              IO.println s!"    idx={idx} val_len={v.size} hash={bytesToHex h.data |>.take 16}.."
+          -- Uncomment to dump specific components for debugging
+          -- if name.endsWith "004.input.gp072_tiny.json" then
+          --   for (k, v) in allPostKvs do
+          --     let idx := k.get! 0
+          --     if idx == 3 || idx == 13 then
+          --       let hexStr := bytesToHex v
+          --       IO.println s!"    DUMP idx={idx} ({v.size} bytes): {hexStr}"
           failed := failed + 1
-          currentState := none  -- stop threading on failure
+          -- Continue threading to see if subsequent blocks also fail
+          currentState := some (postState, opaqueData)
     | none =>
       if isError then
         IO.println s!"  PASS {name} (expected error)"

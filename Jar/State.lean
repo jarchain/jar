@@ -135,7 +135,7 @@ def computeAccumulateRoot (outputs : AccumulationOutputs) : Hash :=
     Maps package hash → erasure root for each guaranteed report. -/
 def collectReportedPackages (guarantees : GuaranteesExtrinsic) : Dict Hash Hash :=
   guarantees.foldl (init := Dict.empty) fun acc g =>
-    acc.insert g.report.availSpec.packageHash g.report.availSpec.erasureRoot
+    acc.insert g.report.availSpec.packageHash g.report.availSpec.segmentRoot
 
 /-- β' : Full recent history update. GP eq (37–43).
     1. MMR-append the accumulate root to the belt
@@ -257,7 +257,7 @@ def reportsPostAssurance
     (rhoDag : Array (Option PendingReport))
     (assurances : AssurancesExtrinsic)
     (t' : Timeslot) : Array (Option PendingReport) × Array WorkReport :=
-  let timeout : Nat := 20
+  let timeout : Nat := U_TIMEOUT
   let superMajority := (V * 2 + 2) / 3
   let clearCore (reports : Array (Option PendingReport)) (core : CoreIndex) :=
     reports.map fun r => match r with
@@ -297,6 +297,18 @@ def reportsPostGuarantees
 -- §8 — Authorization Pool & Queue
 -- ============================================================================
 
+/-- Remove only the first occurrence of `target` from `arr`.
+    GP specifies set subtraction α[c] ⊢ {a} which removes one element. -/
+private def eraseFirst (arr : Array Hash) (target : Hash) : Array Hash := Id.run do
+  let mut found := false
+  let mut result : Array Hash := #[]
+  for h in arr do
+    if !found && h == target then
+      found := true
+    else
+      result := result.push h
+  return result
+
 /-- α' : Updated authorization pool. GP eq (26–27).
     Remove used authorizer, add from queue at current slot, truncate to O. -/
 def updateAuthPool
@@ -305,9 +317,9 @@ def updateAuthPool
   let mut result : Array (Array Hash) := #[]
   for coreIdx in [:alpha.size] do
     let a := alpha[coreIdx]!
-    -- Remove the authorizer hash used by a guarantee for this core
+    -- Remove the FIRST matching authorizer hash used by a guarantee for this core
     let a' := match guarantees.find? (fun g => g.report.coreIndex.val == coreIdx) with
-    | some g => a.filter (· != g.report.authorizerHash)
+    | some g => eraseFirst a g.report.authorizerHash
     | none => a
     -- Queue index: timeslot mod Q (not E). phi' is indexed [slot][core].
     let queueSlot := h.timeslot.toNat % Q_QUEUE
@@ -455,11 +467,13 @@ def CoreStatistics.zero : CoreStatistics :=
 
 /-- π' : Updated activity statistics. GP §13.
     Tracks per-validator: blocks, tickets, preimages, guarantees, assurances.
-    Tracks per-core and per-service statistics. -/
+    Tracks per-core and per-service statistics.
+    Per-core and per-service stats are reset each block (not accumulated within epoch). -/
 def updateStatistics
     (pi : ActivityStatistics) (h : Header)
     (e : Extrinsic) (t t' : Timeslot)
     (_kappa' : Array ValidatorKey)
+    (available : Array WorkReport)
     (accStats : Dict ServiceId ServiceStatistics) : ActivityStatistics :=
   let epochChanged := isEpochChange t t'
   let (cur, prev) := if epochChanged
@@ -507,10 +521,13 @@ def updateStatistics
       c.set a.validatorIndex.val { r with assurances := r.assurances + 1 }
     else c
 
-  -- §13.2: Core statistics — compute from guarantees
-  let coreStats := if epochChanged
-    then Array.replicate C CoreStatistics.zero
-    else pi.coreStats
+  -- §13.2: Core statistics — always fresh per block (not accumulated within epoch)
+  -- R(c): refine-load from incoming reports (guarantees)
+  -- L(c): bundle size from incoming reports
+  -- D(c): DA load from available reports (assurance-confirmed)
+  -- p: popularity from assurance bitfields
+  let coreStats := Array.replicate C CoreStatistics.zero
+  -- Incoming report stats from guarantees: imports, extrinsics, exports, gas, bundle_size
   let coreStats := e.guarantees.foldl (init := coreStats) fun cs g =>
     let cIdx := g.report.coreIndex.val
     if hc : cIdx < cs.size then
@@ -527,7 +544,6 @@ def updateStatistics
           (i + d.importsCount, x + d.extrinsicsCount, z + d.extrinsicsSize,
            e' + d.exportsCount, gas + d.gasUsed)
       cs.set cIdx { s with
-        daLoad := s.daLoad + g.report.availSpec.bundleLength.toNat
         popularity := s.popularity + pop
         imports := s.imports + totalImports
         extrinsicCount := s.extrinsicCount + totalExtrinsics
@@ -536,9 +552,18 @@ def updateStatistics
         bundleSize := s.bundleSize + g.report.availSpec.bundleLength.toNat
         gasUsed := s.gasUsed + totalGas }
     else cs
+  -- D(c): DA load from available reports (newly available via assurances)
+  let coreStats := available.foldl (init := coreStats) fun cs wr =>
+    let cIdx := wr.coreIndex.val
+    if hc : cIdx < cs.size then
+      let s := cs[cIdx]
+      let bundleLen := wr.availSpec.bundleLength.toNat
+      -- TODO: add segment bytes when W_P is available
+      cs.set cIdx { s with daLoad := s.daLoad + bundleLen }
+    else cs
 
-  -- §13.2: Service statistics — merge accumulation stats with digest stats
-  let serviceStats := if epochChanged then Dict.empty else pi.serviceStats
+  -- §13.2: Service statistics — always fresh per block (not accumulated within epoch)
+  let serviceStats : Dict ServiceId ServiceStatistics := Dict.empty
   -- Add refinement stats from guarantees
   let serviceStats := e.guarantees.foldl (init := serviceStats) fun ss g =>
     g.report.digests.foldl (init := ss) fun ss' d =>
@@ -704,7 +729,7 @@ def stateTransition (s : State) (b : Block) : Option State := do
   let alpha' := updateAuthPool s.authPool accResult.authQueue h ext.guarantees
 
   -- §13 — Statistics
-  let pi' := updateStatistics s.statistics h ext s.timeslot t' kappa' accResult.accStats
+  let pi' := updateStatistics s.statistics h ext s.timeslot t' kappa' available accResult.accStats
 
   -- Assemble posterior state
   pure {
@@ -750,7 +775,7 @@ def stateTransitionNoSealCheck (s : State) (b : Block) : Option State := do
   let beta' := updateRecentHistory bDag headerHash accResult.outputs ext.guarantees
   let delta' := integratePreimages accResult.services ext.preimages t'
   let alpha' := updateAuthPool s.authPool accResult.authQueue h ext.guarantees
-  let pi' := updateStatistics s.statistics h ext s.timeslot t' kappa' accResult.accStats
+  let pi' := updateStatistics s.statistics h ext s.timeslot t' kappa' available accResult.accStats
   pure {
     authPool := alpha'
     recent := beta'

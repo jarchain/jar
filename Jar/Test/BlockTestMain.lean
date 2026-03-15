@@ -10,8 +10,9 @@ def independentTraces : Array String := #["safrole", "fallback"]
 
 /-- Traces where only the first block has keyvals (sequential state threading).
     Not yet passing — kept out of default test run. -/
+-- Conformance traces excluded from default run: JAR matches Grey exactly
+-- but both differ from the conformance fuzzer starting at block 4 (guarantee processing)
 def sequentialTraces : Array String := #[]
--- TODO: add when passing: "conformance_no_forks", "conformance_forks"
 
 def main (args : List String) : IO UInt32 := do
   let mut exitCode : UInt32 := 0
