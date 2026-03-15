@@ -616,67 +616,120 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
 
   -- 13 is unused
 
-  -- ===== bless (14): Set privileged services =====
+  -- ===== bless (14): Set privileged services (GP ΩB) =====
+  -- φ[7] = m (manager), φ[8] = a (assigners ptr, C × 4 bytes),
+  -- φ[9] = v (designator), φ[10] = r (registrar),
+  -- φ[11] = o (always-acc ptr), φ[12] = n (always-acc count)
+  -- GP order: read memory FIRST, then check validity.
   | 14 =>
-    -- Only the manager service can bless. GP Appendix B.
-    if ctx.serviceId != ctx.state.manager then
-      let regs' := setR7 regs PVM.RESULT_CORE
-      (mkResult regs' mem gas', ctx)
-    else
-      -- reg[7] = manager, reg[8] = assigners pointer, reg[9] = designator,
-      -- reg[10] = registrar
-      let newManager := UInt32.ofNat (getReg regs 7).toNat
-      let newDesignator := UInt32.ofNat (getReg regs 9).toNat
-      let newRegistrar := UInt32.ofNat (getReg regs 10).toNat
-      -- Read C assigners (4 bytes each) from memory at reg[8]
-      let assignPtr := getReg regs 8
-      let assigners := Id.run do
-        let mut arr : Array ServiceId := #[]
-        for i in [:C] do
-          match PVM.readU32 mem (assignPtr + UInt64.ofNat (i * 4)) with
-          | .ok v => arr := arr.push (UInt32.ofNat v.toNat)
-          | _ => arr := arr.push 0
-        return arr
-      let state' := { ctx.state with
-        manager := newManager
-        assigners := assigners
-        designator := newDesignator
-        registrar := newRegistrar }
-      let regs' := setR7 regs PVM.RESULT_OK
-      (mkResult regs' mem gas', { ctx with state := state' })
+    let newManager := getReg regs 7
+    let assignPtr := getReg regs 8
+    let newDesignator := getReg regs 9
+    let newRegistrar := getReg regs 10
+    let alwaysPtr := getReg regs 11
+    let alwaysCount := (getReg regs 12).toNat
+    -- Read C assigners (4 bytes each) from memory at assignPtr
+    match PVM.readByteArray mem assignPtr (C * 4) with
+    | .ok assignBytes =>
+      -- Read always-accumulate entries: n × (4 bytes sid + 8 bytes gas) = 12 bytes each
+      match PVM.readByteArray mem alwaysPtr (alwaysCount * 12) with
+      | .ok alwaysBytes =>
+        -- Check (m, v, r) are valid service IDs (fit in u32)
+        if newManager.toNat > UInt32.toNat (UInt32.ofNat (2^32 - 1)) ||
+           newDesignator.toNat > UInt32.toNat (UInt32.ofNat (2^32 - 1)) ||
+           newRegistrar.toNat > UInt32.toNat (UInt32.ofNat (2^32 - 1)) then
+          let regs' := setR7 regs PVM.RESULT_WHO
+          (mkResult regs' mem gas', ctx)
+        else
+        -- Parse assigners
+        let assigners : Array ServiceId := Id.run do
+          let mut arr : Array ServiceId := #[]
+          for i in [:C] do
+            let offset := i * 4
+            let v := (assignBytes.get! offset).toNat +
+              (assignBytes.get! (offset + 1)).toNat * 256 +
+              (assignBytes.get! (offset + 2)).toNat * 65536 +
+              (assignBytes.get! (offset + 3)).toNat * 16777216
+            arr := arr.push (UInt32.ofNat v)
+          return arr
+        -- Parse always-accumulate entries
+        let alwaysAcc : Dict ServiceId Gas := Id.run do
+          let mut d := Dict.empty
+          for i in [:alwaysCount] do
+            let offset := i * 12
+            let sid := (alwaysBytes.get! offset).toNat +
+              (alwaysBytes.get! (offset + 1)).toNat * 256 +
+              (alwaysBytes.get! (offset + 2)).toNat * 65536 +
+              (alwaysBytes.get! (offset + 3)).toNat * 16777216
+            let gasVal := (alwaysBytes.get! (offset + 4)).toNat +
+              (alwaysBytes.get! (offset + 5)).toNat * 256 +
+              (alwaysBytes.get! (offset + 6)).toNat * 65536 +
+              (alwaysBytes.get! (offset + 7)).toNat * 16777216 +
+              (alwaysBytes.get! (offset + 8)).toNat * 4294967296 +
+              (alwaysBytes.get! (offset + 9)).toNat * 1099511627776 +
+              (alwaysBytes.get! (offset + 10)).toNat * 281474976710656 +
+              (alwaysBytes.get! (offset + 11)).toNat * 72057594037927936
+            d := d.insert (UInt32.ofNat sid) (UInt64.ofNat gasVal)
+          return d
+        let state' := { ctx.state with
+          manager := UInt32.ofNat newManager.toNat
+          assigners := assigners
+          designator := UInt32.ofNat newDesignator.toNat
+          registrar := UInt32.ofNat newRegistrar.toNat
+          alwaysAccumulate := alwaysAcc }
+        let regs' := setR7 regs PVM.RESULT_OK
+        (mkResult regs' mem gas', { ctx with state := state' })
+      | _ => (mkPanic regs mem gas', ctx)
+    | _ => (mkPanic regs mem gas', ctx)
 
-  -- ===== assign (15): Assign core authorization =====
+  -- ===== assign (15): Assign core authorization (GP ΩA) =====
+  -- φ[7] = c (core index), φ[8] = o (pointer to Q auth hashes, 32 bytes each),
+  -- φ[9] = a (new assigner service ID)
+  -- GP order: read memory FIRST, then check privileges.
+  -- Memory read failure → PANIC (⚡), takes priority over all other checks.
   | 15 =>
-    -- reg[7] = core index, reg[8] = authorization hash pointer
-    -- Only assigner for that core can call this
     let coreIdx := (getReg regs 7).toNat
     let hashPtr := getReg regs 8
-    if coreIdx >= C then
-      let regs' := setR7 regs PVM.RESULT_CORE
-      (mkResult regs' mem gas', ctx)
-    else
-      -- Check caller is the assigner for this core
-      let assigner := if coreIdx < ctx.state.assigners.size
-        then ctx.state.assigners[coreIdx]! else 0
-      if ctx.serviceId != assigner then
+    let newAssigner := getReg regs 9
+    -- GP: Read Q * 32 bytes from memory FIRST (page fault → PANIC)
+    match PVM.readByteArray mem hashPtr (Q_QUEUE * 32) with
+    | .ok queueBytes =>
+      if coreIdx >= C then
         let regs' := setR7 regs PVM.RESULT_CORE
         (mkResult regs' mem gas', ctx)
       else
-        match PVM.readByteArray mem hashPtr 32 with
-        | .ok hashBytes =>
-          let h : Hash := ⟨hashBytes, sorry⟩
-          let queue := if coreIdx < ctx.state.authQueue.size
-            then ctx.state.authQueue[coreIdx]! else #[]
-          let queue' := queue.push h
+        -- Check caller is the assigner for this core
+        let assigner := if coreIdx < ctx.state.assigners.size
+          then ctx.state.assigners[coreIdx]! else 0
+        if ctx.serviceId != assigner then
+          let regs' := setR7 regs PVM.RESULT_HUH
+          (mkResult regs' mem gas', ctx)
+        else if newAssigner.toNat > UInt32.toNat (UInt32.ofNat (2^32 - 1)) then
+          let regs' := setR7 regs PVM.RESULT_WHO
+          (mkResult regs' mem gas', ctx)
+        else
+          -- Parse Q hashes from the read bytes
+          let queue : Array Hash := Id.run do
+            let mut arr : Array Hash := #[]
+            for i in [:Q_QUEUE] do
+              let offset := i * 32
+              let hashBytes := queueBytes.extract offset (offset + 32)
+              arr := arr.push ⟨hashBytes, sorry⟩
+            return arr
+          -- Store auth queue for this core
           let authQueue' := if coreIdx < ctx.state.authQueue.size
-            then ctx.state.authQueue.set! coreIdx queue'
+            then ctx.state.authQueue.set! coreIdx queue
             else ctx.state.authQueue
-          let state' := { ctx.state with authQueue := authQueue' }
+          -- Update assigner for this core
+          let assigners' := if coreIdx < ctx.state.assigners.size
+            then ctx.state.assigners.set! coreIdx (UInt32.ofNat newAssigner.toNat)
+            else ctx.state.assigners
+          let state' := { ctx.state with authQueue := authQueue', assigners := assigners' }
           let regs' := setR7 regs PVM.RESULT_OK
           (mkResult regs' mem gas', { ctx with state := state' })
-        | _ =>
-          -- Page fault on hash read → panic (GP: ⚡)
-          (mkPanic regs mem gas', ctx)
+    | _ =>
+      -- Page fault on queue read → panic (GP: ⚡)
+      (mkPanic regs mem gas', ctx)
 
   -- ===== designate (16): Set pending validator keys =====
   | 16 =>
@@ -921,28 +974,48 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
       -- Page fault on hash read → panic (GP: ⚡)
       (mkPanic regs mem gas', ctx)
 
-  -- ===== query (22): Query preimage request status =====
+  -- ===== query (22): Query preimage request status (GP ΩQ) =====
+  -- φ[7] = o (hash pointer), φ[8] = z (blob length)
+  -- Always queries self service. Returns packed timeslot info:
+  --   0 timeslots: r7=0, r8=0
+  --   1 timeslot:  r7 = 1 + (ts[0] << 32), r8 = 0
+  --   2 timeslots: r7 = 2 + (ts[0] << 32), r8 = ts[1]
+  --   3+ timeslots: r7 = 3 + (ts[0] << 32), r8 = ts[1] + (ts[2] << 32)
+  --   Not found: r7 = NONE, r8 = 0
   | 22 =>
-    -- reg[7] = hash pointer, reg[8] = blob length, reg[9] = service id (0 = self)
     let hashPtr := getReg regs 7
     let blobLen := UInt32.ofNat (getReg regs 8).toNat
-    let sid := UInt32.ofNat (getReg regs 9).toNat
-    let targetSid := if sid == 0 then ctx.serviceId else sid
     match PVM.readByteArray mem hashPtr 32 with
     | .ok hashBytes =>
       let h : Hash := ⟨hashBytes, sorry⟩
-      match ctx.state.accounts.lookup targetSid with
+      match ctx.state.accounts.lookup ctx.serviceId with
       | none =>
-        let regs' := setR7 regs PVM.RESULT_WHO
+        let regs' := setR7 regs PVM.RESULT_NONE
+        let regs' := setReg regs' 8 0
         (mkResult regs' mem gas', ctx)
       | some acct =>
         match acct.preimageInfo.lookup (h, blobLen) with
         | none =>
           let regs' := setR7 regs PVM.RESULT_NONE
+          let regs' := setReg regs' 8 0
           (mkResult regs' mem gas', ctx)
         | some timeslots =>
-          let regs' := setR7 regs PVM.RESULT_OK
-          let regs' := setReg regs' 8 (UInt64.ofNat timeslots.size)
+          let (r7val, r8val) : UInt64 × UInt64 := match timeslots.size with
+            | 0 => (0, 0)
+            | 1 =>
+              let ts0 := (timeslots[0]!).toNat
+              (UInt64.ofNat (1 + (ts0 <<< 32)), 0)
+            | 2 =>
+              let ts0 := (timeslots[0]!).toNat
+              let ts1 := (timeslots[1]!).toNat
+              (UInt64.ofNat (2 + (ts0 <<< 32)), UInt64.ofNat ts1)
+            | _ =>
+              let ts0 := (timeslots[0]!).toNat
+              let ts1 := (timeslots[1]!).toNat
+              let ts2 := (timeslots[2]!).toNat
+              (UInt64.ofNat (3 + (ts0 <<< 32)), UInt64.ofNat (ts1 + (ts2 <<< 32)))
+          let regs' := setR7 regs r7val
+          let regs' := setReg regs' 8 r8val
           (mkResult regs' mem gas', ctx)
     | _ =>
       -- Page fault on hash read → panic (GP: ⚡)
@@ -1088,28 +1161,48 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
       -- Page fault on hash read → panic (GP: ⚡)
       (mkPanic regs mem gas', ctx)
 
-  -- ===== provide (26): Provide preimage data =====
+  -- ===== provide (26): Provide preimage data (GP ΩP) =====
+  -- φ[7] = s (target service, NONE = self), φ[8] = o (data ptr), φ[9] = z (data len)
   | 26 =>
-    -- reg[7] = data pointer, reg[8] = data length
-    let dataPtr := getReg regs 7
-    let dataLen := (getReg regs 8).toNat
+    let rawTarget := getReg regs 7
+    let targetSid := if rawTarget == PVM.RESULT_NONE then ctx.serviceId
+      else if rawTarget.toNat <= UInt32.toNat (UInt32.ofNat (2^32 - 1)) then UInt32.ofNat rawTarget.toNat
+      else 0  -- invalid → will return WHO
+    -- Check target validity first (but after determining target)
+    if rawTarget != PVM.RESULT_NONE && rawTarget.toNat > UInt32.toNat (UInt32.ofNat (2^32 - 1)) then
+      let regs' := setR7 regs PVM.RESULT_WHO
+      (mkResult regs' mem gas', ctx)
+    else
+    let dataPtr := getReg regs 8
+    let dataLen := (getReg regs 9).toNat
     match PVM.readByteArray mem dataPtr dataLen with
     | .ok preimageData =>
-      -- Hash the data and store as preimage
       let h := Crypto.blake2b preimageData
-      let provision := (ctx.serviceId, preimageData)
-      let regs' := setR7 regs PVM.RESULT_OK
-      -- Also store in own preimage store
-      match ctx.state.accounts.lookup ctx.serviceId with
-      | some acct =>
-        let acct' := { acct with preimages := acct.preimages.insert h preimageData }
-        let accounts' := ctx.state.accounts.insert ctx.serviceId acct'
-        let state' := { ctx.state with accounts := accounts' }
-        (mkResult regs' mem gas', { ctx with
-          state := state'
-          provisions := ctx.provisions.push provision })
+      let blobLen := UInt32.ofNat dataLen
+      match ctx.state.accounts.lookup targetSid with
       | none =>
-        (mkResult regs' mem gas', { ctx with provisions := ctx.provisions.push provision })
+        let regs' := setR7 regs PVM.RESULT_WHO
+        (mkResult regs' mem gas', ctx)
+      | some acct =>
+        -- Promote preimage_info from opaque data if needed
+        let (acct, ctx) :=
+          if (acct.preimageInfo.lookup (h, blobLen)).isSome then (acct, ctx)
+          else match promotePreimageInfo acct ctx.opaqueData targetSid h blobLen with
+            | some (acct', opaqueData') => (acct', { ctx with opaqueData := opaqueData' })
+            | none => (acct, ctx)
+        -- Check if there's a preimage_info entry for (hash, len)
+        if (acct.preimageInfo.lookup (h, blobLen)).isSome then
+          let acct' := { acct with preimages := acct.preimages.insert h preimageData }
+          let accounts' := ctx.state.accounts.insert targetSid acct'
+          let state' := { ctx.state with accounts := accounts' }
+          let provision := (targetSid, preimageData)
+          let regs' := setR7 regs PVM.RESULT_OK
+          (mkResult regs' mem gas', { ctx with
+            state := state'
+            provisions := ctx.provisions.push provision })
+        else
+          let regs' := setR7 regs PVM.RESULT_HUH
+          (mkResult regs' mem gas', ctx)
     | _ =>
       -- Page fault on data read → panic (GP: ⚡)
       (mkPanic regs mem gas', ctx)
@@ -1257,7 +1350,8 @@ def accone (ps : PartialState) (serviceId : ServiceId)
       -- Code not available: skip PVM execution, credit transfers only (GP eq 12.24)
       let _ := ()
       { postState := ps, deferredTransfers := #[], yieldHash := none,
-        gasUsed := 0, provisions := #[], opaqueData := opaqueData' }
+        gasUsed := 0, provisions := #[], opaqueData := opaqueData',
+        exitReasonStr := "" }
     | some codeBlob =>
       -- Encode accumulation arguments
       let itemCount := transfers.size + operands.size
@@ -1309,8 +1403,9 @@ def accone (ps : PartialState) (serviceId : ServiceId)
               | some h => some h
               | none => ctx'.yieldHash
             (ctx'.state, ctx'.transfers, yield, ctx'.provisions, ctx'.opaqueData)
-          | .panic =>
-            -- Revert to checkpoint (accounts + opaqueData) if available
+          | _ =>
+            -- Panic/OOG/fault: revert to checkpoint (exceptional dimension)
+            -- GP: y (exceptional context) is returned for non-halt exits
             match ctx'.checkpoint with
             | some (savedAccounts, savedOpaque) =>
               ({ ctx'.state with accounts := savedAccounts },
@@ -1318,9 +1413,6 @@ def accone (ps : PartialState) (serviceId : ServiceId)
                (#[] : Array (ServiceId × ByteArray)), savedOpaque)
             | none =>
               (ps, #[], none, #[], opaqueData')
-          | _ =>
-            -- OOG/fault: revert entirely, discard transfers/yield/provisions
-            (ps, #[], none, #[], opaqueData')
         -- Update last accumulation timeslot (position a in serialized format)
         -- JAR's `parent` field maps to serialized position a = last accumulation timeslot
         let finalState := match finalState.accounts.lookup serviceId with
@@ -1445,6 +1537,7 @@ def accseq (_gasLimit : Gas) (reports : Array WorkReport)
   if newXfers1.size == 0 then
     (reports.size, ps1, yields1, gasMap1, exits1, od1)
   else
+    let exits1' := exits1
     let (ps2, newXfers2, yields2, gasMap2, exits2, od2) := accpar ps1 #[] newXfers1 Dict.empty timeslot entropy configBlob od1
     let allYields := yields1 ++ yields2
     -- Merge gas maps by ADDING values (not replacing)
@@ -1454,14 +1547,14 @@ def accseq (_gasLimit : Gas) (reports : Array WorkReport)
 
     -- Round 3: process any further deferred transfers (last round)
     if newXfers2.size == 0 then
-      (reports.size, ps2, allYields, gasMapFinal, exits1 ++ exits2, od2)
+      (reports.size, ps2, allYields, gasMapFinal, exits1' ++ exits2, od2)
     else
       let (ps3, _, yields3, gasMap3, exits3, od3) := accpar ps2 #[] newXfers2 Dict.empty timeslot entropy configBlob od2
       let finalYields := allYields ++ yields3
       let gasMapFinal' := gasMap3.entries.foldl (init := gasMapFinal) fun acc (k, v) =>
         let existing := match acc.lookup k with | some g => g | none => 0
         acc.insert k (existing + v)
-      (reports.size, ps3, finalYields, gasMapFinal', exits1 ++ exits2 ++ exits3, od3)
+      (reports.size, ps3, finalYields, gasMapFinal', exits1' ++ exits2 ++ exits3, od3)
 
 -- ============================================================================
 -- Top-Level Accumulation — GP §12
