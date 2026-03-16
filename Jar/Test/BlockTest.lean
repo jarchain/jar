@@ -918,4 +918,211 @@ def runBlockTestDirSeq [JamConfig] (dir : String) : IO UInt32 := do
   IO.println s!"  Results: {passed} passed, {failed} failed (of {sorted.size})"
   if failed > 0 then return 1 else return 0
 
+/-- Convert an array of (key, value) byte pairs to a JSON array of
+    `{ "key": "0x...", "value": "0x..." }` objects. -/
+private def kvalsToJson (kvs : Array (ByteArray × ByteArray)) : Json :=
+  Json.arr (kvs.map fun (k, v) =>
+    Json.mkObj [("key", Json.str (bytesToHex k)),
+                ("value", Json.str (bytesToHex v))])
+
+/-- Replay a sequential trace and overwrite each block's JSON files with full
+    pre/post state keyvals. The transition logic mirrors `runBlockTestDirSeq`. -/
+def runBlockTestDirDump [JamConfig] (dir : String) : IO UInt32 := do
+  let dirPath : System.FilePath := dir
+  let entries ← dirPath.readDir
+  let suffix := s!".input.{JamConfig.name}.json"
+  let jsonFiles := entries.filter (fun e => e.fileName.endsWith suffix)
+  let sorted := jsonFiles.qsort (fun a b => a.fileName < b.fileName)
+
+  if sorted.size == 0 then
+    IO.println s!"  No test files found matching *{suffix} in {dir}"
+    return 1
+
+  IO.println s!"  Found {sorted.size} block tests (dump mode)"
+
+  let byteArrayLt (a b : ByteArray) : Bool :=
+    let len := min a.size b.size
+    Id.run do
+      for i in [:len] do
+        if a.get! i < b.get! i then return true
+        if a.get! i > b.get! i then return false
+      return a.size < b.size
+
+  let mut currentState : Option (State × Array (ByteArray × ByteArray)) := none
+  let mut stateMap : Array (Hash × State × Array (ByteArray × ByteArray)) := #[]
+  let mut dumped : Nat := 0
+
+  for entry in sorted do
+    let name := entry.fileName
+    let inputPath := entry.path
+    let outputPath : System.FilePath := inputPath.toString.replace ".input." ".output."
+    let inputContent ← IO.FS.readFile inputPath
+    let outputContent ← IO.FS.readFile outputPath
+    let inputJson ← IO.ofExcept (Json.parse inputContent)
+    let outputJson ← IO.ofExcept (Json.parse outputContent)
+
+    -- Get state: from keyvals if available, otherwise from threaded state
+    let stateAndOpaque ← do
+      let preStateJson ← IO.ofExcept (inputJson.getObjVal? "pre_state")
+      match preStateJson.getObjVal? "keyvals" with
+      | .ok kvJson =>
+        match parseKeyvals kvJson with
+        | .ok kvs =>
+          match @StateSerialization.deserializeState _ kvs with
+          | some (s, od) => pure (some (s, od))
+          | none => pure currentState
+        | .error _ => pure currentState
+      | .error _ => pure currentState
+
+    -- Fork handling: parse the block parent hash and look up the matching
+    -- post-state from stateMap.
+    let blockParentHash : Option Hash := match (do
+        let blockJson ← inputJson.getObjVal? "block"
+        let headerJson ← blockJson.getObjVal? "header"
+        @fromJson? Hash _ (← headerJson.getObjVal? "parent")) with
+      | .ok h => some h
+      | .error _ => none
+
+    let stateAndOpaque : Option (State × Array (ByteArray × ByteArray)) :=
+      match blockParentHash with
+      | some parentHash =>
+        match stateMap.findRev? (fun (h, _, _) => h == parentHash) with
+        | some (_, s, od) => some (s, od)
+        | none => stateAndOpaque
+      | none => stateAndOpaque
+
+    -- If this is the first time we have a state (from keyvals), save it
+    match stateAndOpaque with
+    | some (s, od) =>
+      if stateMap.size == 0 then
+        if hn : s.recent.blocks.size > 0 then
+          let lastIdx := s.recent.blocks.size - 1
+          have : lastIdx < s.recent.blocks.size := by omega
+          let genesisHash := s.recent.blocks[lastIdx].headerHash
+          stateMap := stateMap.push (genesisHash, s, od)
+    | none => pure ()
+
+    match stateAndOpaque with
+    | none =>
+      IO.println s!"  SKIP {name}: no state available"
+      continue
+    | some (state, opaqueData) =>
+
+    -- Serialize pre-state keyvals
+    let preKvs := (@StateSerialization.serializeState _ state).map fun (k, v) => (k.data, v)
+    let allPreKvs := (preKvs ++ opaqueData).qsort fun (k1, _) (k2, _) => byteArrayLt k1 k2
+    let preStateRoot := Merkle.trieRoot (allPreKvs.map fun (k, v) => ((⟨k, sorry⟩ : OctetSeq 31), v))
+
+    -- Parse block
+    let blockResult := do
+      let blockJson ← inputJson.getObjVal? "block"
+      blockFromTraceJson blockJson
+
+    -- Check expected output
+    let isError := match outputJson.getObjVal? "error" with
+      | .ok _ => true
+      | .error _ => false
+
+    -- Write enriched input JSON: { "pre_state": { "state_root": "0x...", "keyvals": [...] }, "block": <original block> }
+    let blockJson := match inputJson.getObjVal? "block" with
+      | .ok bj => bj
+      | .error _ => Json.null
+    let preStateObj := Json.mkObj [
+      ("state_root", Json.str (bytesToHex preStateRoot.data)),
+      ("keyvals", kvalsToJson allPreKvs)]
+    let enrichedInput := Json.mkObj [
+      ("pre_state", preStateObj),
+      ("block", blockJson)]
+    IO.FS.writeFile inputPath (toString enrichedInput)
+
+    -- If block parsing fails, treat as rejected block
+    match blockResult with
+    | .error _parseErr =>
+      -- Rejected block: output has pre-state keyvals (state doesn't change)
+      let outputStateRoot := match (do
+          let ps ← outputJson.getObjVal? "post_state"
+          let sr ← ps.getObjVal? "state_root"
+          match sr with | Json.str s => .ok s | _ => .error "not string") with
+        | .ok sr => sr
+        | .error _ => bytesToHex preStateRoot.data
+      let postObj := if isError then
+          Json.mkObj [("error", match outputJson.getObjVal? "error" with | .ok e => e | .error _ => Json.str "unknown")]
+        else
+          Json.mkObj [("post_state", Json.mkObj [
+            ("state_root", Json.str outputStateRoot),
+            ("keyvals", kvalsToJson allPreKvs)])]
+      IO.FS.writeFile outputPath (toString postObj)
+      IO.println s!"  DUMP {name} (parse error, rejected)"
+      dumped := dumped + 1
+      continue
+    | .ok _ => pure ()
+
+    let block ← IO.ofExcept blockResult
+
+    -- Block import validation + state transition
+    let stateRootOk := block.header.stateRoot == preStateRoot
+    let result := if !stateRootOk then none
+      else @stateTransitionWithOpaque _ state block opaqueData
+
+    let remainingOpaque : Array (ByteArray × ByteArray) := match result with
+      | some r => r.2.2.2
+      | none => opaqueData
+    let postStateOpt : Option State := result.map (·.1)
+
+    match postStateOpt with
+    | some postState =>
+      -- Compute post-state keyvals
+      let postKvs := (@StateSerialization.serializeState _ postState).map fun (k, v) => (k.data, v)
+      let postKeys := postKvs.map Prod.fst
+      let filteredOpaque := remainingOpaque.filter fun (k, _) =>
+        !postKeys.any (· == k)
+      let allPostKvs := (postKvs ++ filteredOpaque).qsort fun (k1, _) (k2, _) => byteArrayLt k1 k2
+
+      -- Read the state_root from the existing output file
+      let outputStateRoot := match (do
+          let ps ← outputJson.getObjVal? "post_state"
+          let sr ← ps.getObjVal? "state_root"
+          match sr with | Json.str s => .ok s | _ => .error "not string") with
+        | .ok sr => sr
+        | .error _ =>
+          -- Fallback: if expected output is error or no post_state, use pre root
+          bytesToHex preStateRoot.data
+
+      -- If expected output is error but we succeeded, still dump with existing output structure
+      let enrichedOutput := if isError then
+          Json.mkObj [("error", match outputJson.getObjVal? "error" with | .ok e => e | .error _ => Json.str "unknown")]
+        else
+          Json.mkObj [("post_state", Json.mkObj [
+            ("state_root", Json.str outputStateRoot),
+            ("keyvals", kvalsToJson allPostKvs)])]
+      IO.FS.writeFile outputPath (toString enrichedOutput)
+
+      -- Thread state forward
+      currentState := some (postState, filteredOpaque)
+      let headerHash := Crypto.blake2b (Codec.encodeHeader block.header)
+      stateMap := stateMap.push (headerHash, postState, filteredOpaque)
+      IO.println s!"  DUMP {name} (success, {allPostKvs.size} kvs)"
+      dumped := dumped + 1
+    | none =>
+      -- Rejected/failed block: output has pre-state keyvals
+      let outputStateRoot := match (do
+          let ps ← outputJson.getObjVal? "post_state"
+          let sr ← ps.getObjVal? "state_root"
+          match sr with | Json.str s => .ok s | _ => .error "not string") with
+        | .ok sr => sr
+        | .error _ => bytesToHex preStateRoot.data
+
+      let enrichedOutput := if isError then
+          Json.mkObj [("error", match outputJson.getObjVal? "error" with | .ok e => e | .error _ => Json.str "unknown")]
+        else
+          Json.mkObj [("post_state", Json.mkObj [
+            ("state_root", Json.str outputStateRoot),
+            ("keyvals", kvalsToJson allPreKvs)])]
+      IO.FS.writeFile outputPath (toString enrichedOutput)
+      IO.println s!"  DUMP {name} (rejected, {allPreKvs.size} kvs)"
+      dumped := dumped + 1
+
+  IO.println s!"  Dumped {dumped} blocks (of {sorted.size})"
+  return 0
+
 end Jar.Test.BlockTest

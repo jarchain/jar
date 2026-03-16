@@ -1,1 +1,2 @@
-{"error":"Local chain error: invalid parent state root (expected: 0x58419ab0cf6d604d..., actual: 0x58419afccf6d204d...)"}
+{"error":
+ "Local chain error: invalid parent state root (expected: 0x58419ab0cf6d604d..., actual: 0x58419afccf6d204d...)"}

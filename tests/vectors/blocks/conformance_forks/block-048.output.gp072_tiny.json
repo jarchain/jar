@@ -1,1 +1,2 @@
-{"error":"Local chain error: block header verification failure: BadSealSignature"}
+{"error":
+ "Local chain error: block header verification failure: BadSealSignature"}
