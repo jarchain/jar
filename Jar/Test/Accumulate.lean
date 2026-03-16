@@ -476,9 +476,9 @@ def runTest (name : String) (pre : TAState) (inp : TAInput)
       if gotAcct.storage.size != expAcct.storage.size then
         ok := false
         IO.println s!"  account[{sid}].storage: expected {expAcct.storage.size} entries, got {gotAcct.storage.size}"
-      if gotAcct.lastAccumulation != expAcct.lastAccumulation then
+      if gotAcct.creationSlot != expAcct.creationSlot then
         ok := false
-        IO.println s!"  account[{sid}].lastAccumulation: expected {expAcct.lastAccumulation}, got {gotAcct.lastAccumulation}"
+        IO.println s!"  account[{sid}].creationSlot: expected {expAcct.creationSlot}, got {gotAcct.creationSlot}"
     | none =>
       ok := false
       IO.println s!"  account[{sid}] missing"

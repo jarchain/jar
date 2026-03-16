@@ -443,9 +443,10 @@ instance : ToJson ServiceAccount where
     ("balance", toJson sa.balance),
     ("min_acc_gas", toJson sa.minAccGas),
     ("min_on_transfer_gas", toJson sa.minOnTransferGas),
-    ("created", toJson sa.created),
+    ("item_count", toJson sa.itemCount),
+    ("creation_slot", toJson sa.creationSlot),
     ("last_accumulation", toJson sa.lastAccumulation),
-    ("parent", toJson sa.parent)]
+    ("parent_service_id", toJson sa.parentServiceId)]
 
 instance : FromJson ServiceAccount where
   fromJson? j := do
@@ -458,9 +459,10 @@ instance : FromJson ServiceAccount where
       balance := ← fromJson? (← j.getObjVal? "balance")
       minAccGas := ← fromJson? (← j.getObjVal? "min_acc_gas")
       minOnTransferGas := ← fromJson? (← j.getObjVal? "min_on_transfer_gas")
-      created := ← fromJson? (← j.getObjVal? "created")
+      itemCount := ← fromJson? (← j.getObjVal? "item_count")
+      creationSlot := ← fromJson? (← j.getObjVal? "creation_slot")
       lastAccumulation := ← fromJson? (← j.getObjVal? "last_accumulation")
-      parent := ← fromJson? (← j.getObjVal? "parent") }
+      parentServiceId := ← fromJson? (← j.getObjVal? "parent_service_id") }
 
 instance : ToJson DeferredTransfer where
   toJson dt := Json.mkObj [

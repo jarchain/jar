@@ -149,19 +149,16 @@ private def parseGreyServiceAccount (dataJson : Json) : Except String ServiceAcc
     balance := ← fromJson? (← svc.getObjVal? "balance")
     minAccGas := ← fromJson? (← svc.getObjVal? "min_item_gas")
     minOnTransferGas := ← fromJson? (← svc.getObjVal? "min_memo_gas")
-    -- NOTE: JAR ServiceAccount field names are mismatched with GP semantics.
-    -- For the STF accumulate test harness, the JSON fields map as:
-    -- JSON "creation_slot" → JAR.created (internally used as a_i items for eject)
-    -- JSON "last_accumulation_slot" → JAR.lastAccumulation
-    -- JSON "parent_service" → JAR.parent
-    -- The real items/bytes/etc come from separate fields:
-    created := ← fromJson? (← svc.getObjVal? "creation_slot")
-    lastAccumulation := ← fromJson? (← svc.getObjVal? "last_accumulation_slot")
-    parent := ← fromJson? (← svc.getObjVal? "parent_service")
-    totalFootprint := match svc.getObjVal? "bytes" with
-      | .ok v => match v.getNat? with | .ok n => n | .error _ => 0
+    -- GP field mapping:
+    -- JSON "items" = a_i (item count), JSON "creation_slot" = a_r (creation timeslot),
+    -- JSON "last_accumulation_slot" = a_a (last accumulation), JSON "parent_service" = a_p
+    itemCount := match svc.getObjVal? "items" with
+      | .ok v => match v.getNat? with | .ok n => UInt32.ofNat n | .error _ => 0
       | .error _ => 0
-    preimageCount := match svc.getObjVal? "items" with
+    creationSlot := ← fromJson? (← svc.getObjVal? "creation_slot")
+    lastAccumulation := ← fromJson? (← svc.getObjVal? "last_accumulation_slot")
+    parentServiceId := ← fromJson? (← svc.getObjVal? "parent_service")
+    totalFootprint := match svc.getObjVal? "bytes" with
       | .ok v => match v.getNat? with | .ok n => n | .error _ => 0
       | .error _ => 0
   }
@@ -295,11 +292,11 @@ private def toJsonGreyServiceAccount (sid : ServiceId) (acct : ServiceAccount) :
         ("balance", toJson acct.balance),
         ("min_item_gas", toJson acct.minAccGas),
         ("min_memo_gas", toJson acct.minOnTransferGas),
-        ("creation_slot", toJson acct.created),
+        ("creation_slot", toJson acct.creationSlot),
         ("last_accumulation_slot", toJson acct.lastAccumulation),
-        ("parent_service", toJson acct.parent),
+        ("parent_service", toJson acct.parentServiceId),
         ("bytes", Json.num (Lean.JsonNumber.fromNat acct.totalFootprint)),
-        ("items", Json.num (Lean.JsonNumber.fromNat acct.preimageCount))]),
+        ("items", Json.num (Lean.JsonNumber.fromNat acct.itemCount.toNat))]),
       ("storage", Json.arr storageEntries.toArray),
       ("preimage_blobs", Json.arr blobEntries.toArray),
       ("preimage_requests", Json.arr reqEntries.toArray)])]

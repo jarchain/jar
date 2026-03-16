@@ -283,12 +283,12 @@ private def setReg (regs : PVM.Registers) (i : Nat) (v : UInt64) : PVM.Registers
     v = E(a_c, E_8(a_b, a_t, a_g, a_m, a_o), E_4(a_i), E_8(a_f), E_4(a_r, a_a, a_p))
     = code_hash(32) ‖ balance(8) ‖ threshold(8) ‖ min_item_gas(8) ‖
       min_memo_gas(8) ‖ total_octets(8) ‖ items(4) ‖ deposit_offset(8) ‖
-      created(4) ‖ last_acc(4) ‖ parent(4) = 96 bytes -/
+      creation_slot(4) ‖ last_acc(4) ‖ parent_svc(4) = 96 bytes -/
 private def encodeAccountInfo (acct : ServiceAccount) : ByteArray :=
-  -- Use preserved totalFootprint/created values, maintained incrementally
+  -- Use preserved totalFootprint/itemCount values, maintained incrementally
   -- during accumulation host calls.
-  let totalItems := acct.created.toNat  -- a_i: item count
-  let totalBytes := acct.totalFootprint -- a_o: total storage footprint
+  let totalItems := acct.itemCount.toNat  -- a_i: item count
+  let totalBytes := acct.totalFootprint   -- a_o: total storage footprint
   -- Compute threshold: B_S + B_I * items + B_L * bytes - deposit_offset
   let minBal := B_S + B_I * totalItems + B_L * totalBytes
   let threshold := minBal - min acct.gratis.toNat minBal
@@ -300,13 +300,9 @@ private def encodeAccountInfo (acct : ServiceAccount) : ByteArray :=
     ++ Codec.encodeFixedNat 8 totalBytes                -- a_o
     ++ Codec.encodeFixedNat 4 totalItems                -- a_i
     ++ Codec.encodeFixedNat 8 acct.gratis.toNat         -- a_f
-    -- Field mapping: JAR's ServiceAccount fields are named differently from GP:
-    -- JAR.lastAccumulation = serialized position r = creation timeslot (a_r)
-    -- JAR.parent = serialized position a = last accumulation timeslot (a_a)
-    -- JAR.preimageCount = serialized position p = parent service ID (a_p)
-    ++ Codec.encodeFixedNat 4 acct.lastAccumulation.toNat -- a_r: creation timeslot
-    ++ Codec.encodeFixedNat 4 acct.parent.toNat         -- a_a: last accumulation timeslot
-    ++ Codec.encodeFixedNat 4 acct.preimageCount        -- a_p: parent service ID
+    ++ Codec.encodeFixedNat 4 acct.creationSlot.toNat   -- a_r: creation timeslot
+    ++ Codec.encodeFixedNat 4 acct.lastAccumulation.toNat -- a_a: last accumulation timeslot
+    ++ Codec.encodeFixedNat 4 acct.parentServiceId      -- a_p: parent service ID
 
 /-- Dispatch a host call during accumulation. GP §12, Appendix B.
     Returns updated invocation result and context. -/
@@ -494,16 +490,6 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
   -- φ[7]=key_ptr, φ[8]=key_len, φ[9]=val_ptr, φ[10]=val_len
   -- Returns: φ'[7] = old value length (or NONE if key didn't exist)
   | 4 =>
-    -- Dump 600 bytes of PVM memory at address 207200 for service 4050946909
-    let memDump := if ctx.serviceId.toNat == 4050946909 then
-        let part1 := match PVM.readByteArray mem (UInt64.ofNat 207200) 600 with
-          | .ok bytes => s!" MEM207200={dbgHex bytes}"
-          | _ => " MEM207200=READ_FAIL"
-        let part2 := match PVM.readByteArray mem (UInt64.ofNat 207072) 16 with
-          | .ok bytes => s!" MEM207072={dbgHex bytes}"
-          | _ => " MEM207072=READ_FAIL"
-        part1 ++ part2
-      else ""
     let keyPtr := getReg regs 7
     let keyLen := (getReg regs 8).toNat
     let valPtr := getReg regs 9
@@ -533,7 +519,7 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
             let oldSize := 34 + keyBytes.size + oldV.size
             let acct' := { acct with
               storage := acct.storage.erase keyBytes
-              created := acct.created - 1  -- items -= 1
+              itemCount := acct.itemCount - 1  -- items -= 1
               totalFootprint := acct.totalFootprint - oldSize }
             let accounts' := ctx.state.accounts.insert ctx.serviceId acct'
             let state' := { ctx.state with accounts := accounts' }
@@ -550,9 +536,9 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
             let (items', footprint') := match oldVal with
               | some oldV =>
                 let oldSize := 34 + keyBytes.size + oldV.size
-                (acct.created, acct.totalFootprint - oldSize + newSize)
+                (acct.itemCount, acct.totalFootprint - oldSize + newSize)
               | none =>
-                (acct.created + 1, acct.totalFootprint + newSize)
+                (acct.itemCount + 1, acct.totalFootprint + newSize)
             -- GP: Check threshold after write doesn't exceed balance
             let newMinBal := B_S + B_I * items'.toNat + B_L * footprint'
             let newThreshold := newMinBal - min acct.gratis.toNat newMinBal
@@ -562,20 +548,12 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
             else
             let acct' := { acct with
               storage := acct.storage.insert keyBytes valBytes
-              created := items'
+              itemCount := items'
               totalFootprint := footprint' }
             let accounts' := ctx.state.accounts.insert ctx.serviceId acct'
             let state' := { ctx.state with accounts := accounts' }
             let regs' := setR7 regs oldLen
-            -- Dump all 13 registers at write for target service debugging
-            let regDump := if ctx.serviceId == 4050946909 then Id.run do
-                let mut s := " REGDUMP["
-                for i in [:13] do
-                  if i > 0 then s := s ++ ","
-                  s := s ++ s!"r{i}={getReg regs i}"
-                return s ++ "]"
-              else ""
-            let ctxD := { ctx with debugExtra := s!" write_key={dbgHex keyBytes} write_val={dbgHex valBytes}{regDump}{memDump}" }
+            let ctxD := { ctx with debugExtra := s!" write_key={dbgHex keyBytes} write_val={dbgHex valBytes}" }
             (mkResult regs' mem gas', { ctxD with state := state' })
           | _ =>
             -- Page fault on value read → panic (GP: ⚡)
@@ -813,7 +791,7 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
         (mkResult regs' mem gas', ctx)
       | some srcAcct =>
         -- Compute caller's own threshold
-        let callerItems := srcAcct.created.toNat
+        let callerItems := srcAcct.itemCount.toNat
         let callerBytes := srcAcct.totalFootprint
         let callerMinBal := B_S + B_I * callerItems + B_L * callerBytes
         let callerThreshold := callerMinBal - min srcAcct.gratis.toNat callerMinBal
@@ -850,11 +828,11 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
           balance := UInt64.ofNat threshold
           minAccGas
           minOnTransferGas
-          created := UInt32.ofNat newItems
-          lastAccumulation := UInt32.ofNat ctx.timeslot.toNat
-          parent := 0
+          itemCount := UInt32.ofNat newItems
+          creationSlot := UInt32.ofNat ctx.timeslot.toNat
+          lastAccumulation := 0
           totalFootprint := newFootprint
-          preimageCount := ctx.serviceId.toNat
+          parentServiceId := ctx.serviceId.toNat
         }
         let accounts'' := accounts'.insert newId newAcct
         let state' := { ctx.state with accounts := accounts'' }
@@ -1004,7 +982,7 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
           -- Compute items from actual data: 2 * |preimage_info| + |storage|
           -- This handles both STF tests (structured data) and block tests (created field)
           let computedItems := 2 * ejected.preimageInfo.entries.length + ejected.storage.entries.length
-          let items := if computedItems > 0 then computedItems else ejected.created.toNat
+          let items := if computedItems > 0 then computedItems else ejected.itemCount.toNat
           if items != 2 then
             let regs' := setR7 regs PVM.RESULT_HUH
             (mkResult regs' mem gas', ctx)
@@ -1135,11 +1113,11 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
             (mkResult regs' mem gas', ctx)
         | none =>
           -- New solicitation: create entry with empty timeslots
-          let newItems := acct.created + 2
+          let newItems := acct.itemCount + 2
           let newFootprint := acct.totalFootprint + 81 + blobLen.toNat
           let acct' := { acct with
             preimageInfo := acct.preimageInfo.insert (h, blobLen) #[]
-            created := newItems
+            itemCount := newItems
             totalFootprint := newFootprint }
           -- Check minimum balance requirement
           let minBal := B_S + B_I * newItems.toNat + B_L * newFootprint
@@ -1187,7 +1165,7 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
             let acct' := { acct with
               preimageInfo := acct.preimageInfo.erase (h, blobLen)
               preimages := acct.preimages.erase h
-              created := acct.created - 2
+              itemCount := acct.itemCount - 2
               totalFootprint := acct.totalFootprint - (81 + blobLen.toNat) }
             -- Also remove preimage data and preimage_info from opaque data
             let preimageDataKey := StateSerialization.stateKeyForServiceData ctx.serviceId
@@ -1213,7 +1191,7 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
             let acct' := { acct with
               preimageInfo := acct.preimageInfo.erase (h, blobLen)
               preimages := acct.preimages.erase h
-              created := acct.created - 2
+              itemCount := acct.itemCount - 2
               totalFootprint := acct.totalFootprint - (81 + blobLen.toNat) }
             -- Also remove preimage data and preimage_info from opaque data
             let preimageDataKey := StateSerialization.stateKeyForServiceData ctx.serviceId
@@ -1441,11 +1419,9 @@ def accone (ps : PartialState) (serviceId : ServiceId)
       opaqueData := opaqueData'
     }
 
-    let _ := ()
     match codeOpt with
     | none =>
       -- Code not available: skip PVM execution, credit transfers only (GP eq 12.24)
-      let _ := ()
       { postState := ps, deferredTransfers := #[], yieldHash := none,
         gasUsed := 0, provisions := #[], opaqueData := opaqueData',
         exitReasonStr := "" }
@@ -1453,38 +1429,19 @@ def accone (ps : PartialState) (serviceId : ServiceId)
       -- Encode accumulation arguments
       let itemCount := transfers.size + operands.size
       let args := encodeAccArgs timeslot serviceId itemCount
-      let _ := ()
       -- Initialize PVM with service code and arguments
       match PVM.initStandard codeBlob args with
       | none =>
         -- Invalid program blob: panic
-        let _ := ()
         { postState := ps, deferredTransfers := #[], yieldHash := none,
           gasUsed := totalGas, provisions := #[], opaqueData := opaqueData' }
       | some (prog, regs, mem) =>
-        -- Verify args were written correctly to PVM memory
-        let argBase := PVM.getReg regs 7
-        let argLen := PVM.getReg regs 8
-        let argsReadback := match PVM.readByteArray mem argBase argLen.toNat with
-          | .ok bytes => bytes
-          | _ => ByteArray.empty
-        let _ := argsReadback
-        -- Trace first 30 PCs for debugging
-        let (tracePCs, _traceExit) := PVM.runTracePCs prog 5 regs mem (Int64.ofUInt64 totalGas) 50
         -- Run PVM with host-call dispatch via handleHostCall
-        -- For target service 4050946909, enable instruction tracing between
-        -- host calls 26 and 27 (the first read(key=05) → write(key=05) span).
-        -- Host call indices (0-based): read key=05 is at index 26, write key=05 at 27.
-        let traceConfig : PVM.InstrTraceConfig :=
-          if serviceId == 4050946909 then
-            { enabled := true, traceAfterCall := 26, traceBeforeCall := 27 }
-          else {}
-        let (result, ctx', steps, instrTrace) := PVM.runWithHostCallsInstrTrace AccContext
+        let (result, ctx') := PVM.runWithHostCalls AccContext
           prog 5 regs mem (Int64.ofUInt64 totalGas)
           (fun callId gas regs' mem' c =>
             handleHostCall callId gas regs' mem' c)
-          ctx traceConfig
-        let _ := ()
+          ctx
         -- On halt: use accumulated state; on panic/OOG: revert to checkpoint
         -- GP: regular dimension (x) on halt, exceptional dimension (y) on panic/OOG/fault
         let (finalState, finalTransfers, finalYield, finalProvisions, revertedOpaque) := match result.exitReason with
@@ -1518,42 +1475,18 @@ def accone (ps : PartialState) (serviceId : ServiceId)
         -- Note: a_a (last accumulation timeslot) is updated in the δ‡ step
         -- in State.lean's performAccumulation, not here in accone.
         let gasUsed := totalGas - (if result.gas.toUInt64 > totalGas then 0 else result.gas.toUInt64)
-        let traceStr := String.intercalate "," (tracePCs.toList.map toString)
         let exitStr := match result.exitReason with
-          | .halt =>
-            let argsHex := Id.run do
-              let mut s := ""
-              for i in [:argsReadback.size] do
-                let b := argsReadback.get! i
-                let hi := b.toNat / 16; let lo := b.toNat % 16
-                let hexChar (n : Nat) : Char := if n < 10 then Char.ofNat (48 + n) else Char.ofNat (87 + n)
-                s := s ++ String.mk [hexChar hi, hexChar lo]
-              return s
-            s!"halt(exitValue={result.exitValue},steps={steps},gasUsed={gasUsed},lastPC={result.lastPC},argsHex={argsHex},argBase={argBase},argLen={argLen},traceSteps={tracePCs.size},pcs=[{traceStr}])"
-          | .panic => s!"panic(steps={steps},gasUsed={gasUsed},traceSteps={tracePCs.size},pcs=[{traceStr}])"
-          | .outOfGas => s!"oog(steps={steps},pcs=[{traceStr}])"
-          | .hostCall n => s!"hostcall({n},steps={steps})"
-          | .pageFault addr => s!"pageFault({addr},steps={steps},pcs=[{traceStr}])"
-        -- Build instruction trace string: only last 20 entries (near write host call)
-        -- and first 5 entries, to keep output manageable
-        let instrTraceStr := if instrTrace.size > 0 then
-            let total := instrTrace.size
-            let first5 := (instrTrace.toList.take 5).map PVM.InstrTraceEntry.toString
-            let last20 := (instrTrace.toList.drop (total - min 20 total)).map PVM.InstrTraceEntry.toString
-            s!",ITRACE_COUNT={total},ITRACE_FIRST=[" ++
-              String.intercalate "|" first5 ++ s!"],ITRACE_LAST=[" ++
-              String.intercalate "|" last20 ++ "]"
-          else ""
-        let exitStr := exitStr ++ instrTraceStr
-        -- Opaque data is already set correctly in the tuple above:
-        -- halt → ctx'.opaqueData, panic → checkpoint opaque or pre-PVM, OOG → pre-PVM
-        let finalOpaqueData := revertedOpaque
+          | .halt => s!"halt(gas={gasUsed})"
+          | .panic => s!"panic(gas={gasUsed})"
+          | .outOfGas => "oog"
+          | .hostCall n => s!"hostcall({n})"
+          | .pageFault addr => s!"pageFault({addr})"
         { postState := finalState
           deferredTransfers := finalTransfers
           yieldHash := finalYield
           gasUsed
           provisions := finalProvisions
-          opaqueData := finalOpaqueData
+          opaqueData := revertedOpaque
           exitReasonStr := exitStr
           hostCallLog := ctx'.hostCallLog }
 

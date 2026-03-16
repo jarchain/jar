@@ -339,9 +339,9 @@ instance : Arbitrary ServiceAccount where
       balance := ← arbitrary
       minAccGas := ← arbitrary
       minOnTransferGas := ← arbitrary
-      created := ← arbitrary
+      itemCount := ← arbitrary
+      creationSlot := ← arbitrary
       lastAccumulation := ← arbitrary
-      parent := ← arbitrary
     }
 
 instance : Shrinkable ServiceAccount where

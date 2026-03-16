@@ -397,17 +397,17 @@ private def serializeAccumulationOutputs (outputs : AccumulationOutputs) : ByteA
 /-- C(255, s): Service account metadata.
     Field layout (matches Grey's serialize_service_account_with_id):
     E(0) ++ a_c ++ E_8(b, g, m, o, f) ++ E_4(i, r, a, p)
-    where o = totalFootprint, f = gratis, i = created (item count),
-    a = parent (last_activity), p = preimageCount. -/
+    where o = totalFootprint, f = gratis, i = itemCount,
+    a = lastAccumulation (last_activity), p = parentServiceId. -/
 private def serializeServiceAccount (account : ServiceAccount) (_sid : ServiceId)
     : ByteArray := Id.run do
   let mut buf := ByteArray.empty
-  -- Use preserved totalFootprint/created/preimageCount values.
+  -- Use preserved totalFootprint/itemCount/parentServiceId values.
   -- These are maintained incrementally during accumulation host calls
-  -- (write updates created=items and totalFootprint, solicit/forget update preimageInfo counts).
+  -- (write updates itemCount and totalFootprint, solicit/forget update preimageInfo counts).
   let footprint := account.totalFootprint
-  let itemCount := account.created.toNat  -- a_i: item count
-  let preimCount := account.preimageCount -- a_p (but actually stores preimage count for serialization)
+  let itemCount := account.itemCount.toNat  -- a_i: item count
+  let preimCount := account.parentServiceId -- a_p: parent service ID
   buf := buf ++ ByteArray.mk #[0]  -- version
   buf := buf ++ account.codeHash.data
   buf := buf ++ encodeFixedNat 8 account.balance.toNat
@@ -416,8 +416,8 @@ private def serializeServiceAccount (account : ServiceAccount) (_sid : ServiceId
   buf := buf ++ encodeFixedNat 8 footprint
   buf := buf ++ encodeFixedNat 8 account.gratis.toNat
   buf := buf ++ encodeFixedNat 4 itemCount
+  buf := buf ++ encodeFixedNat 4 account.creationSlot.toNat
   buf := buf ++ encodeFixedNat 4 account.lastAccumulation.toNat
-  buf := buf ++ encodeFixedNat 4 account.parent.toNat
   buf := buf ++ encodeFixedNat 4 preimCount
   return buf
 
@@ -845,11 +845,11 @@ private def deserializeServiceAccountD : Decoder ServiceAccount := fun s => do
     balance := UInt64.ofNat balance
     minAccGas := UInt64.ofNat minAccGas
     minOnTransferGas := UInt64.ofNat minOnTransferGas
-    created := UInt32.ofNat accumCounter
-    lastAccumulation := UInt32.ofNat lastAccumulation
-    parent := UInt32.ofNat lastActivity
+    itemCount := UInt32.ofNat accumCounter
+    creationSlot := UInt32.ofNat lastAccumulation
+    lastAccumulation := UInt32.ofNat lastActivity
     totalFootprint := totalFootprint
-    preimageCount := preimageCount
+    parentServiceId := preimageCount
   }, s)
 
 -- ============================================================================

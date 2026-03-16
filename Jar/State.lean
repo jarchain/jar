@@ -152,7 +152,7 @@ def updateRecentHistory
     (bdag : RecentHistory) (headerHash : Hash)
     (accOutputs : AccumulationOutputs)
     (guarantees : GuaranteesExtrinsic) : RecentHistory :=
-  let maxLen := 8  -- H_R : Maximum recent history length
+  let maxLen := H_RECENT
   -- Compute accumulate root (balanced Keccak Merkle tree of outputs)
   let accRoot := computeAccumulateRoot accOutputs
   -- MMR append to belt
@@ -422,7 +422,6 @@ def performAccumulation
   let editedAll := editQueue allQueuedWithNew immediateHashes
   let queueResolved := resolveQueue editedAll
   let accumulatable := immediate ++ queueResolved
-  let _ := ()
 
   -- Step 3: Accumulate all reports (Δ+)
   -- For simplicity, accumulate all (gas budget should be sufficient for tiny config)
@@ -496,7 +495,7 @@ def performAccumulation
   let servicesWithLastAcc := accStats.entries.foldl (init := result.services)
     fun svcs (sid, _) =>
       match svcs.lookup sid with
-      | some acct => svcs.insert sid { acct with parent := t' }
+      | some acct => svcs.insert sid { acct with lastAccumulation := t' }
       | none => svcs
   { services := servicesWithLastAcc
     privileged := result.privileged

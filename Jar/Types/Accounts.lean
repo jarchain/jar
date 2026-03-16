@@ -35,16 +35,16 @@ structure ServiceAccount where
   minAccGas : Gas
   /-- m : Minimum on-transfer (memo) gas. ℕ_G. -/
   minOnTransferGas : Gas
-  /-- i : Creation timeslot. ℕ_T. -/
-  created : Timeslot
-  /-- r : Last accumulation timeslot. ℕ_T. -/
-  lastAccumulation : Timeslot
-  /-- a : Parent service index. ℕ_S. -/
-  parent : ServiceId
-  /-- o : Total storage footprint (computed). Preserved from serialized state. -/
+  /-- a_i : Number of storage items. ℕ_I. -/
+  itemCount : UInt32 := 0
+  /-- a_r : Creation timeslot. ℕ_T. -/
+  creationSlot : Timeslot := 0
+  /-- a_a : Most recent accumulation timeslot. ℕ_T. -/
+  lastAccumulation : Timeslot := 0
+  /-- a_p : Parent service ID. ℕ_S. -/
+  parentServiceId : Nat := 0
+  /-- a_o : Total storage footprint in octets (computed). Preserved from serialized state. -/
   totalFootprint : Nat := 0
-  /-- p : Preimage request count (computed). Preserved from serialized state. -/
-  preimageCount : Nat := 0
 
 -- ============================================================================
 -- §9 — Service Accounts State (eq:serviceaccounts)

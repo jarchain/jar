@@ -735,7 +735,7 @@ def runBlockTestDirSeq [JamConfig] (dir : String) : IO UInt32 := do
                 let short := if reason.length > 100 then (reason.toList.take 100 |> String.mk) ++ "..." else reason
                 IO.println s!"    acc svc={sid}: {short}"
             for (sid, acct) in postState.services.entries.toArray do
-              IO.println s!"    svc {sid}: storage={acct.storage.size} items={acct.created} footprint={acct.totalFootprint}"
+              IO.println s!"    svc {sid}: storage={acct.storage.size} items={acct.itemCount} footprint={acct.totalFootprint}"
           pure ()
           passed := passed + 1
           currentState := some (postState, filteredOpaque)
@@ -876,7 +876,7 @@ def runBlockTestDirSeq [JamConfig] (dir : String) : IO UInt32 := do
             IO.println s!"    acc svc={sid}: {reason}"
           -- Debug: show service storage state
           for (sid, acct) in postState.services.entries.toArray do
-            IO.println s!"    svc {sid}: storage={acct.storage.size} preimages={acct.preimages.size} preimageInfo={acct.preimageInfo.size} bal={acct.balance} parent={acct.parent} created={acct.created} footprint={acct.totalFootprint} lastAcc={acct.lastAccumulation} preimCount={acct.preimageCount} gratis={acct.gratis}"
+            IO.println s!"    svc {sid}: storage={acct.storage.size} preimages={acct.preimages.size} preimageInfo={acct.preimageInfo.size} bal={acct.balance} parentSvc={acct.parentServiceId} creationSlot={acct.creationSlot} footprint={acct.totalFootprint} lastAcc={acct.lastAccumulation} itemCount={acct.itemCount} gratis={acct.gratis}"
           -- Debug: show serialized component sizes and hashes
           for (k, v) in allPostKvs do
             let idx := k.get! 0
