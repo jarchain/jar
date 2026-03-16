@@ -423,10 +423,11 @@ def performAccumulation
   let queueResolved := resolveQueue editedAll
   let accumulatable := immediate ++ queueResolved
 
-  -- Step 3: Accumulate all reports (Δ+)
-  -- For simplicity, accumulate all (gas budget should be sufficient for tiny config)
+  -- Step 3: Accumulate reports (Δ+)
+  -- GP deviation: should limit n reports by gas budget G_A * C. Currently accumulates
+  -- all reports, which is correct for tiny config (gas always sufficient).
+  let n := accumulatable.size
   let result : Accumulation.AccumulationResult := Accumulation.accumulate s' accumulatable t' opaqueData
-  let n := accumulatable.size  -- all accumulated (gas sufficient)
 
   -- Step 4: Collect accumulated package hashes for history (sorted)
   let hashLt (a b : Hash) : Bool := Id.run do
@@ -576,8 +577,9 @@ def integratePreimages
             preimageInfo := acct.preimageInfo.insert (h, blobLen)
               (timeslots.push t') }
           (acc.insert sid acct', od')
-  -- Note: Expunging of old preimage solicitations is NOT done here.
-  -- It happens via the `forget` host call (24) during accumulation.
+  -- GP deviation: expired preimage solicitations (older than D_EXPUNGE timeslots)
+  -- should be expunged here for all services. Currently deferred to the `forget(24)`
+  -- host call during accumulation, which only covers services that actually accumulate.
   (delta', od')
 
 -- ============================================================================
@@ -1076,8 +1078,11 @@ def stateTransitionWithOpaque (s : State) (b : Block)
   -- Tickets use eta'_2 for context and the current ring root
   guard (ext.tickets.all fun tp =>
     Consensus.verifyTicketProof safrole'.ringRoot eta'.twoBack tp (UInt32.ofNat V))
-  -- Block import validation: epoch marker presence (contents check is too strict for forks)
-  -- Note: the presence/absence check is already in validateHeaderNoSeal
+  -- Block import validation: epoch marker contents
+  -- NOTE: Disabled — epoch marker entropy/validator checks fail on fork traces
+  -- where blocks reference state from a different chain branch. The presence/absence
+  -- check (in validateHeaderNoSeal) is sufficient for current test coverage.
+  -- guard (validateEpochMarkerContents s h eta' kappa')
   -- Block import validation: assurance ordering (sorted, unique)
   guard (validateAssuranceOrder ext.assurances)
   -- Block import validation: assurance validator indices in range
@@ -1087,17 +1092,22 @@ def stateTransitionWithOpaque (s : State) (b : Block)
   -- Block import validation: guarantee timeslots not in future
   guard (validateGuaranteeTimeslots ext.guarantees t')
   -- Block import validation: guarantee credential signatures
-  -- Guarantees may use current, new, or previous validators depending on rotation.
-  -- Check against all relevant validator sets (accept if any verifies).
-  -- A genuinely bad signature will fail against all.
+  -- GP: each guarantee should be checked against the validator set for the epoch
+  -- in which it was created. Current implementation is overly permissive: accepts
+  -- if signatures verify against ANY of {current, next, previous} validator sets.
+  -- TODO: determine epoch from guarantee context and use the precise validator set.
   guard (validateGuaranteeSignatures ext.guarantees s.currentValidators ||
          validateGuaranteeSignatures ext.guarantees kappa' ||
          validateGuaranteeSignatures ext.guarantees s.previousValidators)
   -- Block import validation: guarantee report context anchor must be in recent history
   guard (ext.guarantees.all fun g =>
     s.recent.blocks.any fun bi => bi.headerHash == g.report.context.anchorHash)
-  -- Note: guarantee context state root check removed (stateRoot in recent blocks
-  -- is set by the NEXT block's header, so it may be zero for the most recent block)
+  -- Guarantee context state root must match recent history entry (skip zero roots —
+  -- stateRoot in recent blocks is set by the NEXT block's header, so may be zero)
+  guard (ext.guarantees.all fun g =>
+    s.recent.blocks.any fun bi =>
+      bi.headerHash == g.report.context.anchorHash &&
+      (bi.stateRoot == Hash.zero || bi.stateRoot == g.report.context.anchorStateRoot))
   -- Block import validation: assurance anchor must equal parent hash
   guard (validateAssuranceAnchors ext.assurances s)
   -- Block import validation: assurance signatures (use post-epoch validators)

@@ -1663,28 +1663,32 @@ def accseq (_gasLimit : Gas) (reports : Array WorkReport)
   -- Round 1: accumulate work-report operands + initial deferred transfers
   let (ps1, newXfers1, yields1, gasMap1, exits1, od1) := accpar ps reports initialTransfers freeGasMap timeslot entropy configBlob opaqueData
 
-  -- Round 2: process deferred transfers generated in round 1
-  if newXfers1.size == 0 then
-    (reports.size, ps1, yields1, gasMap1, exits1, od1)
-  else
-    let exits1' := exits1
-    let (ps2, newXfers2, yields2, gasMap2, exits2, od2) := accpar ps1 #[] newXfers1 Dict.empty timeslot entropy configBlob od1
-    let allYields := yields1 ++ yields2
-    -- Merge gas maps by ADDING values (not replacing)
-    let gasMapFinal := gasMap2.entries.foldl (init := gasMap1) fun acc (k, v) =>
-      let existing := match acc.lookup k with | some g => g | none => 0
-      acc.insert k (existing + v)
-
-    -- Round 3: process any further deferred transfers (last round)
-    if newXfers2.size == 0 then
-      (reports.size, ps2, allYields, gasMapFinal, exits1' ++ exits2, od2)
-    else
-      let (ps3, _, yields3, gasMap3, exits3, od3) := accpar ps2 #[] newXfers2 Dict.empty timeslot entropy configBlob od2
-      let finalYields := allYields ++ yields3
-      let gasMapFinal' := gasMap3.entries.foldl (init := gasMapFinal) fun acc (k, v) =>
+  -- Subsequent rounds: process deferred transfers until none remain.
+  -- GP §12 eq:accseq: iterate until no more deferred transfers are produced.
+  -- Bound iterations to prevent infinite loops (transfers should converge).
+  let maxRounds := 10
+  let (psFinal, allYields, gasMapFinal, allExits, odFinal) := Id.run do
+    let mut curPs := ps1
+    let mut curXfers := newXfers1
+    let mut curYields := yields1
+    let mut curGasMap := gasMap1
+    let mut curExits := exits1
+    let mut curOd := od1
+    for _ in [:maxRounds] do
+      if curXfers.size == 0 then break
+      let (ps', xfers', yields', gasMap', exits', od') :=
+        accpar curPs #[] curXfers Dict.empty timeslot entropy configBlob curOd
+      curPs := ps'
+      curXfers := xfers'
+      curYields := curYields ++ yields'
+      curGasMap := gasMap'.entries.foldl (init := curGasMap) fun acc (k, v) =>
         let existing := match acc.lookup k with | some g => g | none => 0
         acc.insert k (existing + v)
-      (reports.size, ps3, finalYields, gasMapFinal', exits1' ++ exits2 ++ exits3, od3)
+      curExits := curExits ++ exits'
+      curOd := od'
+    return (curPs, curYields, curGasMap, curExits, curOd)
+
+  (reports.size, psFinal, allYields, gasMapFinal, allExits, odFinal)
 
 -- ============================================================================
 -- Top-Level Accumulation — GP §12
