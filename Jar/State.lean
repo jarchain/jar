@@ -583,9 +583,10 @@ def integratePreimages
             preimageInfo := acct.preimageInfo.insert (h, blobLen)
               (timeslots.push t') }
           (acc.insert sid acct', od')
-  -- GP deviation: expired preimage solicitations (older than D_EXPUNGE timeslots)
-  -- should be expunged here for all services. Currently deferred to the `forget(24)`
-  -- host call during accumulation, which only covers services that actually accumulate.
+  -- GP: expired preimage solicitations (ts.size >= 2, ts[1] + D_EXPUNGE < t') should
+  -- be expunged here for all services. Not implemented because test vectors (generated
+  -- by PolkaJAM) don't perform block-level expunging — they defer to forget(24) during
+  -- accumulation. Enabling causes 13 test failures.
   (delta', od')
 
 -- ============================================================================
