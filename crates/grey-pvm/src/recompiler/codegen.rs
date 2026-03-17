@@ -1582,79 +1582,71 @@ impl Compiler {
 
             self.asm.bind_label(nonzero);
 
-            // Save RAX if it's not the destination
-            let _need_save_rax = d_reg != Reg::RAX && a_reg != Reg::RAX && b_reg != Reg::RAX;
-            // Actually we always clobber RAX and RDX. Save them.
-            self.asm.push(Reg::RAX);
-            self.asm.push(SCRATCH); // save RDX
+            // x86 DIV/IDIV: dividend in RDX:RAX, divisor in any GPR except RAX/RDX.
+            // Quotient → RAX, remainder → RDX. Both are always clobbered.
+            //
+            // Strategy: save RAX and RDX to stack, load operands from saved values
+            // if needed, perform division, then push result, restore RAX/RDX, and
+            // load result into d_reg last (so it correctly overwrites even if
+            // d_reg is RAX or RDX).
 
-            // Load dividend into RAX
-            self.asm.mov_rr(Reg::RAX, a_reg);
-            // Put divisor somewhere safe (use a callee-saved if not clobbered)
-            // If b_reg is RAX or RDX, we need to save it first
-            let div_reg;
-            if b_reg == Reg::RAX || b_reg == SCRATCH {
-                // Load divisor from the saved stack value
-                // Actually b_reg's value is already on stack if it's RAX
-                // This is getting complex. Just push b_reg before we clobber.
-                self.asm.push(b_reg);
-                // We'll use stack later
-                div_reg = Reg::RCX; // temp, but RCX = φ[12]
-                self.asm.push(Reg::RCX);
-                self.asm.mov_load64(div_reg, Reg::RSP, 8); // load saved b_reg
+            // Save RAX and RDX.
+            self.asm.push(Reg::RAX);
+            self.asm.push(SCRATCH); // SCRATCH = RDX
+            // Stack: [RSP+0]=old_RDX, [RSP+8]=old_RAX
+
+            // Load divisor into SCRATCH2 (RCX). Since φ[12] is spilled to
+            // JitContext memory, RCX is free within a single instruction's codegen.
+            if b_reg == Reg::RAX {
+                self.asm.mov_load64(SCRATCH2, Reg::RSP, 8); // original RAX
+            } else if b_reg == SCRATCH {
+                self.asm.mov_load64(SCRATCH2, Reg::RSP, 0); // original RDX
             } else {
-                div_reg = b_reg;
+                self.asm.mov_rr(SCRATCH2, b_reg);
             }
 
+            // Load dividend into RAX.
+            if a_reg == Reg::RAX {
+                self.asm.mov_load64(Reg::RAX, Reg::RSP, 8); // original RAX
+            } else if a_reg == SCRATCH {
+                self.asm.mov_load64(Reg::RAX, Reg::RSP, 0); // original RDX
+            } else {
+                self.asm.mov_rr(Reg::RAX, a_reg);
+            }
+
+            // Perform the division.
             if is_32bit {
                 if signed {
                     self.asm.movsxd(Reg::RAX, Reg::RAX);
                     self.asm.cdq();
-                    self.asm.idiv32(div_reg);
+                    self.asm.idiv32(SCRATCH2);
                 } else {
                     self.asm.movzx_32_64(Reg::RAX, Reg::RAX);
-                    self.asm.mov_ri64(SCRATCH, 0); // zero RDX
-                    self.asm.div32(div_reg);
+                    self.asm.mov_ri64(SCRATCH, 0);
+                    self.asm.div32(SCRATCH2);
                 }
             } else {
                 if signed {
                     self.asm.cqo();
-                    self.asm.idiv64(div_reg);
+                    self.asm.idiv64(SCRATCH2);
                 } else {
-                    self.asm.mov_ri64(SCRATCH, 0); // zero RDX
-                    self.asm.div64(div_reg);
+                    self.asm.mov_ri64(SCRATCH, 0);
+                    self.asm.div64(SCRATCH2);
                 }
             }
 
-            // Result: quotient in RAX, remainder in RDX
+            // Result: quotient in RAX, remainder in RDX (SCRATCH).
             let result_reg = if remainder { SCRATCH } else { Reg::RAX };
 
-            // Restore b_reg if we saved it
-            if b_reg == Reg::RAX || b_reg == SCRATCH {
-                self.asm.pop(Reg::RCX);
-                self.asm.pop(b_reg);
-            }
-
-            // Save result to a temp location
-            self.asm.mov_rr(REG_MAP[*rd], result_reg);
-
-            // Restore RAX and RDX
-            self.asm.pop(SCRATCH);
-            self.asm.pop(Reg::RAX);
-
-            // But wait: we just moved result into d_reg, then restored RAX.
-            // If d_reg is RAX, the restore just clobbered it!
-            // Need to handle this case specially.
-            if d_reg == Reg::RAX {
-                // Put result on stack above the saved values
-                // Actually let's restructure: save result to context temp, restore, load from temp
-                // This is getting complex. Let me simplify.
-                // Re-do: use context temp storage
-                self.asm.pop(SCRATCH); // undo pop SCRATCH
-                self.asm.pop(Reg::RAX); // undo pop RAX
-                // ... this doesn't work because we already did it.
-                // Let's just handle the d_reg == RAX case with a separate path.
-            }
+            // Push result, restore RAX/RDX, then load result into d_reg.
+            // This ordering ensures d_reg gets the correct value even when
+            // d_reg is RAX or RDX (the load happens after the restore).
+            self.asm.push(result_reg);
+            // Stack: [RSP+0]=result, [RSP+8]=old_RDX, [RSP+16]=old_RAX
+            self.asm.mov_load64(Reg::RAX, Reg::RSP, 16); // restore original RAX
+            self.asm.mov_load64(SCRATCH, Reg::RSP, 8);    // restore original RDX
+            self.asm.mov_load64(d_reg, Reg::RSP, 0);      // load result (last!)
+            self.asm.add_ri(Reg::RSP, 24);                 // clean up 3 stack slots
 
             if is_32bit {
                 self.asm.movsxd(d_reg, d_reg);
