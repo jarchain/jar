@@ -45,6 +45,36 @@ const ELF_MAGIC: [u8; 4] = [0x7F, b'E', b'L', b'F'];
 // RISC-V machine type
 const EM_RISCV: u16 = 243;
 
+/// Read a little-endian u16 from `data` at `offset`, returning an error if out of bounds.
+fn read_u16(data: &[u8], offset: usize) -> Result<u16, TranspileError> {
+    data.get(offset..offset + 2)
+        .and_then(|s| s.try_into().ok())
+        .map(u16::from_le_bytes)
+        .ok_or_else(|| TranspileError::ElfParse(format!("read u16 at offset {offset} out of bounds")))
+}
+
+/// Read a little-endian u32 from `data` at `offset`, returning an error if out of bounds.
+fn read_u32(data: &[u8], offset: usize) -> Result<u32, TranspileError> {
+    data.get(offset..offset + 4)
+        .and_then(|s| s.try_into().ok())
+        .map(u32::from_le_bytes)
+        .ok_or_else(|| TranspileError::ElfParse(format!("read u32 at offset {offset} out of bounds")))
+}
+
+/// Read a little-endian u64 from `data` at `offset`, returning an error if out of bounds.
+fn read_u64(data: &[u8], offset: usize) -> Result<u64, TranspileError> {
+    data.get(offset..offset + 8)
+        .and_then(|s| s.try_into().ok())
+        .map(u64::from_le_bytes)
+        .ok_or_else(|| TranspileError::ElfParse(format!("read u64 at offset {offset} out of bounds")))
+}
+
+/// Get a slice `data[offset..offset+len]`, returning an error if out of bounds.
+fn get_slice(data: &[u8], offset: usize, len: usize) -> Result<&[u8], TranspileError> {
+    data.get(offset..offset.saturating_add(len))
+        .ok_or_else(|| TranspileError::ElfParse(format!("slice [{offset}..+{len}] out of bounds (len={})", data.len())))
+}
+
 impl Elf {
     /// Parse an ELF binary.
     pub fn parse(data: &[u8]) -> Result<Self, TranspileError> {
@@ -81,11 +111,11 @@ impl Elf {
     }
 
     fn parse_elf32(data: &[u8]) -> Result<Self, TranspileError> {
-        let entry_point = u32::from_le_bytes([data[24], data[25], data[26], data[27]]) as u64;
-        let sh_offset = u32::from_le_bytes([data[32], data[33], data[34], data[35]]) as usize;
-        let sh_size = u16::from_le_bytes([data[46], data[47]]) as usize;
-        let sh_count = u16::from_le_bytes([data[48], data[49]]) as usize;
-        let sh_strndx = u16::from_le_bytes([data[50], data[51]]) as usize;
+        let entry_point = read_u32(data, 24)? as u64;
+        let sh_offset = read_u32(data, 32)? as usize;
+        let sh_size = read_u16(data, 46)? as usize;
+        let sh_count = read_u16(data, 48)? as usize;
+        let sh_strndx = read_u16(data, 50)? as usize;
 
         let mut code_sections = Vec::new();
         let mut symbols = Vec::new();
@@ -97,9 +127,9 @@ impl Elf {
         // Get section-name string table
         let strtab = if sh_strndx < sh_count {
             let str_sh = sh_offset + sh_strndx * sh_size;
-            let str_off = u32::from_le_bytes([data[str_sh + 16], data[str_sh + 17], data[str_sh + 18], data[str_sh + 19]]) as usize;
-            let str_sz = u32::from_le_bytes([data[str_sh + 20], data[str_sh + 21], data[str_sh + 22], data[str_sh + 23]]) as usize;
-            &data[str_off..str_off + str_sz]
+            let str_off = read_u32(data, str_sh + 16)? as usize;
+            let str_sz = read_u32(data, str_sh + 20)? as usize;
+            get_slice(data, str_off, str_sz)?
         } else {
             &[]
         };
@@ -113,13 +143,13 @@ impl Elf {
             let sh = sh_offset + i * sh_size;
             if sh + sh_size > data.len() { break; }
 
-            let name_off = u32::from_le_bytes([data[sh], data[sh + 1], data[sh + 2], data[sh + 3]]) as usize;
-            let sh_type = u32::from_le_bytes([data[sh + 4], data[sh + 5], data[sh + 6], data[sh + 7]]);
-            let sh_flags = u32::from_le_bytes([data[sh + 8], data[sh + 9], data[sh + 10], data[sh + 11]]);
-            let sh_addr = u32::from_le_bytes([data[sh + 12], data[sh + 13], data[sh + 14], data[sh + 15]]) as u64;
-            let sh_off = u32::from_le_bytes([data[sh + 16], data[sh + 17], data[sh + 18], data[sh + 19]]) as usize;
-            let sh_sz = u32::from_le_bytes([data[sh + 20], data[sh + 21], data[sh + 22], data[sh + 23]]) as usize;
-            let sh_link = u32::from_le_bytes([data[sh + 24], data[sh + 25], data[sh + 26], data[sh + 27]]) as usize;
+            let name_off = read_u32(data, sh)? as usize;
+            let sh_type = read_u32(data, sh + 4)?;
+            let sh_flags = read_u32(data, sh + 8)?;
+            let sh_addr = read_u32(data, sh + 12)? as u64;
+            let sh_off = read_u32(data, sh + 16)? as usize;
+            let sh_sz = read_u32(data, sh + 20)? as usize;
+            let sh_link = read_u32(data, sh + 24)? as usize;
 
             // SHT_SYMTAB = 2
             if sh_type == 2 {
@@ -165,23 +195,17 @@ impl Elf {
         if symtab_sz > 0 && symtab_link < sh_count {
             // Get the symbol string table
             let sym_strtab_sh = sh_offset + symtab_link * sh_size;
-            let sym_strtab_off = u32::from_le_bytes([
-                data[sym_strtab_sh + 16], data[sym_strtab_sh + 17],
-                data[sym_strtab_sh + 18], data[sym_strtab_sh + 19],
-            ]) as usize;
-            let sym_strtab_sz = u32::from_le_bytes([
-                data[sym_strtab_sh + 20], data[sym_strtab_sh + 21],
-                data[sym_strtab_sh + 22], data[sym_strtab_sh + 23],
-            ]) as usize;
-            let sym_strtab = &data[sym_strtab_off..sym_strtab_off + sym_strtab_sz];
+            let sym_strtab_off = read_u32(data, sym_strtab_sh + 16)? as usize;
+            let sym_strtab_sz = read_u32(data, sym_strtab_sh + 20)? as usize;
+            let sym_strtab = get_slice(data, sym_strtab_off, sym_strtab_sz)?;
 
             // ELF32 symbol entry is 16 bytes
             let sym_count = symtab_sz / 16;
             for j in 0..sym_count {
                 let sym = symtab_off + j * 16;
                 if sym + 16 > data.len() { break; }
-                let st_name = u32::from_le_bytes([data[sym], data[sym + 1], data[sym + 2], data[sym + 3]]) as usize;
-                let st_value = u32::from_le_bytes([data[sym + 4], data[sym + 5], data[sym + 6], data[sym + 7]]) as u64;
+                let st_name = read_u32(data, sym)? as usize;
+                let st_value = read_u32(data, sym + 4)? as u64;
                 let st_info = data[sym + 12];
                 // STT_FUNC=2, STT_NOTYPE=0; STB_GLOBAL=1, STB_WEAK=2
                 let st_type = st_info & 0xF;
@@ -212,11 +236,11 @@ impl Elf {
             return Err(TranspileError::ElfParse("ELF64 header too small".into()));
         }
 
-        let entry_point = u64::from_le_bytes(data[24..32].try_into().unwrap());
-        let sh_offset = u64::from_le_bytes(data[40..48].try_into().unwrap()) as usize;
-        let sh_size = u16::from_le_bytes([data[58], data[59]]) as usize;
-        let sh_count = u16::from_le_bytes([data[60], data[61]]) as usize;
-        let sh_strndx = u16::from_le_bytes([data[62], data[63]]) as usize;
+        let entry_point = read_u64(data, 24)?;
+        let sh_offset = read_u64(data, 40)? as usize;
+        let sh_size = read_u16(data, 58)? as usize;
+        let sh_count = read_u16(data, 60)? as usize;
+        let sh_strndx = read_u16(data, 62)? as usize;
 
         let mut code_sections = Vec::new();
         let mut symbols = Vec::new();
@@ -233,8 +257,8 @@ impl Elf {
         // Get string table
         let strtab = if sh_strndx < sh_count && sh_offset + sh_strndx * sh_size + sh_size <= data.len() {
             let str_sh = sh_offset + sh_strndx * sh_size;
-            let str_off = u64::from_le_bytes(data[str_sh + 24..str_sh + 32].try_into().unwrap()) as usize;
-            let str_sz = u64::from_le_bytes(data[str_sh + 32..str_sh + 40].try_into().unwrap()) as usize;
+            let str_off = read_u64(data, str_sh + 24)? as usize;
+            let str_sz = read_u64(data, str_sh + 32)? as usize;
             if str_off + str_sz <= data.len() {
                 &data[str_off..str_off + str_sz]
             } else {
@@ -248,13 +272,13 @@ impl Elf {
             let sh = sh_offset + i * sh_size;
             if sh + sh_size > data.len() { break; }
 
-            let name_off = u32::from_le_bytes(data[sh..sh + 4].try_into().unwrap()) as usize;
-            let sh_type = u32::from_le_bytes(data[sh + 4..sh + 8].try_into().unwrap());
-            let sh_flags = u64::from_le_bytes(data[sh + 8..sh + 16].try_into().unwrap());
-            let sh_addr = u64::from_le_bytes(data[sh + 16..sh + 24].try_into().unwrap());
-            let sh_off = u64::from_le_bytes(data[sh + 24..sh + 32].try_into().unwrap()) as usize;
-            let sh_sz = u64::from_le_bytes(data[sh + 32..sh + 40].try_into().unwrap()) as usize;
-            let sh_link_val = u32::from_le_bytes(data[sh + 40..sh + 44].try_into().unwrap()) as usize;
+            let name_off = read_u32(data, sh)? as usize;
+            let sh_type = read_u32(data, sh + 4)?;
+            let sh_flags = read_u64(data, sh + 8)?;
+            let sh_addr = read_u64(data, sh + 16)?;
+            let sh_off = read_u64(data, sh + 24)? as usize;
+            let sh_sz = read_u64(data, sh + 32)? as usize;
+            let sh_link_val = read_u32(data, sh + 40)? as usize;
 
             // SHT_SYMTAB = 2
             if sh_type == 2 {
@@ -298,12 +322,8 @@ impl Elf {
         if symtab_sz > 0 && symtab_link < sh_count {
             let sym_strtab_sh = sh_offset + symtab_link * sh_size;
             if sym_strtab_sh + sh_size <= data.len() {
-                let sym_strtab_off = u64::from_le_bytes(
-                    data[sym_strtab_sh + 24..sym_strtab_sh + 32].try_into().unwrap(),
-                ) as usize;
-                let sym_strtab_sz = u64::from_le_bytes(
-                    data[sym_strtab_sh + 32..sym_strtab_sh + 40].try_into().unwrap(),
-                ) as usize;
+                let sym_strtab_off = read_u64(data, sym_strtab_sh + 24)? as usize;
+                let sym_strtab_sz = read_u64(data, sym_strtab_sh + 32)? as usize;
                 if sym_strtab_off + sym_strtab_sz <= data.len() {
                     let sym_strtab = &data[sym_strtab_off..sym_strtab_off + sym_strtab_sz];
                     // ELF64 symbol entry: 24 bytes
@@ -313,9 +333,9 @@ impl Elf {
                     for j in 0..sym_count {
                         let sym = symtab_off + j * 24;
                         if sym + 24 > data.len() { break; }
-                        let st_name = u32::from_le_bytes(data[sym..sym + 4].try_into().unwrap()) as usize;
+                        let st_name = read_u32(data, sym)? as usize;
                         let st_info = data[sym + 4];
-                        let st_value = u64::from_le_bytes(data[sym + 8..sym + 16].try_into().unwrap());
+                        let st_value = read_u64(data, sym + 8)?;
                         let st_type = st_info & 0xF;
                         let st_bind = st_info >> 4;
                         if (st_type == 2 || st_type == 0) && (st_bind == 1 || st_bind == 2) && st_value != 0 {
