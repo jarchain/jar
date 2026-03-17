@@ -70,9 +70,7 @@ impl PvmInstance {
                 *step += 1;
                 let s = *step;
 
-                // Run both with full gas. The recompiler uses block-level gas metering
-                // so per-instruction stepping doesn't work. Instead, run both to the
-                // next exit point and compare results.
+                // Run both with full gas.
                 let ig = interp.gas;
                 let rg = recomp.gas();
                 let (ie, _) = interp.run();
