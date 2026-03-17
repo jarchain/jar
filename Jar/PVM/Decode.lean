@@ -228,7 +228,7 @@ def zeta (code : ByteArray) (i : Nat) : Nat :=
   if i < code.size then code.get! i |>.toNat else 0
 
 -- ============================================================================
--- Argument Extraction — GP Appendix A.5 (matching grey-pvm/src/args.rs)
+-- Argument Extraction — GP Appendix A.5 (matching javm/src/args.rs)
 -- ============================================================================
 
 /-- A.5.2: OneImm — one immediate (ecalli).

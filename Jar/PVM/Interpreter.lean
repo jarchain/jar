@@ -254,7 +254,7 @@ def initStandard (blob' : ByteArray) (args : ByteArray)
   let mem := copyToMem mem rwBase rwData
   let mem := copyToMem mem argBase args
 
-  -- Registers (GP eq A.43): matching grey-pvm initialize_program
+  -- Registers (GP eq A.43): matching javm initialize_program
   let regs := Array.replicate PVM_REGISTERS (0 : RegisterValue)
   let regs := regs.set! 0 (UInt64.ofNat (2^32 - 2^16))        -- ω[0]: SP init
   let regs := regs.set! 1 (UInt64.ofNat stackTop)               -- ω[1]: stack top
