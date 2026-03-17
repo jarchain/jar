@@ -257,7 +257,7 @@ impl Pvm {
         match opcode {
             // === A.5.1: No arguments ===
             Opcode::Trap => return Some(ExitReason::Panic),
-            Opcode::Fallthrough => { self.pc = next_pc; }
+            Opcode::Fallthrough | Opcode::Unlikely => { self.pc = next_pc; }
 
             // === A.5.2: One immediate ===
             Opcode::Ecalli => {
@@ -280,7 +280,7 @@ impl Pvm {
             Opcode::StoreImmU8 => {
                 if let Args::TwoImm { imm_x, imm_y } = args {
                     let addr = imm_x as u32;
-                    if let Some(exit) = self.check_write_low(addr) { return Some(exit); }
+
                     match self.memory.write_u8(addr, imm_y as u8) {
                         MemoryAccess::Ok => self.pc = next_pc,
                         MemoryAccess::PageFault(a) => return Some(ExitReason::PageFault(a)),
@@ -290,7 +290,7 @@ impl Pvm {
             Opcode::StoreImmU16 => {
                 if let Args::TwoImm { imm_x, imm_y } = args {
                     let addr = imm_x as u32;
-                    if let Some(exit) = self.check_write_low(addr) { return Some(exit); }
+
                     match self.memory.write_u16_le(addr, imm_y as u16) {
                         MemoryAccess::Ok => self.pc = next_pc,
                         MemoryAccess::PageFault(a) => return Some(ExitReason::PageFault(a)),
@@ -300,7 +300,7 @@ impl Pvm {
             Opcode::StoreImmU32 => {
                 if let Args::TwoImm { imm_x, imm_y } = args {
                     let addr = imm_x as u32;
-                    if let Some(exit) = self.check_write_low(addr) { return Some(exit); }
+
                     match self.memory.write_u32_le(addr, imm_y as u32) {
                         MemoryAccess::Ok => self.pc = next_pc,
                         MemoryAccess::PageFault(a) => return Some(ExitReason::PageFault(a)),
@@ -310,7 +310,7 @@ impl Pvm {
             Opcode::StoreImmU64 => {
                 if let Args::TwoImm { imm_x, imm_y } = args {
                     let addr = imm_x as u32;
-                    if let Some(exit) = self.check_write_low(addr) { return Some(exit); }
+
                     match self.memory.write_u64_le(addr, imm_y) {
                         MemoryAccess::Ok => self.pc = next_pc,
                         MemoryAccess::PageFault(a) => return Some(ExitReason::PageFault(a)),
@@ -415,7 +415,7 @@ impl Pvm {
             Opcode::StoreU8 => {
                 if let Args::RegImm { ra, imm } = args {
                     let addr = imm as u32;
-                    if let Some(exit) = self.check_write_low(addr) { return Some(exit); }
+
                     match self.memory.write_u8(addr, self.registers[ra] as u8) {
                         MemoryAccess::Ok => self.pc = next_pc,
                         MemoryAccess::PageFault(a) => return Some(ExitReason::PageFault(a)),
@@ -425,7 +425,7 @@ impl Pvm {
             Opcode::StoreU16 => {
                 if let Args::RegImm { ra, imm } = args {
                     let addr = imm as u32;
-                    if let Some(exit) = self.check_write_low(addr) { return Some(exit); }
+
                     match self.memory.write_u16_le(addr, self.registers[ra] as u16) {
                         MemoryAccess::Ok => self.pc = next_pc,
                         MemoryAccess::PageFault(a) => return Some(ExitReason::PageFault(a)),
@@ -435,7 +435,7 @@ impl Pvm {
             Opcode::StoreU32 => {
                 if let Args::RegImm { ra, imm } = args {
                     let addr = imm as u32;
-                    if let Some(exit) = self.check_write_low(addr) { return Some(exit); }
+
                     match self.memory.write_u32_le(addr, self.registers[ra] as u32) {
                         MemoryAccess::Ok => self.pc = next_pc,
                         MemoryAccess::PageFault(a) => return Some(ExitReason::PageFault(a)),
@@ -445,7 +445,7 @@ impl Pvm {
             Opcode::StoreU64 => {
                 if let Args::RegImm { ra, imm } = args {
                     let addr = imm as u32;
-                    if let Some(exit) = self.check_write_low(addr) { return Some(exit); }
+
                     match self.memory.write_u64_le(addr, self.registers[ra]) {
                         MemoryAccess::Ok => self.pc = next_pc,
                         MemoryAccess::PageFault(a) => return Some(ExitReason::PageFault(a)),
@@ -457,7 +457,7 @@ impl Pvm {
             Opcode::StoreImmIndU8 => {
                 if let Args::RegTwoImm { ra, imm_x, imm_y } = args {
                     let addr = self.registers[ra].wrapping_add(imm_x) as u32;
-                    if let Some(exit) = self.check_write_low(addr) { return Some(exit); }
+
                     match self.memory.write_u8(addr, imm_y as u8) {
                         MemoryAccess::Ok => self.pc = next_pc,
                         MemoryAccess::PageFault(a) => return Some(ExitReason::PageFault(a)),
@@ -467,7 +467,7 @@ impl Pvm {
             Opcode::StoreImmIndU16 => {
                 if let Args::RegTwoImm { ra, imm_x, imm_y } = args {
                     let addr = self.registers[ra].wrapping_add(imm_x) as u32;
-                    if let Some(exit) = self.check_write_low(addr) { return Some(exit); }
+
                     match self.memory.write_u16_le(addr, imm_y as u16) {
                         MemoryAccess::Ok => self.pc = next_pc,
                         MemoryAccess::PageFault(a) => return Some(ExitReason::PageFault(a)),
@@ -477,7 +477,7 @@ impl Pvm {
             Opcode::StoreImmIndU32 => {
                 if let Args::RegTwoImm { ra, imm_x, imm_y } = args {
                     let addr = self.registers[ra].wrapping_add(imm_x) as u32;
-                    if let Some(exit) = self.check_write_low(addr) { return Some(exit); }
+
                     match self.memory.write_u32_le(addr, imm_y as u32) {
                         MemoryAccess::Ok => self.pc = next_pc,
                         MemoryAccess::PageFault(a) => return Some(ExitReason::PageFault(a)),
@@ -487,7 +487,7 @@ impl Pvm {
             Opcode::StoreImmIndU64 => {
                 if let Args::RegTwoImm { ra, imm_x, imm_y } = args {
                     let addr = self.registers[ra].wrapping_add(imm_x) as u32;
-                    if let Some(exit) = self.check_write_low(addr) { return Some(exit); }
+
                     match self.memory.write_u64_le(addr, imm_y) {
                         MemoryAccess::Ok => self.pc = next_pc,
                         MemoryAccess::PageFault(a) => return Some(ExitReason::PageFault(a)),
@@ -593,44 +593,8 @@ impl Pvm {
                 }
             }
             Opcode::Sbrk => {
-                if let Args::TwoReg { rd, ra } = args {
-                    // sbrk: GP eq A.5, opcode 101
-                    // Heap-pointer tracking model (matching polkavm reference):
-                    // - heap_top tracks the current end of the allocated heap
-                    // - sbrk(0) returns heap_top (query mode)
-                    // - sbrk(n) returns old heap_top and advances heap_top by n,
-                    //   mapping any needed pages along the way
-                    let size = self.registers[ra];
-                    let ps = crate::PVM_PAGE_SIZE;
-
-                    if size > u32::MAX as u64 {
-                        self.registers[rd] = 0;
-                    } else if size == 0 {
-                        // Query mode: return current heap top
-                        self.registers[rd] = self.heap_top as u64;
-                    } else {
-                        let size_u32 = size as u32;
-                        let old_top = self.heap_top;
-                        let new_top = (old_top as u64) + (size_u32 as u64);
-
-                        if new_top > (u32::MAX as u64) + 1 {
-                            self.registers[rd] = 0;
-                        } else {
-                            let new_top_u32 = new_top as u32;
-                            // Map any pages in [old_top, new_top) that aren't mapped yet
-                            let start_page = old_top / ps;
-                            let end_page = if new_top_u32 == 0 { u32::MAX / ps } else { (new_top_u32 - 1) / ps };
-                            for p in start_page..=end_page {
-                                if !self.memory.is_page_mapped(p) {
-                                    self.memory.map_page(p, crate::memory::PageAccess::ReadWrite);
-                                }
-                            }
-                            self.registers[rd] = old_top as u64;
-                            self.heap_top = new_top_u32;
-                        }
-                    }
-                    self.pc = next_pc;
-                }
+                // JAR v0.8.0: sbrk removed from ISA, replaced by grow_heap hostcall
+                return Some(ExitReason::Panic);
             }
             Opcode::CountSetBits64 => {
                 if let Args::TwoReg { rd, ra } = args {
@@ -697,7 +661,7 @@ impl Pvm {
             Opcode::StoreIndU8 => {
                 if let Args::TwoRegImm { ra, rb, imm } = args {
                     let addr = self.registers[rb].wrapping_add(imm) as u32;
-                    if let Some(exit) = self.check_write_low(addr) { return Some(exit); }
+
                     match self.memory.write_u8(addr, self.registers[ra] as u8) {
                         MemoryAccess::Ok => self.pc = next_pc,
                         MemoryAccess::PageFault(a) => return Some(ExitReason::PageFault(a)),
@@ -707,7 +671,7 @@ impl Pvm {
             Opcode::StoreIndU16 => {
                 if let Args::TwoRegImm { ra, rb, imm } = args {
                     let addr = self.registers[rb].wrapping_add(imm) as u32;
-                    if let Some(exit) = self.check_write_low(addr) { return Some(exit); }
+
                     match self.memory.write_u16_le(addr, self.registers[ra] as u16) {
                         MemoryAccess::Ok => self.pc = next_pc,
                         MemoryAccess::PageFault(a) => return Some(ExitReason::PageFault(a)),
@@ -717,7 +681,7 @@ impl Pvm {
             Opcode::StoreIndU32 => {
                 if let Args::TwoRegImm { ra, rb, imm } = args {
                     let addr = self.registers[rb].wrapping_add(imm) as u32;
-                    if let Some(exit) = self.check_write_low(addr) { return Some(exit); }
+
                     match self.memory.write_u32_le(addr, self.registers[ra] as u32) {
                         MemoryAccess::Ok => self.pc = next_pc,
                         MemoryAccess::PageFault(a) => return Some(ExitReason::PageFault(a)),
@@ -727,7 +691,7 @@ impl Pvm {
             Opcode::StoreIndU64 => {
                 if let Args::TwoRegImm { ra, rb, imm } = args {
                     let addr = self.registers[rb].wrapping_add(imm) as u32;
-                    if let Some(exit) = self.check_write_low(addr) { return Some(exit); }
+
                     match self.memory.write_u64_le(addr, self.registers[ra]) {
                         MemoryAccess::Ok => self.pc = next_pc,
                         MemoryAccess::PageFault(a) => return Some(ExitReason::PageFault(a)),
@@ -1426,14 +1390,8 @@ impl Pvm {
         }
     }
 
-    /// Check that a write address is not in the low 2^16 range.
-    fn check_write_low(&self, addr: u32) -> Option<ExitReason> {
-        if addr < (1 << 16) {
-            Some(ExitReason::Panic)
-        } else {
-            None
-        }
-    }
+    // JAR v0.8.0: no guard zone — address 0 is valid in linear memory model.
+    // check_write_low removed.
 
     /// Run the machine until it exits (eq A.1).
     ///
@@ -1487,7 +1445,7 @@ impl Pvm {
             match inst.opcode {
                 // === No arguments ===
                 Opcode::Trap => { exit = Some(ExitReason::Panic); }
-                Opcode::Fallthrough => {}
+                Opcode::Fallthrough | Opcode::Unlikely => {}
 
                 // === One immediate ===
                 Opcode::Ecalli => {
@@ -1527,19 +1485,8 @@ impl Pvm {
                 // === Two registers ===
                 Opcode::MoveReg => { self.registers[rd] = self.registers[ra]; }
                 Opcode::Sbrk => {
-                    self.pc = inst.pc;
-                    if let Some(e) = self.execute(inst.opcode, inst.args, next_pc) {
-                        return (e, initial_gas - self.gas);
-                    }
-                    if self.pc != next_pc {
-                        // sbrk changed PC — resolve dynamically
-                        let t = self.pc as usize;
-                        if t < self.pc_to_idx.len() {
-                            let ti = self.pc_to_idx[t];
-                            if ti != u32::MAX { branch_idx = ti; }
-                            else { exit = Some(ExitReason::Panic); }
-                        } else { exit = Some(ExitReason::Panic); }
-                    }
+                    // JAR v0.8.0: sbrk removed
+                    exit = Some(ExitReason::Panic);
                 }
                 Opcode::CountSetBits64 => { self.registers[rd] = self.registers[ra].count_ones() as u64; }
                 Opcode::CountSetBits32 => { self.registers[rd] = (self.registers[ra] as u32).count_ones() as u64; }

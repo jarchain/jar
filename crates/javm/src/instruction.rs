@@ -1,4 +1,4 @@
-//! PVM instruction set (Appendix A.5 of the Gray Paper v0.7.2).
+//! PVM instruction set (JAR v0.8.0 / Appendix A.5).
 //!
 //! Opcodes and instruction categories matching the specification exactly.
 
@@ -11,6 +11,7 @@ pub enum Opcode {
     // A.5.1: No arguments
     Trap = 0,
     Fallthrough = 1,
+    Unlikely = 2,
 
     // A.5.2: One immediate
     Ecalli = 10,
@@ -176,7 +177,7 @@ pub enum Opcode {
 
 /// All valid opcode byte values.
 const VALID_OPCODES: &[u8] = &[
-    0, 1, 10, 20,
+    0, 1, 2, 10, 20,
     30, 31, 32, 33, 40,
     50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62,
     70, 71, 72, 73,
@@ -198,7 +199,7 @@ const VALID_OPCODES: &[u8] = &[
 static OPCODE_TABLE: [u8; 256] = {
     let mut t = [0u8; 256];
     let valid: &[u8] = &[
-        0, 1, 10, 20,
+        0, 1, 2, 10, 20,
         30, 31, 32, 33, 40,
         50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62,
         70, 71, 72, 73,
@@ -239,7 +240,7 @@ impl Opcode {
     pub fn category(self) -> InstructionCategory {
         let b = self as u8;
         match b {
-            0 | 1 => InstructionCategory::NoArgs,
+            0..=2 => InstructionCategory::NoArgs,
             10 => InstructionCategory::OneImm,
             20 => InstructionCategory::OneRegExtImm,
             30..=33 => InstructionCategory::TwoImm,
@@ -267,6 +268,8 @@ impl Opcode {
             self,
             Opcode::Trap
                 | Opcode::Fallthrough
+                | Opcode::Unlikely
+                | Opcode::Ecalli
                 | Opcode::Jump
                 | Opcode::JumpInd
                 | Opcode::LoadImmJump

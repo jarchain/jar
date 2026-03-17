@@ -470,7 +470,7 @@ impl Compiler {
                 self.asm.mov_store32_imm(CTX, CTX_PC as i32, pc as i32);
                 self.emit_exit(EXIT_PANIC, 0);
             }
-            Opcode::Fallthrough => {
+            Opcode::Fallthrough | Opcode::Unlikely => {
                 // Just fall through to next instruction.
                 // Note: gas is already charged at basic block start above.
             }
@@ -495,12 +495,6 @@ impl Compiler {
             Opcode::StoreImmU8 | Opcode::StoreImmU16 | Opcode::StoreImmU32 | Opcode::StoreImmU64 => {
                 if let Args::TwoImm { imm_x, imm_y } = args {
                     let addr = *imm_x as u32;
-                    // Low address check — unmapped pages yield PageFault, not Panic
-                    if (addr as u64) < 0x10000 {
-                        self.asm.mov_store32_imm(CTX, CTX_PC as i32, pc as i32);
-                        self.emit_exit(EXIT_PAGE_FAULT, addr);
-                        return;
-                    }
                     let fn_addr = match opcode {
                         Opcode::StoreImmU8 => self.helpers.mem_write_u8,
                         Opcode::StoreImmU16 => self.helpers.mem_write_u16,
@@ -574,11 +568,6 @@ impl Compiler {
             Opcode::StoreU8 | Opcode::StoreU16 | Opcode::StoreU32 | Opcode::StoreU64 => {
                 if let Args::RegImm { ra, imm } = args {
                     let addr = *imm as u32;
-                    if (addr as u64) < 0x10000 {
-                        self.asm.mov_store32_imm(CTX, CTX_PC as i32, pc as i32);
-                        self.emit_exit(EXIT_PAGE_FAULT, addr);
-                        return;
-                    }
                     let ra_reg = REG_MAP[*ra];
                     let fn_addr = self.write_fn_for(opcode);
                     self.asm.mov_ri64(SCRATCH, addr as u64);
@@ -704,9 +693,9 @@ impl Compiler {
                 }
             }
             Opcode::Sbrk => {
-                if let Args::TwoReg { rd, ra } = args {
-                    self.emit_sbrk(*rd, *ra);
-                }
+                // JAR v0.8.0: sbrk removed from ISA, replaced by grow_heap hostcall
+                self.asm.mov_store32_imm(CTX, CTX_PC as i32, pc as i32);
+                self.emit_exit(EXIT_PANIC, 0);
             }
             Opcode::CountSetBits64 => {
                 if let Args::TwoReg { rd, ra } = args {

@@ -1,11 +1,12 @@
-//! PVM program loading and standard initialization (Appendix A).
+//! PVM program loading and initialization (JAR v0.8.0).
 //!
-//! Includes `deblob` for parsing program blobs (eq A.2) and
-//! standard program initialization Y(p, a) (eq A.37).
+//! Includes `deblob` for parsing program blobs and linear memory
+//! initialization with basic block prevalidation.
 
+use crate::instruction::Opcode;
 use crate::memory::{Memory, PageAccess};
 use crate::vm::Pvm;
-use crate::{Gas, PVM_INIT_INPUT_SIZE, PVM_PAGE_SIZE, PVM_ZONE_SIZE};
+use crate::{Gas, PVM_PAGE_SIZE};
 
 /// Parse a program blob into (code, bitmask, jump_table) (eq A.2).
 ///
@@ -68,13 +69,14 @@ pub fn deblob(blob: &[u8]) -> Option<(Vec<u8>, Vec<u8>, Vec<u32>)> {
     Some((code, bitmask, jump_table))
 }
 
-/// Standard program initialization Y(p, a) (eq A.37-A.43).
+/// Program initialization with JAR v0.8.0 linear memory layout.
 ///
-/// Returns a fully initialized PVM or None if the program blob is invalid.
+/// Contiguous layout: [stack | args | roData | rwData | heap | unmapped...]
+/// All mapped pages are read-write. No guard zones.
 pub fn initialize_program(program_blob: &[u8], arguments: &[u8], gas: Gas) -> Option<Pvm> {
     let blob = skip_metadata(program_blob);
 
-    // Parse the standard program blob header (eq A.38):
+    // Parse the standard program blob header:
     // E₃(|o|) ⌢ E₃(|w|) ⌢ E₂(z) ⌢ E₃(s) ⌢ o ⌢ w ⌢ E₄(|c|) ⌢ c
     if blob.len() < 15 {
         return None;
@@ -86,7 +88,6 @@ pub fn initialize_program(program_blob: &[u8], arguments: &[u8], gas: Gas) -> Op
     let rw_size = read_le_u24(blob, &mut offset)? as u32;
     let heap_pages = read_le_u16(blob, &mut offset)? as u32;
     let stack_size = read_le_u24(blob, &mut offset)? as u32;
-    tracing::debug!("Program header: ro_size={}, rw_size={}, heap_pages={}, stack_size={}", ro_size, rw_size, heap_pages, stack_size);
 
     // Read read-only data
     if offset + ro_size as usize > blob.len() {
@@ -110,80 +111,92 @@ pub fn initialize_program(program_blob: &[u8], arguments: &[u8], gas: Gas) -> Op
     let program_data = &blob[offset..offset + code_len];
     let (code, bitmask, jump_table) = deblob(program_data)?;
 
-    let zz = PVM_ZONE_SIZE;
-    let zi = PVM_INIT_INPUT_SIZE;
-
-    let page_round = |x: u32| -> u32 {
-        let ps = PVM_PAGE_SIZE;
-        ((x + ps - 1) / ps) * ps
-    };
-
-    let zone_round = |x: u32| -> u32 { ((x + zz - 1) / zz) * zz };
-
-    // Check total memory fits in 32-bit address space (eq A.41)
-    let ro_zone = zone_round(ro_size);
-    let rw_zone = zone_round(rw_size + heap_pages * PVM_PAGE_SIZE);
-    let stack_zone = zone_round(stack_size);
-
-    let total = 5u64 * zz as u64 + ro_zone as u64 + rw_zone as u64 + stack_zone as u64 + zi as u64;
-    if total > (1u64 << 32) {
+    // JAR v0.8.0: basic block prevalidation
+    if !validate_basic_blocks(&code, &bitmask, &jump_table) {
         return None;
     }
 
-    // Build memory (eq A.42)
+    let page_round = |x: u32| -> u32 {
+        ((x + PVM_PAGE_SIZE - 1) / PVM_PAGE_SIZE) * PVM_PAGE_SIZE
+    };
+
+    // Linear layout: stack | args | roData | rwData | heap
+    let s = page_round(stack_size);              // stack: [0, s)
+    let arg_start = s;                            // args:  [s, s + P(|a|))
+    let ro_start = arg_start + page_round(arguments.len() as u32);
+    let rw_start = ro_start + page_round(ro_size);
+    let heap_start = rw_start + page_round(rw_size);
+    let heap_end = heap_start + heap_pages * PVM_PAGE_SIZE;
+    let mem_size = heap_end;
+
+    // Check total fits in 32-bit address space
+    if (mem_size as u64) > (1u64 << 32) {
+        return None;
+    }
+
+    // Build memory — all mapped pages are ReadWrite
     let mut memory = Memory::new();
+    map_region(&mut memory, 0, mem_size, PageAccess::ReadWrite);
 
-    // Read-only data at ZZ
-    let ro_base = zz;
-    map_region_with_data(&mut memory, ro_base, ro_data, page_round(ro_size), PageAccess::ReadOnly);
+    // Copy data into memory
+    copy_data(&mut memory, arg_start, arguments);
+    copy_data(&mut memory, ro_start, ro_data);
+    copy_data(&mut memory, rw_start, rw_data);
 
-    // Read-write data at 2*ZZ + Z(|o|)
-    let rw_base = 2 * zz + zone_round(ro_size);
-    // GP sbrk h value: beginning of the heap section = 2*Z_Z + Z(|o|) = rw_base
-    let heap_base = rw_base;
-    map_region_with_data(
-        &mut memory,
-        rw_base,
-        rw_data,
-        page_round(rw_size + heap_pages * PVM_PAGE_SIZE),
-        PageAccess::ReadWrite,
-    );
-
-    // Stack at (2^32 - 2*ZZ - ZI - P(s)) .. (2^32 - 2*ZZ - ZI)
-    let stack_top = (1u64 << 32) - 2 * zz as u64 - zi as u64;
-    let stack_bottom = stack_top - page_round(stack_size) as u64;
-    map_region(&mut memory, stack_bottom as u32, page_round(stack_size), PageAccess::ReadWrite);
-
-    // Arguments at (2^32 - ZZ - ZI)
-    let arg_base = (1u64 << 32) - zz as u64 - zi as u64;
-    map_region_with_data(
-        &mut memory,
-        arg_base as u32,
-        arguments,
-        page_round(arguments.len() as u32),
-        PageAccess::ReadOnly,
-    );
-
-    // Initialize registers (eq A.43)
+    // Registers (JAR v0.8.0 linear)
     let mut registers = [0u64; 13];
-    registers[0] = (1u64 << 32) - (1u64 << 16); // SP initial
-    registers[1] = (1u64 << 32) - 2 * zz as u64 - zi as u64; // arg end
-    registers[7] = (1u64 << 32) - zz as u64 - zi as u64; // arg base
-    registers[8] = arguments.len() as u64; // arg length
+    registers[0] = s as u64;                  // φ[0]: SP (top of stack)
+    registers[1] = s as u64;                  // φ[1]: stack top
+    registers[7] = arg_start as u64;          // φ[7]: argument base
+    registers[8] = arguments.len() as u64;    // φ[8]: argument length
 
     tracing::info!(
-        "PVM init: ro={:#x}+{}, rw={:#x}+{}, heap={:#x}, stack={:#x}..{:#x}, args={:#x}+{}, SP={:#x}",
-        ro_base, ro_size, rw_base, rw_size, heap_base,
-        stack_bottom, stack_top, arg_base, arguments.len(), registers[0]
+        "PVM init (linear): stack=[0,{:#x}), args={:#x}+{}, ro={:#x}+{}, rw={:#x}+{}, heap={:#x}..{:#x}, SP={:#x}",
+        s, arg_start, arguments.len(), ro_start, ro_size, rw_start, rw_size, heap_start, heap_end, registers[0]
     );
 
     let mut pvm = Pvm::new(code, bitmask, jump_table, registers, memory, gas);
-    pvm.heap_base = heap_base;
-    // heap_top starts at the end of the pre-mapped rw+heap region
-    // (heap_base + rw_size + heap_pages * page_size, page-aligned)
-    pvm.heap_top = heap_base + page_round(rw_size + heap_pages * PVM_PAGE_SIZE);
+    pvm.heap_base = heap_start;
+    pvm.heap_top = heap_end;
 
     Some(pvm)
+}
+
+/// JAR v0.8.0 basic block prevalidation.
+/// 1. Last instruction must be a terminator
+/// 2. All jump table entries must point to valid instruction boundaries
+fn validate_basic_blocks(code: &[u8], bitmask: &[u8], jump_table: &[u32]) -> bool {
+    if code.is_empty() {
+        return false;
+    }
+    // Find the last instruction start (scan backwards through bitmask)
+    let mut last = code.len() - 1;
+    while last > 0 && (last >= bitmask.len() || bitmask[last] != 1) {
+        last -= 1;
+    }
+    // Check it's a valid terminator
+    if last >= bitmask.len() || bitmask[last] != 1 {
+        return false;
+    }
+    match Opcode::from_byte(code[last]) {
+        Some(op) if op.is_terminator() => {}
+        _ => return false,
+    }
+    // All jump table entries must point to instruction boundaries
+    for &target in jump_table {
+        let t = target as usize;
+        if t != 0 && (t >= bitmask.len() || bitmask[t] != 1) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Copy data bytes into memory at the given base address.
+fn copy_data(memory: &mut Memory, base: u32, data: &[u8]) {
+    for (i, &byte) in data.iter().enumerate() {
+        memory.write_u8(base + i as u32, byte);
+    }
 }
 
 /// Decode a variable-length natural number (JAM codec format).
