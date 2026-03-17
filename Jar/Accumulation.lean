@@ -1433,11 +1433,14 @@ def accone (ps : PartialState) (serviceId : ServiceId)
           gasUsed := totalGas, provisions := #[], opaqueData := opaqueData' }
       | some (prog, regs, mem) =>
         -- Run PVM with host-call dispatch via handleHostCall
+        let runFn := match JamConfig.gasModel with
+          | .perInstruction => PVM.run
+          | .basicBlock => PVM.runBlockGas
         let (result, ctx') := PVM.runWithHostCalls AccContext
           prog 5 regs mem (Int64.ofUInt64 totalGas)
           (fun callId gas regs' mem' c =>
             handleHostCall callId gas regs' mem' c)
-          ctx
+          ctx runFn
         -- On halt: use accumulated state; on panic/OOG: revert to checkpoint
         -- GP: regular dimension (x) on halt, exceptional dimension (y) on panic/OOG/fault
         let (finalState, finalTransfers, finalYield, finalProvisions, revertedOpaque) := match result.exitReason with

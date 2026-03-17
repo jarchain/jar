@@ -2,6 +2,7 @@ import Jar.PVM
 import Jar.PVM.Decode
 import Jar.PVM.Memory
 import Jar.PVM.Instructions
+import Jar.PVM.GasCost
 
 /-!
 # PVM Interpreter — Appendix A
@@ -75,6 +76,58 @@ def run (prog : ProgramBlob) (pc : Nat) (regs : Registers) (mem : Memory)
           go pc' regs' mem' gas' fuel'
   -- Use gas as fuel bound (can't execute more steps than gas available)
   go pc regs mem gas (gas.toUInt64.toNat + 1)
+
+/-- Check if opcode is a basic block terminator. -/
+private def isBlockTerminator (opcode : Nat) : Bool :=
+  match opcode with
+  | 0 | 1 | 2 => true   -- trap, fallthrough, unlikely
+  | 10 => true           -- ecalli
+  | 40 | 50 | 80 | 180 => true  -- jump, jump_ind, load_imm_jump, load_imm_jump_ind
+  | n => (81 ≤ n && n ≤ 90) || (170 ≤ n && n ≤ 175)  -- branches
+
+/-- Ψ : Core PVM execution loop with per-basic-block gas charging. GP v0.8.0.
+    Gas is charged upfront on basic block entry using pipeline simulation cost.
+    Instructions within a block execute without individual gas deduction. -/
+def runBlockGas (prog : ProgramBlob) (pc : Nat) (regs : Registers) (mem : Memory)
+    (gas : Int64) : InvocationResult :=
+  let rec go (pc : Nat) (regs : Registers) (mem : Memory)
+      (gas : Int64) (gasCharged : Bool) (fuel : Nat) : InvocationResult :=
+    match fuel with
+    | 0 =>
+      { exitReason := .outOfGas, exitValue := if 7 < regs.size then regs[7]! else 0
+        gas := gas, registers := regs, memory := mem }
+    | fuel' + 1 =>
+      -- Charge gas on basic block entry
+      let (gas', charged) :=
+        if gasCharged then (gas, true)
+        else
+          let blockCost := gasCostForBlock prog.code prog.bitmask pc
+          let gas' := gas - Int64.ofNat blockCost
+          if gas' < 0 then (gas, false)  -- will OOG below
+          else (gas', true)
+      if !charged then
+        { exitReason := .outOfGas, exitValue := if 7 < regs.size then regs[7]! else 0
+          gas := 0, registers := regs, memory := mem }
+      else
+        let opcode := if pc < prog.code.size then prog.code.get! pc |>.toNat else 0
+        match executeStep prog pc regs mem with
+        | .halt =>
+          { exitReason := .halt, exitValue := if 7 < regs.size then regs[7]! else 0
+            gas := gas', registers := regs, memory := mem, lastPC := pc }
+        | .panic =>
+          { exitReason := .panic, exitValue := if 7 < regs.size then regs[7]! else 0
+            gas := gas', registers := regs, memory := mem, lastPC := pc }
+        | .fault addr =>
+          { exitReason := .pageFault addr, exitValue := if 7 < regs.size then regs[7]! else 0
+            gas := gas', registers := regs, memory := mem, lastPC := pc }
+        | .hostCall id regs' mem' npc =>
+          { exitReason := .hostCall id, exitValue := if 7 < regs'.size then regs'[7]! else 0
+            gas := gas', registers := regs', memory := mem', nextPC := npc, lastPC := pc }
+        | .continue pc' regs' mem' =>
+          -- Reset gasCharged when entering a new basic block
+          let nextCharged := if isBlockTerminator opcode then false else true
+          go pc' regs' mem' gas' nextCharged fuel'
+  go pc regs mem gas false (gas.toUInt64.toNat + 1)
 
 -- ============================================================================
 -- Metadata Skipping — PolkaVM blobs may have a metadata prefix
@@ -291,6 +344,14 @@ def initProgram [JamConfig] (blob : ByteArray) (args : ByteArray)
   | .segmented => initStandard blob args
   | .linear => initLinear blob args
 
+/-- Ψ : Core PVM run dispatched by gas model.
+    Uses per-instruction (v0.7.2) or per-basic-block (v0.8.0) gas charging. -/
+def runProgram [JamConfig] (prog : ProgramBlob) (pc : Nat) (regs : Registers)
+    (mem : Memory) (gas : Int64) : InvocationResult :=
+  match JamConfig.gasModel with
+  | .perInstruction => run prog pc regs mem gas
+  | .basicBlock => runBlockGas prog pc regs mem gas
+
 -- ============================================================================
 -- Full PVM Invocation with Host Calls — GP Ψ_H
 -- ============================================================================
@@ -301,6 +362,7 @@ def initProgram [JamConfig] (blob : ByteArray) (args : ByteArray)
 def runWithHostCalls (ctx : Type) [Inhabited ctx]
     (prog : ProgramBlob) (pc : Nat) (regs : Registers) (mem : Memory)
     (gas : Int64) (handler : HostCallHandler ctx) (context : ctx)
+    (runFn : ProgramBlob → Nat → Registers → Memory → Int64 → InvocationResult := run)
     : InvocationResult × ctx :=
   let rec go (pc : Nat) (regs : Registers) (mem : Memory) (gas : Int64)
       (context : ctx) (fuel : Nat) : InvocationResult × ctx :=
@@ -310,7 +372,7 @@ def runWithHostCalls (ctx : Type) [Inhabited ctx]
          exitValue := if 7 < regs.size then regs[7]! else 0
          gas := gas, registers := regs, memory := mem }, context)
     | fuel' + 1 =>
-      let result := run prog pc regs mem gas
+      let result := runFn prog pc regs mem gas
       match result.exitReason with
       | .hostCall id =>
         -- Dispatch to host handler

@@ -20,7 +20,8 @@ instance : JamVariant where
   config := Params.tiny
   valid := Params.tiny_valid
   pvmRun := PVM.run
-  pvmRunWithHostCalls := PVM.runWithHostCalls
+  pvmRunWithHostCalls := fun ctx _ prog pc regs mem gas handler context =>
+    PVM.runWithHostCalls ctx prog pc regs mem gas handler context
 ```
 -/
 
@@ -48,13 +49,15 @@ class JamVariant extends JamConfig where
 instance JamVariant.gp072_full : JamVariant where
   toJamConfig := { name := "gp072_full", config := Params.full, valid := Params.full_valid }
   pvmRun := PVM.run
-  pvmRunWithHostCalls := PVM.runWithHostCalls
+  pvmRunWithHostCalls := fun ctx _ prog pc regs mem gas handler context =>
+    PVM.runWithHostCalls ctx prog pc regs mem gas handler context
 
 /-- Tiny GP v0.7.2 test variant with standard PVM interpreter. -/
 instance JamVariant.gp072_tiny : JamVariant where
   toJamConfig := { name := "gp072_tiny", config := Params.tiny, valid := Params.tiny_valid }
   pvmRun := PVM.run
-  pvmRunWithHostCalls := PVM.runWithHostCalls
+  pvmRunWithHostCalls := fun ctx _ prog pc regs mem gas handler context =>
+    PVM.runWithHostCalls ctx prog pc regs mem gas handler context
 
 /-- Tiny JAR v0.8.0 variant — contiguous linear memory, basic-block gas, grow_heap. -/
 instance JamVariant.jar080_tiny : JamVariant where
@@ -68,6 +71,7 @@ instance JamVariant.jar080_tiny : JamVariant where
     hostcallVersion := 1
   }
   pvmRun := PVM.run
-  pvmRunWithHostCalls := PVM.runWithHostCalls
+  pvmRunWithHostCalls := fun ctx _ prog pc regs mem gas handler context =>
+    PVM.runWithHostCalls ctx prog pc regs mem gas handler context
 
 end Jar

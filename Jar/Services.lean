@@ -55,7 +55,7 @@ def isAuthorized
   match PVM.initProgram authorizerCode authToken with
   | none => (false, 0)
   | some (prog, regs, mem) =>
-    let result := PVM.run prog 0 regs mem (Int64.ofUInt64 gasLimit)
+    let result := PVM.runProgram prog 0 regs mem (Int64.ofUInt64 gasLimit)
     match result.exitReason with
     | .halt => (result.exitValue == 0, result.gas.toUInt64)
     | _ => (false, result.gas.toUInt64)
@@ -83,7 +83,7 @@ def refine
   match PVM.initProgram serviceCode args with
   | none => (.err .panic, 0)
   | some (prog, regs, mem) =>
-    let result := PVM.run prog 0 regs mem (Int64.ofUInt64 gasLimit)
+    let result := PVM.runProgram prog 0 regs mem (Int64.ofUInt64 gasLimit)
     let gasUsed := gasLimit - result.gas.toUInt64
     match result.exitReason with
     | .halt =>
@@ -212,7 +212,7 @@ def onTransfer
   match PVM.initProgram serviceCode args with
   | none => acct
   | some (prog, regs, mem) =>
-    let result := PVM.run prog 0 regs mem (Int64.ofUInt64 transfer.gas)
+    let result := PVM.runProgram prog 0 regs mem (Int64.ofUInt64 transfer.gas)
     match result.exitReason with
     | .halt =>
       -- On-transfer completed successfully; credit the transfer amount
