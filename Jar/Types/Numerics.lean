@@ -61,8 +61,8 @@ abbrev CoreIndex [j : JamConfig] := Fin j.config.C
 /-- Validator index: ℕ_{V}. Bounded by config.V. -/
 abbrev ValidatorIndex [j : JamConfig] := Fin j.config.V
 
-/-- Ticket entry index: ℕ_{N}. Bounded by config.N_TICKETS. -/
-abbrev TicketEntryIndex [j : JamConfig] := Fin j.config.N_TICKETS
+/-- Ticket entry index: ℕ_{N}. Raw Nat — validation enforces bounds. -/
+abbrev TicketEntryIndex [JamConfig] := Nat
 
 /-- Epoch slot index: ℕ_{E}. Bounded by config.E. -/
 abbrev EpochIndex [j : JamConfig] := Fin j.config.E
@@ -70,7 +70,6 @@ abbrev EpochIndex [j : JamConfig] := Fin j.config.E
 -- Inhabited instances for parameterized Fin types
 instance instInhabitedCoreIndex [j : JamConfig] : Inhabited (Fin j.config.C) := ⟨⟨0, j.valid.hC⟩⟩
 instance instInhabitedValidatorIndex [j : JamConfig] : Inhabited (Fin j.config.V) := ⟨⟨0, j.valid.hV⟩⟩
-instance instInhabitedTicketEntryIndex [j : JamConfig] : Inhabited (Fin j.config.N_TICKETS) := ⟨⟨0, j.valid.hN⟩⟩
 instance instInhabitedEpochIndex [j : JamConfig] : Inhabited (Fin j.config.E) := ⟨⟨0, j.valid.hE⟩⟩
 
 end Jar

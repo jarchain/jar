@@ -157,6 +157,13 @@ abbrev Hash := OctetSeq 32
 /-- ℍ_0 : the zero hash, [0]_32. GP §3.8.1. -/
 def Hash.zero : Hash := default
 
+/-- Construct OctetSeq with runtime size check, falling back to default on mismatch. -/
+def OctetSeq.mk! (ba : ByteArray) (n : Nat) : OctetSeq n :=
+  if h : ba.size = n then ⟨ba, h⟩ else default
+
+/-- Construct Hash with runtime size check, falling back to zero on mismatch. -/
+def Hash.mk! (ba : ByteArray) : Hash := OctetSeq.mk! ba 32
+
 -- Signing key types. GP §3.8.2.
 abbrev Ed25519PublicKey       := OctetSeq 32   -- H̄ ⊂ 𝔹_32
 abbrev BandersnatchPublicKey  := OctetSeq 32   -- H̃ ⊂ 𝔹_32

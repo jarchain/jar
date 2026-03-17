@@ -76,7 +76,7 @@ def mmrSuperPeak (peaks : Array (Option Hash)) : Hash :=
   -- Iterative: fold from left, combining accumulator with each peak
   -- MR([]) = H_0, MR([h]) = h, MR(h) = H_K("peak" ++ MR(h[..n-1]) ++ h[n-1])
   match nonNone.size with
-  | 0 => ⟨ByteArray.mk (Array.replicate 32 0), sorry⟩
+  | 0 => Hash.zero
   | _ =>
     let init : Hash := nonNone[0]!
     nonNone.foldl (init := init) (start := 1) fun acc peak =>
@@ -111,7 +111,7 @@ def historyTransition
   let entry : HistoryEntry := {
     headerHash := inp.headerHash
     beefyRoot := beefyRoot
-    stateRoot := ⟨ByteArray.mk (Array.replicate 32 0), sorry⟩  -- zero, fixed next block
+    stateRoot := Hash.zero
     reported := inp.workPackages
   }
   let history := history.push entry

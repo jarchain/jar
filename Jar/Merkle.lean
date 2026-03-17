@@ -76,7 +76,7 @@ def encodeBranch (left right : Hash) : OctetSeq 64 :=
     for i in [:256] do
       o := setBit o (256 + i) (getBit right.data i)
     return o
-  ⟨out, sorry⟩
+  OctetSeq.mk! out 64
 
 /-- Encode a leaf node to 64 bytes. GP Appendix D §D.4.
     If |v| ≤ 32 (embedded): [1,0] ∥ |v|(6 bits) ∥ key(248 bits) ∥ v_padded(256 bits).
@@ -108,7 +108,7 @@ def encodeLeaf (key : OctetSeq 31) (value : ByteArray) : OctetSeq 64 :=
       for i in [:256] do
         o := setBit o (256 + i) (getBit padded i)
       return o
-    ⟨out, sorry⟩
+    OctetSeq.mk! out 64
   else
     -- Regular leaf
     -- Byte 0 = 0b11000000 = 0xC0 (bits: [1,1,0,0,0,0,0,0])
@@ -126,7 +126,7 @@ def encodeLeaf (key : OctetSeq 31) (value : ByteArray) : OctetSeq 64 :=
       for i in [:256] do
         o := setBit o (256 + i) (getBit vh.data i)
       return o
-    ⟨out, sorry⟩
+    OctetSeq.mk! out 64
 
 -- ============================================================================
 -- Merkle Trie Root — Appendix D §D.5
@@ -153,13 +153,13 @@ private def trieRootAux (entries : Array (BitKey × ByteArray)) (depth : Nat)
     -- Out of fuel; return hash of first entry if any
     if entries.size > 0 then
       let (k, v) := entries[0]!
-      Crypto.blake2b (encodeLeaf ⟨k.data, sorry⟩ v).data
+      Crypto.blake2b (encodeLeaf (OctetSeq.mk! k.data 31) v).data
     else Hash.zero
   | fuel + 1 =>
     if entries.size == 0 then Hash.zero
     else if entries.size == 1 then
       let (k, v) := entries[0]!
-      Crypto.blake2b (encodeLeaf ⟨k.data, sorry⟩ v).data
+      Crypto.blake2b (encodeLeaf (OctetSeq.mk! k.data 31) v).data
     else
       let bitPos := 248 - fuel - 1
       let left := entries.filter fun (k, _) => !k.bit bitPos
@@ -198,14 +198,14 @@ private def trieRoot32Aux (entries : Array (BitKey32 × ByteArray)) (depth : Nat
     if entries.size > 0 then
       let (k, v) := entries[0]!
       let key31 := ByteArray.mk (k.data.data.extract 0 31)
-      Crypto.blake2b (encodeLeaf ⟨key31, sorry⟩ v).data
+      Crypto.blake2b (encodeLeaf (OctetSeq.mk! key31 31) v).data
     else Hash.zero
   | fuel + 1 =>
     if entries.size == 0 then Hash.zero
     else if entries.size == 1 then
       let (k, v) := entries[0]!
       let key31 := ByteArray.mk (k.data.data.extract 0 31)
-      Crypto.blake2b (encodeLeaf ⟨key31, sorry⟩ v).data
+      Crypto.blake2b (encodeLeaf (OctetSeq.mk! key31 31) v).data
     else
       let bitPos := 256 - fuel - 1
       let left := entries.filter fun (k, _) => !k.bit bitPos

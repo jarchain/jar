@@ -195,7 +195,7 @@ instance : Arbitrary Ticket where
   arbitrary := do
     let id ← arbitrary
     let n ← (arbitrary : Gen UInt8)
-    return { id, attempt := ⟨n.toNat % Jar.N_TICKETS, Nat.mod_lt _ JamConfig.valid.hN⟩ }
+    return { id, attempt := n.toNat % Jar.N_TICKETS }
 
 instance : Shrinkable Ticket where
   shrink _ := []
@@ -273,7 +273,7 @@ instance : Arbitrary TicketProof where
   arbitrary := do
     let n ← (arbitrary : Gen UInt8)
     return {
-      attempt := ⟨n.toNat % Jar.N_TICKETS, Nat.mod_lt _ JamConfig.valid.hN⟩
+      attempt := n.toNat % Jar.N_TICKETS
       proof := ← arbitrary
     }
 

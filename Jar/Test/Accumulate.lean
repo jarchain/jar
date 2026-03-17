@@ -218,7 +218,7 @@ def keccakMerkleRoot (leaves : Array ByteArray) : Hash :=
   if leaves.size == 1 then
     keccak256 leaves[0]!
   else
-    ⟨keccakMerkleNode leaves, sorry⟩
+    Hash.mk! (keccakMerkleNode leaves)
 
 /-- Compute output hash from (service_id, yield_hash) pairs. -/
 def computeOutputHash (outputs : Array (ServiceId × Hash)) : Hash :=

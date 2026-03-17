@@ -75,7 +75,7 @@ def verifySealTicketed
     (unsignedHeader : ByteArray)
     (sealSig : BandersnatchSignature) : Bool :=
   let context := Crypto.ctxTicketSeal ++ entropy3.data
-    ++ ByteArray.mk #[UInt8.ofNat ticket.attempt.val]
+    ++ ByteArray.mk #[UInt8.ofNat ticket.attempt]
   Crypto.bandersnatchVerify authorKey context unsignedHeader sealSig
 
 /-- Verify a block seal in fallback mode. GP eq (6.25).
@@ -110,7 +110,7 @@ def verifyTicketProof
     (tp : TicketProof)
     (ringSize : UInt32) : Bool :=
   let context := Crypto.ctxTicketSeal ++ entropy2.data
-    ++ ByteArray.mk #[UInt8.ofNat tp.attempt.val]
+    ++ ByteArray.mk #[UInt8.ofNat tp.attempt]
   Crypto.bandersnatchRingVerify ringRoot context ByteArray.empty tp.proof ringSize
 
 -- ============================================================================

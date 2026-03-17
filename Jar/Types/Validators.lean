@@ -44,7 +44,7 @@ structure Ticket where
   attempt : TicketEntryIndex
 
 instance : Inhabited Ticket where
-  default := { id := default, attempt := ⟨0, JamConfig.valid.hN⟩ }
+  default := { id := default, attempt := 0 }
 
 -- ============================================================================
 -- §6.2 — Seal Key Series (eq:ticketaccumulatorsealticketsspec)

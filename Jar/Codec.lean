@@ -149,12 +149,12 @@ def encodeCountPrefixedArray (f : α → ByteArray) (xs : Array α) : ByteArray 
 open Jar in
 /-- Encode a Ticket. GP eq (C.34). -/
 def encodeTicket (t : Ticket) : ByteArray :=
-  t.id.data ++ ByteArray.mk #[UInt8.ofNat t.attempt.val]
+  t.id.data ++ ByteArray.mk #[UInt8.ofNat t.attempt]
 
 open Jar in
 /-- Encode a TicketProof for the tickets extrinsic. -/
 def encodeTicketProof (tp : TicketProof) : ByteArray :=
-  ByteArray.mk #[UInt8.ofNat tp.attempt.val] ++ tp.proof.data
+  ByteArray.mk #[UInt8.ofNat tp.attempt] ++ tp.proof.data
 
 open Jar in
 /-- Encode an Assurance. GP §C.4. -/
@@ -521,22 +521,14 @@ open Jar in
 def decodeTicketD : Decoder Ticket := do
   let id ← decodeHashD
   let attempt ← Decoder.readByte
-  let attemptNat := attempt.toNat
-  if h : attemptNat < N_TICKETS then
-    return { id, attempt := ⟨attemptNat, h⟩ }
-  else
-    failure
+  return { id, attempt := attempt.toNat }
 
 open Jar in
 /-- Decode a TicketProof. Inverse of encodeTicketProof. -/
 def decodeTicketProofD : Decoder TicketProof := do
   let attempt ← Decoder.readByte
-  let attemptNat := attempt.toNat
   let proof ← decodeOctetSeqD 784
-  if h : attemptNat < N_TICKETS then
-    return { attempt := ⟨attemptNat, h⟩, proof }
-  else
-    failure
+  return { attempt := attempt.toNat, proof }
 
 open Jar in
 /-- Decode an Assurance. Inverse of encodeAssurance. -/

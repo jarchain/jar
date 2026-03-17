@@ -100,7 +100,7 @@ def mmrAppend (peaks : Array (Option Hash)) (leaf : Hash) : Array (Option Hash) 
 def mmrSuperPeak (peaks : Array (Option Hash)) : Hash :=
   let nonNone := peaks.filterMap id
   match nonNone.size with
-  | 0 => ⟨ByteArray.mk (Array.replicate 32 0), sorry⟩
+  | 0 => Hash.zero
   | _ =>
     let init : Hash := nonNone[0]!
     nonNone.foldl (init := init) (start := 1) fun acc peak =>
@@ -125,7 +125,7 @@ def keccakMerkleRoot (leaves : Array ByteArray) : Hash :=
   if leaves.size == 1 then
     Crypto.keccak256 leaves[0]!
   else
-    ⟨keccakMerkleNode leaves, sorry⟩
+    Hash.mk! (keccakMerkleNode leaves)
 
 /-- Compute accumulate root hash from accumulation outputs.
     Uses balanced Keccak-256 Merkle tree (GP eq 7.7 / E.4).

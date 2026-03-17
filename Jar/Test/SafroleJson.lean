@@ -18,20 +18,15 @@ variable [JamConfig]
 -- JSON instances for safrole test types
 -- ============================================================================
 
--- Unused helper removed — we use sorry directly like SafroleVectors.lean
-
--- For TicketProof, attempt is TicketEntryIndex = Fin N_TICKETS = Fin 2
--- but tiny vectors use N_TICKETS = 3, so attempts can be 0..2.
--- We deserialize to Nat, then construct Fin with sorry (matching SafroleVectors.lean pattern).
 private def ticketProofFromJson (j : Json) : Except String TicketProof := do
   let attempt ← (← j.getObjVal? "attempt").getNat?
   let sig ← @fromJson? BandersnatchRingVrfProof _ (← j.getObjVal? "signature")
-  return { attempt := ⟨attempt, sorry⟩, proof := sig }
+  return { attempt, proof := sig }
 
 private def ticketFromJson (j : Json) : Except String Ticket := do
   let id ← @fromJson? Hash _ (← j.getObjVal? "id")
   let attempt ← (← j.getObjVal? "attempt").getNat?
-  return { id := id, attempt := ⟨attempt, sorry⟩ }
+  return { id := id, attempt }
 
 instance : FromJson FlatSafroleState where
   fromJson? j := do

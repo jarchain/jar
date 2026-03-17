@@ -17,6 +17,13 @@ namespace Jar.Test.CodecTest
 open Lean (Json FromJson toJson fromJson?)
 open Jar Jar.Json Jar.Codec
 
+/-- Construct Fin without bounds check. Codec test vectors may contain
+    intentionally out-of-bounds values to test encoding fidelity. -/
+private unsafe def mkFinImpl (n : Nat) (val : Nat) (_ : 0 < n) : Fin n := ⟨val, lcProof⟩
+@[implemented_by mkFinImpl]
+private def mkFin (n : Nat) (val : Nat) (h : 0 < n) : Fin n :=
+  ⟨val % n, Nat.mod_lt _ h⟩
+
 -- ============================================================================
 -- Codec-specific FromJson instances
 -- The codec test vectors use a different JSON schema than the conformance
@@ -121,9 +128,8 @@ def parseSegmentRootLookup (j : Json) : Except String (Dict Hash Hash) := do
 def parseWorkReport (j : Json) : Except String WorkReport := do
   let availSpec ← parseAvailSpec (← j.getObjVal? "package_spec")
   let context ← parseRefinementContext (← j.getObjVal? "context")
-  -- Use sorry for Fin bound since codec test vectors may have values >= C
   let coreIndexNat ← (← j.getObjVal? "core_index").getNat?
-  let coreIndex : CoreIndex := ⟨coreIndexNat, sorry⟩
+  let coreIndex : CoreIndex := mkFin C coreIndexNat JamConfig.valid.hC
   let authorizerHash ← fromJson? (← j.getObjVal? "authorizer_hash")
   let authGasUsed ← fromJson? (← j.getObjVal? "auth_gas_used")
   let authOutput ← fromJson? (← j.getObjVal? "auth_output")
@@ -150,9 +156,8 @@ def parseJudgment (j : Json) : Except String Judgment := do
   let vote ← match ← j.getObjVal? "vote" with
     | Json.bool b => pure b
     | _ => .error "expected bool for vote"
-  -- Use sorry for Fin bound
   let indexNat ← (← j.getObjVal? "index").getNat?
-  let index : ValidatorIndex := ⟨indexNat, sorry⟩
+  let index : ValidatorIndex := mkFin V indexNat JamConfig.valid.hV
   let signature ← fromJson? (← j.getObjVal? "signature")
   return { isValid := vote, validatorIndex := index, signature }
 
@@ -212,9 +217,8 @@ def parseDisputes (j : Json) : Except String DisputesExtrinsic := do
 -- ---- Assurance (codec JSON) ----
 
 def parseAssurance (j : Json) : Except String Assurance := do
-  -- Use sorry for Fin bound
   let viNat ← (← j.getObjVal? "validator_index").getNat?
-  let vi : ValidatorIndex := ⟨viNat, sorry⟩
+  let vi : ValidatorIndex := mkFin V viNat JamConfig.valid.hV
   return {
     anchor := ← fromJson? (← j.getObjVal? "anchor")
     bitfield := ← fromJson? (← j.getObjVal? "bitfield")
@@ -231,9 +235,8 @@ def parseGuarantee (j : Json) : Except String Guarantee := do
   let sigsJson ← j.getObjVal? "signatures"
   let credentials ← match sigsJson with
     | Json.arr items => items.mapM fun item => do
-        -- Use sorry for Fin bound
         let viNat ← (← item.getObjVal? "validator_index").getNat?
-        let vi : ValidatorIndex := ⟨viNat, sorry⟩
+        let vi : ValidatorIndex := mkFin V viNat JamConfig.valid.hV
         let sig ← fromJson? (← item.getObjVal? "signature")
         return (vi, sig)
     | _ => .error "expected array for signatures"
@@ -261,9 +264,8 @@ def parseHeader (j : Json) : Except String Header := do
     | Json.null => pure none
     | Json.arr items => some <$> items.mapM (fromJson? ·)
     | _ => .error "expected null or array for tickets_mark"
-  -- Use sorry for Fin bound
   let aiNat ← (← j.getObjVal? "author_index").getNat?
-  let ai : ValidatorIndex := ⟨aiNat, sorry⟩
+  let ai : ValidatorIndex := mkFin V aiNat JamConfig.valid.hV
   return {
     parent := ← fromJson? (← j.getObjVal? "parent")
     stateRoot := ← fromJson? (← j.getObjVal? "parent_state_root")

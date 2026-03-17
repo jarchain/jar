@@ -92,11 +92,11 @@ def extractTickets (proofs : Array TicketProof) (ringRoot : BandersnatchRingRoot
   let mut tickets : Array Ticket := #[]
   for tp in proofs do
     -- Validate attempt
-    if tp.attempt.val >= N_TICKETS then
+    if tp.attempt >= N_TICKETS then
       throw "bad_ticket_attempt"
     -- Verify ring VRF proof
     let context := Crypto.ctxTicketSeal ++ eta2.data
-      ++ ByteArray.mk #[UInt8.ofNat tp.attempt.val]
+      ++ ByteArray.mk #[UInt8.ofNat tp.attempt]
     let verifyResult := bandersnatchRingVerify ringRoot context ByteArray.empty tp.proof ringSize.toUInt32
     if !verifyResult then
       throw "bad_ticket_proof"
@@ -138,7 +138,7 @@ def safroleTransition (pre : FlatSafroleState) (input : SafroleInput)
       (.err "unexpected_ticket", pre)
     else if input.extrinsic.size > 0 then
       -- Check attempt values
-      let badAttempt := input.extrinsic.any fun tp => tp.attempt.val >= N_TICKETS
+      let badAttempt := input.extrinsic.any fun tp => tp.attempt >= N_TICKETS
       if badAttempt then
         (.err "bad_ticket_attempt", pre)
       else
@@ -326,7 +326,7 @@ def compareTickets (label : String) (a b : Array Ticket) : IO Bool := do
     return false
   let mut ok := true
   for i in [:a.size] do
-    if !hashEq a[i]!.id b[i]!.id || a[i]!.attempt.val != b[i]!.attempt.val then
+    if !hashEq a[i]!.id b[i]!.id || a[i]!.attempt != b[i]!.attempt then
       IO.println s!"  FAIL {label}[{i}]"
       ok := false
       break

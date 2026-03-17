@@ -63,7 +63,7 @@ where
     31-byte key with index at position 0. -/
 def stateKeyFromIndex (i : UInt8) : OctetSeq 31 :=
   let arr := (ByteArray.mk (Array.replicate 31 0)).set! 0 i
-  ⟨arr, sorry⟩
+  OctetSeq.mk! arr 31
 
 /-- C(i, s) : State key for service-indexed component. GP eq D.1.
     The service ID bytes (LE) are interleaved at positions 0,1,3,5,7 of the key. -/
@@ -75,7 +75,7 @@ def stateKeyForService (i : UInt8) (serviceId : ServiceId) : OctetSeq 31 :=
   let arr := arr.set! 3 (s.get! 1)
   let arr := arr.set! 5 (s.get! 2)
   let arr := arr.set! 7 (s.get! 3)
-  ⟨arr, sorry⟩
+  OctetSeq.mk! arr 31
 
 /-- C(s, h) : State key for service data (storage/preimage entries). GP eq D.1.
     Interleaves E_4(s) with H(h). -/
@@ -96,7 +96,7 @@ def stateKeyForServiceData (serviceId : ServiceId) (h : ByteArray) : OctetSeq 31
     for i in [:23] do
       r := r.set! (8 + i) (a.data.get! (4 + i))
     return r
-  ⟨arr, sorry⟩
+  OctetSeq.mk! arr 31
 
 /-- Construct the h argument for storage entries: E_4(2^32-1) ++ k. -/
 def storageHashArg (storageKey : ByteArray) : ByteArray :=
@@ -245,7 +245,7 @@ private def serializeSafrole (safrole : SafroleState) : ByteArray := Id.run do
     buf := buf ++ ByteArray.mk #[0]
     for ticket in tickets do
       buf := buf ++ ticket.id.data
-      buf := buf ++ ByteArray.mk #[UInt8.ofNat ticket.attempt.val]
+      buf := buf ++ ByteArray.mk #[UInt8.ofNat ticket.attempt]
     for _ in List.range (E - tickets.size) do
       buf := buf ++ (Hash.zero).data
       buf := buf ++ ByteArray.mk #[0]
@@ -258,7 +258,7 @@ private def serializeSafrole (safrole : SafroleState) : ByteArray := Id.run do
   buf := buf ++ encodeNat safrole.ticketAccumulator.size
   for ticket in safrole.ticketAccumulator do
     buf := buf ++ ticket.id.data
-    buf := buf ++ ByteArray.mk #[UInt8.ofNat ticket.attempt.val]
+    buf := buf ++ ByteArray.mk #[UInt8.ofNat ticket.attempt]
   return buf
 
 /-- C(5): psi judgments. -/
@@ -590,7 +590,7 @@ where
     | n + 1, acc, s => do
       let (id, s) ← decodeHashD s
       let (attempt, s) ← Decoder.readByte s
-      goTickets n (acc.push { id, attempt := ⟨attempt.toNat, sorry⟩ }) s
+      goTickets n (acc.push { id, attempt := attempt.toNat }) s
 
 /-- Decode judgments state. -/
 private def deserializeJudgmentsD : Decoder JudgmentsState := fun s => do
@@ -931,10 +931,10 @@ def deserializeState (kvs : Array (ByteArray × ByteArray))
       | 6 =>
         if value.size < 128 then failed := true
         else state := { state with entropy := {
-          current := ⟨value.extract 0 32, sorry⟩
-          previous := ⟨value.extract 32 64, sorry⟩
-          twoBack := ⟨value.extract 64 96, sorry⟩
-          threeBack := ⟨value.extract 96 128, sorry⟩
+          current := Hash.mk! (value.extract 0 32)
+          previous := Hash.mk! (value.extract 32 64)
+          twoBack := Hash.mk! (value.extract 64 96)
+          threeBack := Hash.mk! (value.extract 96 128)
         }}
       | 7 =>
         match Decoder.run (deserializeValidatorsD (value.size / 336)) value with

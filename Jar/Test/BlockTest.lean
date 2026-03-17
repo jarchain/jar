@@ -56,7 +56,7 @@ private def headerFromTraceJson (j : Json) : Except String Header := do
         let arr ← items.toList.mapM fun item => do
           let id ← @fromJson? Hash _ (← item.getObjVal? "id")
           let attempt ← (← item.getObjVal? "attempt").getNat?
-          pure ({ id, attempt := ⟨attempt, sorry⟩ } : Ticket)
+          pure ({ id, attempt } : Ticket)
         pure (some arr.toArray)
       | _ => .error "expected array for tickets_mark"
     | .error _ => pure none
@@ -240,7 +240,7 @@ private def disputesFromTraceJson (j : Json) : Except String DisputesExtrinsic :
 private def ticketProofFromTraceJson (j : Json) : Except String TicketProof := do
   let attempt ← (← j.getObjVal? "attempt").getNat?
   let proof ← @fromJson? BandersnatchRingVrfProof _ (← j.getObjVal? "signature")
-  return { attempt := ⟨attempt, sorry⟩, proof }
+  return { attempt, proof }
 
 /-- Parse a preimage entry from block-trace JSON.
     Block traces use { "requester": serviceId, "blob": hexdata }
@@ -360,7 +360,7 @@ def runBlockTest [JamConfig] (inputPath : System.FilePath) : IO TestResult := do
       return .fail
 
   -- First, verify raw keyvals produce the expected root (tests trieRoot only)
-  let rawEntries := keyvals.map fun (k, v) => ((⟨k, sorry⟩ : OctetSeq 31), v)
+  let rawEntries := keyvals.map fun (k, v) => ((OctetSeq.mk! k 31), v)
   let rawRoot := Merkle.trieRoot rawEntries
   if rawRoot != expectedPreRoot then
     IO.println s!"  FAIL {name}: raw keyvals trieRoot mismatch (trie bug)"
@@ -417,7 +417,7 @@ def runBlockTest [JamConfig] (inputPath : System.FilePath) : IO TestResult := do
       let filteredOpaque := remainingOpaque.filter fun (k, _) =>
         !postKeys.any (· == k)
       let allPostKvs := (postKvs ++ filteredOpaque).qsort fun (k1, _) (k2, _) => byteArrayLt k1 k2
-      let computedRoot := Merkle.trieRoot (allPostKvs.map fun (k, v) => ((⟨k, sorry⟩ : OctetSeq 31), v))
+      let computedRoot := Merkle.trieRoot (allPostKvs.map fun (k, v) => ((OctetSeq.mk! k 31), v))
 
       if computedRoot == expectedPostRoot then
         IO.println s!"  PASS {name}"
@@ -613,7 +613,7 @@ def runBlockTestDirSeq [JamConfig] (dir : String) : IO UInt32 := do
         return a.size < b.size
     let preKvs := (@StateSerialization.serializeState _ state).map fun (k, v) => (k.data, v)
     let allPreKvs := (preKvs ++ opaqueData).qsort fun (k1, _) (k2, _) => byteArrayLtForRoot k1 k2
-    let preStateRoot := Merkle.trieRoot (allPreKvs.map fun (k, v) => ((⟨k, sorry⟩ : OctetSeq 31), v))
+    let preStateRoot := Merkle.trieRoot (allPreKvs.map fun (k, v) => ((OctetSeq.mk! k 31), v))
     let stateRootOk := block.header.stateRoot == preStateRoot
     -- If state root doesn't match, reject the block
     let result := if !stateRootOk then none
@@ -661,7 +661,7 @@ def runBlockTestDirSeq [JamConfig] (dir : String) : IO UInt32 := do
         let filteredOpaque := remainingOpaque.filter fun (k, _) =>
           !postKeys.any (· == k)
         let allPostKvs := (postKvs ++ filteredOpaque).qsort fun (k1, _) (k2, _) => byteArrayLt k1 k2
-        let computedRoot := Merkle.trieRoot (allPostKvs.map fun (k, v) => ((⟨k, sorry⟩ : OctetSeq 31), v))
+        let computedRoot := Merkle.trieRoot (allPostKvs.map fun (k, v) => ((OctetSeq.mk! k 31), v))
         if computedRoot == expectedPostRoot then
           IO.println s!"  PASS {name}"
           passed := passed + 1
@@ -813,7 +813,7 @@ def runBlockTestDirDump [JamConfig] (dir : String) : IO UInt32 := do
     -- Serialize pre-state keyvals
     let preKvs := (@StateSerialization.serializeState _ state).map fun (k, v) => (k.data, v)
     let allPreKvs := (preKvs ++ opaqueData).qsort fun (k1, _) (k2, _) => byteArrayLt k1 k2
-    let preStateRoot := Merkle.trieRoot (allPreKvs.map fun (k, v) => ((⟨k, sorry⟩ : OctetSeq 31), v))
+    let preStateRoot := Merkle.trieRoot (allPreKvs.map fun (k, v) => ((OctetSeq.mk! k 31), v))
 
     -- Parse block
     let blockResult := do

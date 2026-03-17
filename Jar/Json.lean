@@ -241,8 +241,7 @@ instance : FromJson Ticket where
   fromJson? j := do
     let id ← fromJson? (← j.getObjVal? "id")
     let attempt ← (← j.getObjVal? "attempt").getNat?
-    -- Use sorry for Fin proof — tiny config has N_TINY=3 but type is Fin N_TICKETS=Fin 2
-    return { id, attempt := ⟨attempt, sorry⟩ }
+    return { id, attempt }
 
 instance : ToJson SealKeySeries where
   toJson
@@ -267,7 +266,7 @@ instance : FromJson TicketProof where
   fromJson? j := do
     let attempt ← (← j.getObjVal? "attempt").getNat?
     let proof ← fromJson? (← j.getObjVal? "signature")
-    return { attempt := ⟨attempt, sorry⟩, proof }
+    return { attempt, proof }
 
 -- ============================================================================
 -- EpochMarker

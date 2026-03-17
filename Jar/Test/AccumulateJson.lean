@@ -106,7 +106,7 @@ private def parseGreyWorkReport (j : Json) : Except String WorkReport := do
   return {
     availSpec := ← parseGreyAvailSpec availSpecJson
     context := ← parseGreyContext (← j.getObjVal? "context")
-    coreIndex := ⟨coreIndexNat, sorry⟩
+    coreIndex := ⟨coreIndexNat % C, Nat.mod_lt _ JamConfig.valid.hC⟩
     authorizerHash := ← fromJson? (← j.getObjVal? "authorizer_hash")
     authOutput := ← fromJson? (← j.getObjVal? "auth_output")
     segmentRootLookup := ← parseGreySegmentRootLookup (← j.getObjVal? "segment_root_lookup")

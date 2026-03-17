@@ -106,7 +106,7 @@ def computeWorkReport
     (services : Dict ServiceId ServiceAccount) : Option (WorkReport × Gas) :=
   -- Look up authorizer code from auth code host's preimage store
   let authCode := match services.lookup pkg.authCodeHost with
-    | some acct => acct.preimages.lookup ⟨pkg.authCodeHash.data, sorry⟩
+    | some acct => acct.preimages.lookup (OctetSeq.mk! pkg.authCodeHash.data 32)
     | none => none
   match authCode with
   | none => none
@@ -118,7 +118,7 @@ def computeWorkReport
       -- Refine each work item
       let digests := pkg.items.map fun item =>
         let svcCode := match services.lookup item.serviceId with
-          | some acct => acct.preimages.lookup ⟨item.codeHash.data, sorry⟩
+          | some acct => acct.preimages.lookup (OctetSeq.mk! item.codeHash.data 32)
           | none => none
         match svcCode with
         | none =>
@@ -154,7 +154,7 @@ def computeWorkReport
           segmentCount := 0
         }
         context
-        coreIndex := ⟨0, sorry⟩
+        coreIndex := ⟨0, JamConfig.valid.hC⟩
         authorizerHash := pkg.authCodeHash
         authOutput := ByteArray.empty
         segmentRootLookup := Dict.empty

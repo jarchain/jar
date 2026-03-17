@@ -384,7 +384,7 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
     -- Read the 32-byte hash from memory
     match PVM.readByteArray mem hashPtr 32 with
     | .ok hashBytes =>
-      let h : Hash := ⟨hashBytes, sorry⟩
+      let h : Hash := Hash.mk! hashBytes
       let targetSid := if rawSid == UInt64.ofNat (2^64 - 1) then ctx.serviceId
         else if rawSid.toNat < 2^32 then UInt32.ofNat rawSid.toNat
         else ctx.serviceId
@@ -703,7 +703,7 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
             for i in [:Q_QUEUE] do
               let offset := i * 32
               let hashBytes := queueBytes.extract offset (offset + 32)
-              arr := arr.push ⟨hashBytes, sorry⟩
+              arr := arr.push (Hash.mk! hashBytes)
             return arr
           -- Store auth queue for this core
           let authQueue' := if coreIdx < ctx.state.authQueue.size
@@ -740,10 +740,10 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
             let offset := i * keySize
             let kBytes := keysBytes.extract offset (offset + keySize)
             let vk : ValidatorKey := {
-              bandersnatch := ⟨kBytes.extract 0 32, sorry⟩
-              ed25519 := ⟨kBytes.extract 32 64, sorry⟩
-              bls := ⟨kBytes.extract 64 208, sorry⟩
-              metadata := ⟨kBytes.extract 208 336, sorry⟩
+              bandersnatch := OctetSeq.mk! (kBytes.extract 0 32) 32
+              ed25519 := OctetSeq.mk! (kBytes.extract 32 64) 32
+              bls := OctetSeq.mk! (kBytes.extract 64 208) 144
+              metadata := OctetSeq.mk! (kBytes.extract 208 336) 128
             }
             arr := arr.push vk
           return arr
@@ -772,7 +772,7 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
     let hintI := getReg regs 12
     match PVM.readByteArray mem codeHashPtr 32 with
     | .ok hashBytes =>
-      let codeHash : Hash := ⟨hashBytes, sorry⟩
+      let codeHash : Hash := Hash.mk! hashBytes
       -- Compute items/footprint for new account (preimage_info entry)
       let newItems : Nat := 2  -- preimage_info entry counts as 2 items
       let newFootprint : Nat := 81 + preimLen.toNat  -- per GP eq 9.4
@@ -862,7 +862,7 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
     let newMinOnTransferGas := getReg regs 9
     match PVM.readByteArray mem hashPtr 32 with
     | .ok hashBytes =>
-      let newCodeHash : Hash := ⟨hashBytes, sorry⟩
+      let newCodeHash : Hash := Hash.mk! hashBytes
       match ctx.state.accounts.lookup ctx.serviceId with
       | none =>
         let regs' := setR7 regs PVM.RESULT_NONE
@@ -917,7 +917,7 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
               (mkPanic regs mem 0, ctx)
             else
             let gas'' := gas' - gasLimit
-            let memoSeq : OctetSeq W_T := ⟨memoBytes, sorry⟩  -- size proof elided
+            let memoSeq : OctetSeq W_T := OctetSeq.mk! memoBytes W_T
             let xfer : DeferredTransfer := {
               source := ctx.serviceId, dest, amount
               memo := memoSeq
@@ -943,7 +943,7 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
     -- Read hash h from memory first (page fault → panic)
     match PVM.readByteArray mem hashPtr 32 with
     | .ok hashBytes =>
-      let h : Hash := ⟨hashBytes, sorry⟩
+      let h : Hash := Hash.mk! hashBytes
       -- Check: d != self AND d exists in accounts
       if sid == ctx.serviceId then
         let regs' := setR7 regs PVM.RESULT_WHO
@@ -960,7 +960,7 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
         | some ejected =>
           -- GP: Check d.codehash == encode[32](self_id)
           let selfIdEncoded := Codec.encodeFixedNat 32 ctx.serviceId.toNat
-          let selfIdHash : Hash := ⟨selfIdEncoded, sorry⟩
+          let selfIdHash : Hash := Hash.mk! selfIdEncoded
           if ejected.codeHash != selfIdHash then
             let regs' := setR7 regs PVM.RESULT_WHO
             (mkResult regs' mem gas', ctx)
@@ -1030,7 +1030,7 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
     let blobLen := UInt32.ofNat (getReg regs 8).toNat
     match PVM.readByteArray mem hashPtr 32 with
     | .ok hashBytes =>
-      let h : Hash := ⟨hashBytes, sorry⟩
+      let h : Hash := Hash.mk! hashBytes
       match ctx.state.accounts.lookup ctx.serviceId with
       | none =>
         let regs' := setR7 regs PVM.RESULT_NONE
@@ -1081,7 +1081,7 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
     let blobLen := UInt32.ofNat (getReg regs 8).toNat
     match PVM.readByteArray mem hashPtr 32 with
     | .ok hashBytes =>
-      let h : Hash := ⟨hashBytes, sorry⟩
+      let h : Hash := Hash.mk! hashBytes
       match ctx.state.accounts.lookup ctx.serviceId with
       | none =>
         let regs' := setR7 regs PVM.RESULT_HUH
@@ -1138,7 +1138,7 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
     let blobLen := UInt32.ofNat (getReg regs 8).toNat
     match PVM.readByteArray mem hashPtr 32 with
     | .ok hashBytes =>
-      let h : Hash := ⟨hashBytes, sorry⟩
+      let h : Hash := Hash.mk! hashBytes
       match ctx.state.accounts.lookup ctx.serviceId with
       | none =>
         let regs' := setR7 regs PVM.RESULT_HUH
@@ -1221,7 +1221,7 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
     let hashPtr := getReg regs 7
     match PVM.readByteArray mem hashPtr 32 with
     | .ok hashBytes =>
-      let h : Hash := ⟨hashBytes, sorry⟩
+      let h : Hash := Hash.mk! hashBytes
       let regs' := setR7 regs PVM.RESULT_OK
       (mkResult regs' mem gas', { ctx with yieldHash := some h })
     | _ =>
@@ -1452,7 +1452,7 @@ def accone (ps : PartialState) (serviceId : ServiceId)
               -- Addresses are 32-bit, so full u64 range must fit in [0, 2^32)
               if outLen == 32 && outPtr.toNat < 2^32 && outPtr.toNat + 32 <= 2^32 then
                 match PVM.readByteArray result.memory outPtr 32 with
-                | .ok bytes => some (⟨bytes, sorry⟩ : Hash)
+                | .ok bytes => some (Hash.mk! bytes)
                 | _ => none
               else none
             -- Use halt output if available, otherwise use yield host call result
