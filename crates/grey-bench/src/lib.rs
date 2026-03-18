@@ -442,26 +442,43 @@ pub fn polkavm_hostcall_blob(n: u64) -> Vec<u8> {
 // Same RISC-V ELF compiled for both grey (via transpiler) and polkavm (via linker).
 // ---------------------------------------------------------------------------
 
-/// Shared rv64em ELF for both grey and polkavm ecrecover benchmarks.
-/// Same binary, same algorithm — only the VM differs.
-/// rv64em ELF with relocations and polkavm_export. Used by both grey and polkavm.
-const ECRECOVER_ELF: &[u8] = include_bytes!(
+/// Grey rv64em ELF (bin target, +e,+m features).
+const GREY_ECRECOVER_ELF: &[u8] = include_bytes!(
     "../../../services/bench-ecrecover/target/riscv64em-polkavm/release/bench-ecrecover.elf"
 );
 
+/// PolkaVM rv64em ELF (cdylib target, +e,+m features, per-function sections).
+const POLKAVM_ECRECOVER_ELF: &[u8] = include_bytes!(
+    "../../../services/bench-ecrecover/target/riscv64em-polkavm-cdylib/release/bench_ecrecover.elf"
+);
+
 /// Grey PVM blob for ecrecover (rv64em ELF → PVM via linker).
+///
+/// To regenerate the ELF:
+/// ```sh
+/// cd services/bench-ecrecover
+/// cargo +nightly build --release --target riscv64em-polkavm.json -Zbuild-std=core,alloc -Zjson-target-spec
+/// ```
 pub fn grey_ecrecover_blob() -> Vec<u8> {
-    grey_transpiler::link_elf(ECRECOVER_ELF).expect("link ecrecover ELF for grey PVM")
+    grey_transpiler::link_elf(GREY_ECRECOVER_ELF).expect("link ecrecover ELF for grey PVM")
 }
 
-/// PolkaVM blob for ecrecover (rv64em ELF → polkavm blob).
+/// PolkaVM blob for ecrecover (rv64em cdylib ELF → polkavm blob).
+///
+/// To regenerate the ELF:
+/// ```sh
+/// cd services/bench-ecrecover
+/// RUSTFLAGS="-Zunstable-options -Cpanic=immediate-abort" RUSTC_BOOTSTRAP=1 CARGO_PROFILE_RELEASE_STRIP=false \
+///   cargo +nightly build --release --lib --target riscv64em-polkavm-cdylib.json -Zbuild-std=core,alloc -Zjson-target-spec
+/// ```
 pub fn polkavm_ecrecover_blob() -> Vec<u8> {
     let mut config = polkavm_linker::Config::default();
     config.set_strip(true);
+    config.set_min_stack_size(65536);
     polkavm_linker::program_from_elf(
         config,
         polkavm_linker::TargetInstructionSet::JamV1,
-        ECRECOVER_ELF,
+        POLKAVM_ECRECOVER_ELF,
     )
     .expect("link ecrecover ELF for polkavm")
 }

@@ -3,6 +3,11 @@ name = "bench-ecrecover"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "bench_ecrecover"
+path = "src/main.rs"
+crate-type = ["cdylib"]
+
 [dependencies]
 k256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 

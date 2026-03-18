@@ -122,13 +122,6 @@ fn main() {
             let module = Module::new(&engine, &mc, blob.into()).unwrap();
             let compile_ms = t.elapsed().as_secs_f64() * 1000.0;
 
-            // Debug: list exports
-            let exports: Vec<_> = module.exports().collect();
-            eprintln!("polkavm: {} exports, default_sp=0x{:x}", exports.len(), module.default_sp());
-            for (i, e) in exports.iter().enumerate() {
-                eprintln!("  export[{i}]: pc={}", e.program_counter());
-            }
-
             let mut inst = module.instantiate().unwrap();
             inst.set_gas(GAS as i64);
             if let Some(export) = module.exports().next() {
@@ -147,7 +140,11 @@ fn main() {
                     }
                     InterruptKind::Ecalli(_) => continue,
                     InterruptKind::Trap => {
-                        eprintln!("polkavm: TRAP at pc={} a0={}", inst.program_counter().unwrap(), inst.reg(PReg::A0));
+                        // Exported functions TRAP on return (no valid RA).
+                        // Treat as normal completion — report timing.
+                        eprintln!("{:20} {:>10.3} ms  (compile={:.1}ms) a0={}",
+                            "polkavm", t.elapsed().as_secs_f64() * 1000.0,
+                            compile_ms, inst.reg(PReg::A0));
                         return;
                     }
                     InterruptKind::NotEnoughGas => { eprintln!("polkavm: OOG"); return; }
