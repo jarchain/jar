@@ -341,7 +341,7 @@ mod tests {
 
     #[test]
     fn test_invalid_opcodes() {
-        assert_eq!(Opcode::from_byte(2), None);
+        assert_eq!(Opcode::from_byte(2), Some(Opcode::Unlikely)); // JAR v0.8.0
         assert_eq!(Opcode::from_byte(15), None);
         assert_eq!(Opcode::from_byte(255), None);
     }
