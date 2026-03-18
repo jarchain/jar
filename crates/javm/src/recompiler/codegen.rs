@@ -108,12 +108,15 @@ pub struct HelperFns {
 enum RegDef {
     /// Unknown or complex value.
     Unknown,
-    /// reg = src * 2 (from add D, A, A)
-    Doubled { src: usize },
-    /// reg = src * 4 (from add D, D, D where D was Doubled(src))
-    Quad { src: usize },
-    /// reg = base + idx * 4 (from add D, BASE, Q where Q is Quad)
-    ScaledAdd { base: usize, idx: usize },
+    /// Known compile-time constant (32-bit address or immediate).
+    Const(u32),
+    /// reg = src << shift (shift 1..=3, i.e. *2, *4, *8).
+    /// Built from: add D,A,A → Shifted{src:A, shift:1}
+    ///             add D,D,D where D=Shifted{src,s} → Shifted{src, shift:s+1}
+    Shifted { src: usize, shift: u8 },
+    /// reg = base + (idx << shift) (shift 0..=3, i.e. *1, *2, *4, *8).
+    /// Built from: add D,BASE,S where S=Shifted{src,s} → ScaledAdd{base:BASE, idx:src, shift:s}
+    ScaledAdd { base: usize, idx: usize, shift: u8 },
 }
 
 /// PVM-to-x86-64 compiler.
@@ -238,13 +241,13 @@ impl Compiler {
             let category = opcode.category();
             let args = args::decode_args(code, pc, skip, category);
 
-            // Peephole lookahead: detect add+add+add+load/store scaled-index pattern.
-            // Pattern: add64 D,A,A / add64 D,D,D / add64 D2,BASE,D / load/store_ind R,D2,0
-            // Fuse into: lea edx,[base+idx*4] / bounds_check / load/store
-            let fused = if opcode == Opcode::Add64 {
-                self.try_fuse_scaled_index(code, bitmask, pc, &args)
-            } else {
-                None
+            // Peephole lookahead: try multi-instruction fusion patterns.
+            let fused = match opcode {
+                // add+add+add+load/store → lea+bounds_check+load/store
+                Opcode::Add64 => self.try_fuse_scaled_index(code, bitmask, pc, &args),
+                // mul64+mul_upper → single mulq producing both low and high
+                Opcode::Mul64 => self.try_fuse_mul_pair(code, bitmask, pc, &args),
+                _ => None,
             };
 
             if let Some(advance) = fused {
@@ -253,23 +256,7 @@ impl Compiler {
             }
 
             self.compile_instruction(opcode, &args, pc as u32, next_pc);
-
-            // Peephole: invalidate reg_defs for destination registers.
-            // Add64 handles its own tracking; all other writers invalidate.
-            if opcode != Opcode::Add64 {
-                match &args {
-                    Args::TwoReg { rd, .. } => self.invalidate_reg(*rd),
-                    Args::TwoRegImm { ra, .. } => self.invalidate_reg(*ra),
-                    Args::RegImm { ra, .. } => self.invalidate_reg(*ra),
-                    Args::RegExtImm { ra, .. } => self.invalidate_reg(*ra),
-                    Args::ThreeReg { rd, .. } => self.invalidate_reg(*rd),
-                    _ => {}
-                }
-                // Terminators, host calls, and jumps invalidate all tracking
-                if opcode.is_terminator() {
-                    self.invalidate_all_regs();
-                }
-            }
+            self.update_reg_defs(opcode, &args);
 
             pc += 1 + skip;
         }
@@ -527,7 +514,7 @@ impl Compiler {
                 // Actually NO — that defeats the purpose. Let me just emit everything via lea:
 
                 // Emit lea edx, [base + idx*4] into SCRATCH
-                self.asm.lea_sib4_32(SCRATCH, REG_MAP[base_reg], REG_MAP[idx_reg]);
+                self.asm.lea_sib_scaled_32(SCRATCH, REG_MAP[base_reg], REG_MAP[idx_reg], 2);
 
                 // Also update D and addr_reg for correctness
                 // D = idx * 4 (computed by adds but we skipped them)
@@ -568,7 +555,7 @@ impl Compiler {
                     }
                 }
 
-                self.asm.lea_sib4_32(SCRATCH, REG_MAP[base_reg], REG_MAP[idx_reg]);
+                self.asm.lea_sib_scaled_32(SCRATCH, REG_MAP[base_reg], REG_MAP[idx_reg], 2);
                 let fn_addr = self.write_fn_for(op4);
                 let ra_reg = REG_MAP[ra];
                 self.emit_mem_write(true, ra_reg, fn_addr, pc4 as u32);
@@ -581,24 +568,215 @@ impl Compiler {
         }
     }
 
-    /// Invalidate a register's tracked definition and any dependents.
-    fn invalidate_reg(&mut self, reg: usize) {
-        self.reg_defs[reg] = RegDef::Unknown;
+    /// Peephole: fuse Mul64 + MulUpperSS/UU into a single multiply.
+    /// Pattern: mul64 rd1,ra,rb / mul_upper_xx rd2,ra,rb (same ra,rb operands)
+    /// Fuses into: single mul/imul producing both low (rd1) and high (rd2) results.
+    fn try_fuse_mul_pair(&mut self, code: &[u8], bitmask: &[u8], pc: usize, args: &Args) -> Option<usize> {
+        let Args::ThreeReg { ra: m_ra, rb: m_rb, rd: m_rd } = args else { return None; };
+
+        // Peek at next instruction
+        let skip1 = compute_skip(pc, bitmask);
+        let pc2 = pc + 1 + skip1;
+        if pc2 >= code.len() || (pc2 < bitmask.len() && bitmask[pc2] != 1) { return None; }
+        let op2 = Opcode::from_byte(code[pc2])?;
+
+        // Must be MulUpperSS or MulUpperUU with same operands
+        let signed = match op2 {
+            Opcode::MulUpperSS => true,
+            Opcode::MulUpperUU => false,
+            _ => return None,
+        };
+        let skip2 = compute_skip(pc2, bitmask);
+        let args2 = args::decode_args(code, pc2, skip2, op2.category());
+        let Args::ThreeReg { ra: u_ra, rb: u_rb, rd: u_rd } = args2 else { return None; };
+        if u_ra != *m_ra || u_rb != *m_rb { return None; }
+
+        // Pattern matched! Emit fused multiply.
+        // Bind labels and gas checks for both instructions.
+        for &ipc in &[pc, pc2] {
+            if let Some(&label) = self.block_labels.get(&(ipc as u32)) {
+                self.asm.bind_label(label);
+            }
+            if ipc < self.gas_block_starts.len() && self.gas_block_starts[ipc] {
+                self.emit_gas_check(ipc, code, bitmask);
+            }
+        }
+
+        let (a, b) = (REG_MAP[*m_ra], REG_MAP[*m_rb]);
+        let (rd_lo, rd_hi) = (REG_MAP[*m_rd], REG_MAP[u_rd]);
+
+        // Save RAX and RDX (they're used implicitly by mul/imul).
+        self.asm.push(Reg::RAX);
+        self.asm.push(SCRATCH); // RDX
+
+        // Load ra into RAX
+        self.asm.mov_rr(Reg::RAX, a);
+
+        // Handle rb being RAX (φ[11], which we just overwrote with ra)
+        let mul_src = if b == Reg::RAX {
+            self.asm.mov_load64(SCRATCH, Reg::RSP, 8); // original RAX from stack
+            SCRATCH
+        } else {
+            b
+        };
+
+        // Emit the single multiply: RDX:RAX = RAX * mul_src
+        if signed {
+            self.asm.imul_rdx_rax(mul_src);
+        } else {
+            self.asm.mul_rdx_rax(mul_src);
+        }
+
+        // Now RAX = low 64 bits (rd_lo), RDX = high 64 bits (rd_hi).
+        // We need to distribute results and restore RAX/RDX.
+        // Strategy: push both results, restore originals, then pop results into destinations.
+
+        // Save results to temporaries
+        self.asm.push(SCRATCH);   // push high (RDX)
+        self.asm.push(Reg::RAX);  // push low (RAX)
+        // Stack: [RSP+0]=lo, [RSP+8]=hi, [RSP+16]=orig_RDX, [RSP+24]=orig_RAX
+
+        // Restore original RAX and RDX
+        self.asm.mov_load64(SCRATCH, Reg::RSP, 16);  // orig RDX
+        self.asm.mov_load64(Reg::RAX, Reg::RSP, 24); // orig RAX
+
+        // Load results into destinations
+        // Be careful: rd_lo or rd_hi might be RAX or RDX (which we just restored)
+        // Load lo first, then hi (order matters if rd_lo == rd_hi, though unlikely)
+        self.asm.mov_load64(rd_lo, Reg::RSP, 0);  // low bits
+        self.asm.mov_load64(rd_hi, Reg::RSP, 8);  // high bits
+
+        // Clean up stack
+        self.asm.add_ri(Reg::RSP, 32);
+
+        self.invalidate_all_regs();
+        let total_skip = (pc2 + 1 + skip2) - pc;
+        Some(total_skip)
+    }
+
+    /// Compute a memory address into SCRATCH, using peephole optimizations when available.
+    fn emit_addr_to_scratch(&mut self, rb: usize, imm: i32) {
+        // Peephole: fold known constant address (no register load needed)
+        if let RegDef::Const(addr) = self.reg_defs[rb] {
+            let effective = addr.wrapping_add(imm as u32);
+            self.asm.mov_ri32(SCRATCH, effective);
+            return;
+        }
+        // Peephole: use SIB addressing for scaled-index patterns
+        if imm == 0 {
+            if let RegDef::ScaledAdd { base, idx, shift } = self.reg_defs[rb] {
+                self.asm.lea_sib_scaled_32(SCRATCH, REG_MAP[base], REG_MAP[idx], shift);
+                return;
+            }
+        }
+        let rb_reg = REG_MAP[rb];
+        self.asm.movzx_32_64(SCRATCH, rb_reg);
+        if imm != 0 {
+            self.asm.add_ri32(SCRATCH, imm);
+        }
+    }
+
+    /// Invalidate any reg_defs that depend on `reg`, but NOT reg itself.
+    fn invalidate_dependents(&mut self, reg: usize) {
         for i in 0..13 {
             if i != reg {
-                match self.reg_defs[i] {
-                    RegDef::Doubled { src } if src == reg => self.reg_defs[i] = RegDef::Unknown,
-                    RegDef::Quad { src } if src == reg => self.reg_defs[i] = RegDef::Unknown,
-                    RegDef::ScaledAdd { base, idx } if base == reg || idx == reg => self.reg_defs[i] = RegDef::Unknown,
-                    _ => {}
+                let depends = match self.reg_defs[i] {
+                    RegDef::Shifted { src, .. } => src == reg,
+                    RegDef::ScaledAdd { base, idx, .. } => base == reg || idx == reg,
+                    _ => false,
+                };
+                if depends {
+                    self.reg_defs[i] = RegDef::Unknown;
                 }
             }
         }
     }
 
+    /// Invalidate a register's tracked definition and any dependents.
+    fn invalidate_reg(&mut self, reg: usize) {
+        self.reg_defs[reg] = RegDef::Unknown;
+        self.invalidate_dependents(reg);
+    }
+
     /// Invalidate all register definitions (on block boundaries, calls, etc.)
     fn invalidate_all_regs(&mut self) {
         self.reg_defs = [RegDef::Unknown; 13];
+    }
+
+    /// Update reg_defs after compiling an instruction.
+    /// Opcodes that produce trackable patterns update positively;
+    /// all others invalidate the destination register.
+    fn update_reg_defs(&mut self, opcode: Opcode, args: &Args) {
+        match opcode {
+            Opcode::Add64 => {
+                if let Args::ThreeReg { ra, rb, rd } = args {
+                    if *ra == *rb && *ra == *rd {
+                        // add64 D, D, D — doubles again. Shifted{src,s} → Shifted{src,s+1}.
+                        if let RegDef::Shifted { src, shift } = self.reg_defs[*rd] {
+                            if shift < 3 {
+                                self.reg_defs[*rd] = RegDef::Shifted { src, shift: shift + 1 };
+                            } else {
+                                self.reg_defs[*rd] = RegDef::Unknown;
+                            }
+                        } else {
+                            self.reg_defs[*rd] = RegDef::Unknown;
+                        }
+                    } else if *ra == *rb {
+                        // add64 D, A, A — D = A * 2 = A << 1
+                        self.reg_defs[*rd] = RegDef::Shifted { src: *ra, shift: 1 };
+                    } else {
+                        // add64 D, A, B — check if one operand is Shifted
+                        let def = if let RegDef::Shifted { src, shift } = self.reg_defs[*rb] {
+                            Some((*ra, src, shift))
+                        } else if let RegDef::Shifted { src, shift } = self.reg_defs[*ra] {
+                            Some((*rb, src, shift))
+                        } else {
+                            None
+                        };
+                        if let Some((base, idx, shift)) = def {
+                            self.reg_defs[*rd] = RegDef::ScaledAdd { base, idx, shift };
+                        } else {
+                            self.reg_defs[*rd] = RegDef::Unknown;
+                        }
+                    }
+                    self.invalidate_dependents(*rd);
+                }
+            }
+            Opcode::LoadImm => {
+                if let Args::RegImm { ra, imm } = args {
+                    self.reg_defs[*ra] = RegDef::Const(*imm as u32);
+                    self.invalidate_dependents(*ra);
+                }
+            }
+            Opcode::LoadImm64 => {
+                if let Args::RegExtImm { ra, imm } = args {
+                    self.reg_defs[*ra] = RegDef::Const(*imm as u32);
+                    self.invalidate_dependents(*ra);
+                }
+            }
+            Opcode::MoveReg => {
+                if let Args::TwoReg { rd, ra } = args {
+                    if *rd != *ra {
+                        // Propagate the source's definition to the destination.
+                        self.reg_defs[*rd] = self.reg_defs[*ra];
+                        self.invalidate_dependents(*rd);
+                    }
+                }
+            }
+            _ => {
+                match args {
+                    Args::ThreeReg { rd, .. } => self.invalidate_reg(*rd),
+                    Args::TwoReg { rd, .. } => self.invalidate_reg(*rd),
+                    Args::TwoRegImm { ra, .. } => self.invalidate_reg(*ra),
+                    Args::RegImm { ra, .. } => self.invalidate_reg(*ra),
+                    Args::RegExtImm { ra, .. } => self.invalidate_reg(*ra),
+                    _ => {}
+                }
+                if opcode.is_terminator() {
+                    self.invalidate_all_regs();
+                }
+            }
+        }
     }
 
     /// Compile a single PVM instruction.
@@ -928,54 +1106,18 @@ impl Compiler {
             Opcode::StoreIndU8 | Opcode::StoreIndU16 | Opcode::StoreIndU32 | Opcode::StoreIndU64 => {
                 if let Args::TwoRegImm { ra, rb, imm } = args {
                     let ra_reg = REG_MAP[*ra];
-                    // Peephole: check for scaled-index pattern
-                    if *imm as i32 == 0 {
-                        if let RegDef::ScaledAdd { base, idx } = self.reg_defs[*rb] {
-                            // addr = base + idx*4, emit lea instead of mov+add
-                            self.asm.lea_sib4_32(SCRATCH, REG_MAP[base], REG_MAP[idx]);
-                            let fn_addr = self.write_fn_for(opcode);
-                            self.emit_mem_write(true, ra_reg, fn_addr, pc);
-                            // Invalidate reg_defs for written reg
-                            self.invalidate_reg(*rb);
-                            // Skip to end of match arm
-                        } else {
-                            let rb_reg = REG_MAP[*rb];
-                            self.asm.movzx_32_64(SCRATCH, rb_reg);
-                            let fn_addr = self.write_fn_for(opcode);
-                            self.emit_mem_write(true, ra_reg, fn_addr, pc);
-                        }
-                    } else {
-                        let rb_reg = REG_MAP[*rb];
-                        self.asm.movzx_32_64(SCRATCH, rb_reg);
-                        self.asm.add_ri32(SCRATCH, *imm as i32);
-                        let fn_addr = self.write_fn_for(opcode);
-                        self.emit_mem_write(true, ra_reg, fn_addr, pc);
-                    }
+                    self.emit_addr_to_scratch(*rb, *imm as i32);
+                    let fn_addr = self.write_fn_for(opcode);
+                    self.emit_mem_write(true, ra_reg, fn_addr, pc);
                 }
             }
             Opcode::LoadIndU8 | Opcode::LoadIndI8 | Opcode::LoadIndU16 | Opcode::LoadIndI16 |
             Opcode::LoadIndU32 | Opcode::LoadIndI32 | Opcode::LoadIndU64 => {
                 if let Args::TwoRegImm { ra, rb, imm } = args {
                     let ra_reg = REG_MAP[*ra];
-                    // Peephole: check for scaled-index pattern
-                    if *imm as i32 == 0 {
-                        if let RegDef::ScaledAdd { base, idx } = self.reg_defs[*rb] {
-                            self.asm.lea_sib4_32(SCRATCH, REG_MAP[base], REG_MAP[idx]);
-                            let fn_addr = self.read_fn_for(opcode);
-                            self.emit_mem_read(ra_reg, SCRATCH, fn_addr, pc);
-                        } else {
-                            let rb_reg = REG_MAP[*rb];
-                            self.asm.movzx_32_64(SCRATCH, rb_reg);
-                            let fn_addr = self.read_fn_for(opcode);
-                            self.emit_mem_read(ra_reg, SCRATCH, fn_addr, pc);
-                        }
-                    } else {
-                        let rb_reg = REG_MAP[*rb];
-                        self.asm.movzx_32_64(SCRATCH, rb_reg);
-                        self.asm.add_ri32(SCRATCH, *imm as i32);
-                        let fn_addr = self.read_fn_for(opcode);
-                        self.emit_mem_read(ra_reg, SCRATCH, fn_addr, pc);
-                    }
+                    self.emit_addr_to_scratch(*rb, *imm as i32);
+                    let fn_addr = self.read_fn_for(opcode);
+                    self.emit_mem_read(ra_reg, SCRATCH, fn_addr, pc);
                     // Sign-extend for signed load variants
                     match opcode {
                         Opcode::LoadIndI8 => self.asm.movsx_8_64(ra_reg, ra_reg),
@@ -1366,40 +1508,7 @@ impl Compiler {
             }
             Opcode::Add64 => {
                 self.emit_alu3_64(args, |a, d, s| { a.add_rr(d, s); });
-                // Peephole: track scaled-index patterns for LoadInd/StoreInd
-                if let Args::ThreeReg { ra, rb, rd } = args {
-                    if *ra == *rb && *ra == *rd {
-                        // add64 D, D, D — D = D * 2. If D was Doubled(src), now Quad(src).
-                        if let RegDef::Doubled { src } = self.reg_defs[*rd] {
-                            self.reg_defs[*rd] = RegDef::Quad { src };
-                        } else {
-                            self.reg_defs[*rd] = RegDef::Unknown;
-                        }
-                    } else if *ra == *rb {
-                        // add64 D, A, A — D = A * 2
-                        self.reg_defs[*rd] = RegDef::Doubled { src: *ra };
-                    } else {
-                        // add64 D, A, B — check if one operand is Quad
-                        if let RegDef::Quad { src } = self.reg_defs[*rb] {
-                            self.reg_defs[*rd] = RegDef::ScaledAdd { base: *ra, idx: src };
-                        } else if let RegDef::Quad { src } = self.reg_defs[*ra] {
-                            self.reg_defs[*rd] = RegDef::ScaledAdd { base: *rb, idx: src };
-                        } else {
-                            self.reg_defs[*rd] = RegDef::Unknown;
-                        }
-                    }
-                    // Invalidate any other reg that depended on rd
-                    for i in 0..13 {
-                        if i != *rd {
-                            match self.reg_defs[i] {
-                                RegDef::Doubled { src } if src == *rd => self.reg_defs[i] = RegDef::Unknown,
-                                RegDef::Quad { src } if src == *rd => self.reg_defs[i] = RegDef::Unknown,
-                                RegDef::ScaledAdd { base, idx } if base == *rd || idx == *rd => self.reg_defs[i] = RegDef::Unknown,
-                                _ => {}
-                            }
-                        }
-                    }
-                }
+                // reg_defs tracking handled by update_reg_defs() in main loop
             }
             Opcode::Sub64 => {
                 if let Args::ThreeReg { ra, rb, rd } = args {
