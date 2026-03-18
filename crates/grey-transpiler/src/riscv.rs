@@ -76,47 +76,6 @@ impl TranslationContext {
         }
     }
 
-    /// Translate a code section from RISC-V to PVM.
-    pub fn translate_section(&mut self, data: &[u8], base_address: u64) -> Result<(), TranspileError> {
-        let mut offset = 0;
-        while offset < data.len() {
-            let rv_addr = base_address + offset as u64;
-            self.address_map.insert(rv_addr, self.code.len() as u32);
-
-            // Decode RISC-V instruction (32-bit fixed width for non-compressed)
-            if offset + 4 > data.len() {
-                // Try 16-bit compressed instruction
-                if offset + 2 <= data.len() {
-                    let inst16 = u16::from_le_bytes([data[offset], data[offset + 1]]);
-                    if inst16 & 0x3 != 0x3 {
-                        self.translate_compressed(inst16, rv_addr)?;
-                        offset += 2;
-                        continue;
-                    }
-                }
-                break;
-            }
-
-            let inst = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]);
-
-            // Check if compressed (low 2 bits != 11)
-            if inst & 0x3 != 0x3 {
-                let inst16 = u16::from_le_bytes([data[offset], data[offset + 1]]);
-                self.translate_compressed(inst16, rv_addr)?;
-                offset += 2;
-                continue;
-            }
-
-            let consumed = self.translate_instruction(data, offset, base_address)?;
-            offset += consumed;
-        }
-
-        // Apply branch fixups
-        self.apply_fixups();
-
-        Ok(())
-    }
-
     /// Translate one or more 32-bit RISC-V instructions starting at `offset`.
     /// Returns the number of bytes consumed (4 for a single instruction, 8 for fused pairs).
     pub(crate) fn translate_instruction(&mut self, section: &[u8], offset: usize, base: u64) -> Result<usize, TranspileError> {

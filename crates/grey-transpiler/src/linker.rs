@@ -109,6 +109,85 @@ pub fn link_elf(elf_data: &[u8]) -> Result<Vec<u8>, TranspileError> {
     ))
 }
 
+/// Transpile an rv64em ELF into a JAM service PVM blob.
+///
+/// A JAM service has two entry points:
+/// - PC=0: refine (called via `_start` / `refine` symbol)
+/// - PC=5: accumulate (called via `accumulate` symbol)
+///
+/// The generated PVM code has a dispatch header:
+/// - Bytes 0-4: `jump <refine_code>`
+/// - Bytes 5-9: `jump <accumulate_code>`
+/// - Bytes 10+: translated RISC-V code
+pub fn link_elf_service(elf_data: &[u8]) -> Result<Vec<u8>, TranspileError> {
+    let elf = parse_linked_elf(elf_data)?;
+
+    let refine_addr = elf.symbol_address("refine")
+        .or_else(|| elf.symbol_address("_start"))
+        .ok_or_else(|| TranspileError::InvalidSection(
+            "no 'refine' or '_start' symbol found".into()
+        ))?;
+
+    let accumulate_addr = elf.symbol_address("accumulate")
+        .ok_or_else(|| TranspileError::InvalidSection(
+            "no 'accumulate' symbol found".into()
+        ))?;
+
+    let mut ctx = TranslationContext::new(elf.is_64bit);
+
+    // Reserve 10 bytes for dispatch header (2 x jump instructions)
+    let header_size = 10u32;
+    for _ in 0..header_size {
+        ctx.code.push(0);
+        ctx.bitmask.push(0);
+    }
+    ctx.bitmask[0] = 1; // jump at byte 0
+    ctx.bitmask[5] = 1; // jump at byte 5
+
+    for (_file_off, vaddr, data) in &elf.code_sections {
+        translate_section_linked(&mut ctx, data, *vaddr, &elf)?;
+    }
+    ctx.apply_fixups();
+
+    // Resolve entry points to PVM offsets
+    let refine_pvm = ctx.address_map.get(&refine_addr)
+        .copied()
+        .ok_or_else(|| TranspileError::InvalidSection(
+            format!("refine symbol at {:#x} not in translated code", refine_addr)
+        ))?;
+
+    let accumulate_pvm = ctx.address_map.get(&accumulate_addr)
+        .copied()
+        .ok_or_else(|| TranspileError::InvalidSection(
+            format!("accumulate symbol at {:#x} not in translated code", accumulate_addr)
+        ))?;
+
+    // Patch dispatch header: jump to refine at byte 0, jump to accumulate at byte 5
+    ctx.code[0] = 40; // jump opcode
+    let refine_rel = (refine_pvm as i32) - 0;
+    ctx.code[1..5].copy_from_slice(&refine_rel.to_le_bytes());
+
+    ctx.code[5] = 40; // jump opcode
+    let acc_rel = (accumulate_pvm as i32) - 5;
+    ctx.code[6..10].copy_from_slice(&acc_rel.to_le_bytes());
+
+    Ok(emitter::build_standard_program(
+        &elf.ro_data,
+        &elf.rw_data,
+        elf.heap_pages,
+        elf.stack_size,
+        &ctx.code,
+        &ctx.bitmask,
+        &ctx.jump_table,
+    ))
+}
+
+impl LinkedElf {
+    fn symbol_address(&self, name: &str) -> Option<u64> {
+        self.symbols.iter().find(|(n, _)| n == name).map(|(_, a)| *a)
+    }
+}
+
 /// Parse ELF with full relocation info.
 fn parse_linked_elf(data: &[u8]) -> Result<LinkedElf, TranspileError> {
     if data.len() < 64 || data[0..4] != [0x7F, b'E', b'L', b'F'] {
@@ -123,7 +202,7 @@ fn parse_linked_elf(data: &[u8]) -> Result<LinkedElf, TranspileError> {
 
     if !is_64bit {
         return Err(TranspileError::ElfParse(
-            "linker requires 64-bit ELF (rv64em); use transpile_elf for 32-bit".into()
+            "linker requires 64-bit ELF (rv64em)".into()
         ));
     }
 
@@ -258,9 +337,14 @@ fn parse_linked_elf(data: &[u8]) -> Result<LinkedElf, TranspileError> {
     let ro_min = ro_sections.iter().map(|(a,_,_)| *a).min().unwrap_or(0);
     let ro_max = ro_sections.iter().map(|(a,sz,_)| *a + *sz as u64).max().unwrap_or(0);
 
-    // Round ro_min down to page boundary for stack_size
+    // Round ro_min down to page boundary for stack_size.
+    // Minimum 4 pages (16KB) so the stack is usable even without rodata.
     let page_size: u64 = 4096;
-    let stack_size = (ro_min / page_size) * page_size;
+    let stack_size = if ro_min > 0 {
+        (ro_min / page_size) * page_size
+    } else {
+        4 * page_size
+    };
 
     // Build ro_data blob: section data placed at (section_addr - stack_size) offset
     let ro_blob_size = if ro_max > stack_size { (ro_max - stack_size) as usize } else { 0 };
@@ -428,11 +512,6 @@ fn translate_section_linked(
                 offset += 4;
                 continue;
             }
-        }
-
-        // DEBUG: check if lo12 map has this address
-        if rv_addr >= 0x1167c && rv_addr <= 0x11690 {
-            eprintln!("DEBUG rv_addr=0x{:x} opcode=0x{:x} lo12={}", rv_addr, opcode, elf.lo12_targets.contains_key(&rv_addr));
         }
 
         // Check if this instruction has a PCREL_LO12 relocation.

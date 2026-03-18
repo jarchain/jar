@@ -30,7 +30,7 @@ global_asm!(
     ".type accumulate, @function",
     "accumulate:",
     "addi sp, sp, -16",
-    "sw ra, 12(sp)",
+    "sd ra, 8(sp)",
 
     // Write counter value [0x01] to key [0x01]
     // (simplified: always writes 0x01; a real counter would read-then-increment)
@@ -59,7 +59,7 @@ global_asm!(
     "li t0, 4",
     "ecall",
 
-    "lw ra, 12(sp)",
+    "ld ra, 8(sp)",
     "addi sp, sp, 16",
     "ret",
 );

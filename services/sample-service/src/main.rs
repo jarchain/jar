@@ -32,7 +32,7 @@ global_asm!(
     ".type accumulate, @function",
     "accumulate:",
     "addi sp, sp, -16",     // allocate 16 bytes on stack
-    "sw ra, 12(sp)",        // save return address
+    "sd ra, 8(sp)",         // save return address
     "li t0, 0x01",          // key byte
     "sb t0, 0(sp)",         // store at sp+0
     "li t0, 0x42",          // value byte
@@ -45,7 +45,7 @@ global_asm!(
     "li t0, 4",             // host call ID = 4 (host_write)
     "ecall",                // invoke host
     // Clean up and return
-    "lw ra, 12(sp)",        // restore ra
+    "ld ra, 8(sp)",         // restore ra
     "addi sp, sp, 16",      // deallocate stack
     "ret",
 );

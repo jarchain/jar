@@ -37,7 +37,7 @@ pub async fn run_testnet(
     let pvm_blob = match std::fs::read(grey_transpiler::SAMPLE_SERVICE_ELF_PATH) {
         Ok(elf_data) => {
             tracing::info!("Testnet: Using transpiled RISC-V service");
-            grey_transpiler::transpile_elf_service(&elf_data)
+            grey_transpiler::link_elf_service(&elf_data)
                 .expect("failed to transpile sample service ELF")
         }
         Err(_) => {
@@ -68,7 +68,7 @@ pub async fn run_testnet(
     // Install pixels service (ID 2000) if ELF available
     let pixels_service_id: ServiceId = 2000;
     if let Ok(elf_data) = std::fs::read(grey_transpiler::PIXELS_SERVICE_ELF_PATH) {
-        let pixels_blob = grey_transpiler::transpile_elf_service(&elf_data)
+        let pixels_blob = grey_transpiler::link_elf_service(&elf_data)
             .expect("failed to transpile pixels service ELF");
         let pixels_hash = grey_crypto::blake2b_256(&pixels_blob);
         let mut px_preimages = BTreeMap::new();
@@ -244,7 +244,7 @@ pub fn run_sequential_test(num_blocks: u32) -> Result<SequentialTestResult, Stri
     let pvm_blob = match std::fs::read(grey_transpiler::SAMPLE_SERVICE_ELF_PATH) {
         Ok(elf_data) => {
             tracing::info!("Using transpiled RISC-V service");
-            grey_transpiler::transpile_elf_service(&elf_data)
+            grey_transpiler::link_elf_service(&elf_data)
                 .expect("failed to transpile sample service ELF")
         }
         Err(_) => {
@@ -282,7 +282,7 @@ pub fn run_sequential_test(num_blocks: u32) -> Result<SequentialTestResult, Stri
     let pixels_pvm_blob = match std::fs::read(grey_transpiler::PIXELS_SERVICE_ELF_PATH) {
         Ok(elf_data) => {
             tracing::info!("Using transpiled pixels RISC-V service");
-            grey_transpiler::transpile_elf_service(&elf_data)
+            grey_transpiler::link_elf_service(&elf_data)
                 .expect("failed to transpile pixels service ELF")
         }
         Err(_) => {

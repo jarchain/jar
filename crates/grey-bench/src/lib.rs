@@ -444,12 +444,12 @@ pub fn polkavm_hostcall_blob(n: u64) -> Vec<u8> {
 
 /// Grey rv64em ELF (bin target, +e,+m features).
 const GREY_ECRECOVER_ELF: &[u8] = include_bytes!(
-    "../../../services/bench-ecrecover/target/riscv64em-polkavm/release/bench-ecrecover.elf"
+    "../../../services/bench-ecrecover/target/riscv64em-javm/release/bench-ecrecover.elf"
 );
 
 /// PolkaVM rv64emac ELF (cdylib target, full ISA features, per-function sections).
 const POLKAVM_ECRECOVER_ELF: &[u8] = include_bytes!(
-    "../../../services/bench-ecrecover/target/riscv64emac-unknown-none-polkavm/release/bench_ecrecover.elf"
+    "../../../services/bench-ecrecover/target/riscv64emac-polkavm/release/bench_ecrecover.elf"
 );
 
 /// Grey PVM blob for ecrecover (rv64em ELF → PVM via linker).
@@ -457,19 +457,19 @@ const POLKAVM_ECRECOVER_ELF: &[u8] = include_bytes!(
 /// To regenerate the ELF:
 /// ```sh
 /// cd services/bench-ecrecover
-/// cargo +nightly build --release --target riscv64em-polkavm.json -Zbuild-std=core,alloc -Zjson-target-spec
+/// cargo +nightly build --release --bin bench-ecrecover --target ../riscv64em-javm.json -Zbuild-std=core,alloc -Zjson-target-spec
 /// ```
 pub fn grey_ecrecover_blob() -> Vec<u8> {
     grey_transpiler::link_elf(GREY_ECRECOVER_ELF).expect("link ecrecover ELF for grey PVM")
 }
 
-/// PolkaVM blob for ecrecover (rv64em cdylib ELF → polkavm blob).
+/// PolkaVM blob for ecrecover (rv64emac cdylib ELF → polkavm blob).
 ///
 /// To regenerate the ELF:
 /// ```sh
 /// cd services/bench-ecrecover
 /// RUSTFLAGS="-Zunstable-options -Cpanic=immediate-abort" RUSTC_BOOTSTRAP=1 CARGO_PROFILE_RELEASE_STRIP=false \
-///   cargo +nightly build --release --lib --target riscv64em-polkavm-cdylib.json -Zbuild-std=core,alloc -Zjson-target-spec
+///   cargo +nightly build --release --lib --target ../riscv64emac-polkavm.json -Zbuild-std=core,alloc -Zjson-target-spec
 /// ```
 pub fn polkavm_ecrecover_blob() -> Vec<u8> {
     let mut config = polkavm_linker::Config::default();

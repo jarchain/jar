@@ -1,5 +1,5 @@
 [build]
-target = "riscv32im-unknown-none-elf"
+target = "../../services/riscv64em-javm.json"
 
-[target.riscv32im-unknown-none-elf]
-rustflags = ["-C", "target-feature=+e", "-C", "link-arg=-Tpvm.ld"]
+[target.riscv64em-javm]
+rustflags = ["-C", "link-arg=-Tpvm.ld"]
