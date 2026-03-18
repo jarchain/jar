@@ -499,6 +499,16 @@ impl Assembler {
         self.emit_i32(imm);
     }
 
+    /// cmp dword [base + disp32], reg32  (sets flags: mem vs reg)
+    pub fn cmp_mem32_r(&mut self, base: Reg, disp: i32, src: Reg) {
+        if base.hi() != 0 || src.hi() != 0 {
+            self.emit(0x40 | src.hi() << 2 | base.hi()); // REX
+        }
+        self.emit(0x39);                 // CMP r/m32, r32
+        self.modrm_disp32(src.lo(), base);
+        self.emit_i32(disp);
+    }
+
     /// sub qword [base + disp32], sign-extended imm32
     pub fn sub_mem64_imm32(&mut self, base: Reg, disp: i32, imm: i32) {
         self.rex_w_b(base);          // REX.W (+ REX.B if base is R8-R15)

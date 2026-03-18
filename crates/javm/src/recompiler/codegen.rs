@@ -339,8 +339,11 @@ impl Compiler {
     /// Emit inline memory read with explicit width.
     /// width_bytes: 1=u8, 2=u16, 4=u32, 8=u64. 0=auto (use fn_addr to detect).
     /// pvm_pc: the PVM PC of the instruction, stored in CTX_PC on fault for gas correction.
+    /// Emit inline memory read with bounds check.
+    /// JAR v0.8.0 linear memory: all addresses in [0, heap_top) are valid RW.
+    /// Hot path: cmp + jae + load (no push/pop, no permission table).
     fn emit_mem_read_sized(&mut self, dst: Reg, fn_addr: u64, width_bytes: u32, pvm_pc: u32) {
-        let _w = if width_bytes > 0 { width_bytes } else {
+        let w = if width_bytes > 0 { width_bytes } else {
             if fn_addr == self.helpers.mem_read_u8 { 1 }
             else if fn_addr == self.helpers.mem_read_u16 { 2 }
             else if fn_addr == self.helpers.mem_read_u32 { 4 }
@@ -348,112 +351,61 @@ impl Compiler {
         };
 
         // SCRATCH (RDX) = guest address (32-bit clean)
+        let fault_label = self.asm.new_label();
         let done_label = self.asm.new_label();
 
-        if dst != Reg::RAX && dst != SCRATCH {
-            // Fast path: use dst as temp for page index (no push/pop needed).
-            // dst will be overwritten by the load anyway.
-            let fault_label = self.asm.new_label();
-            self.asm.mov_rr(dst, SCRATCH);               // dst = guest addr
-            self.asm.shr_ri32(dst, 12);                  // dst = page index
-            self.asm.cmp_byte_sib_disp32(CTX, dst, -PERMS_OFFSET, 1);
-            self.asm.jcc_label(Cc::B, fault_label);
+        // Bounds check: cmp [R15 + CTX_HEAP_TOP], edx  (heap_top vs addr)
+        self.asm.cmp_mem32_r(CTX, CTX_HEAP_TOP, SCRATCH);
+        self.asm.jcc_label(Cc::BE, fault_label);  // fault if heap_top <= addr
 
-            // Direct load: [R15 + guest_addr] — result in dst
-            match _w {
-                1 => self.asm.movzx_load8_sib(dst, CTX, SCRATCH),
-                2 => self.asm.movzx_load16_sib(dst, CTX, SCRATCH),
-                4 => self.asm.mov_load32_sib(dst, CTX, SCRATCH),
-                8 => self.asm.mov_load64_sib(dst, CTX, SCRATCH),
-                _ => unreachable!(),
-            }
-            self.asm.jmp_label(done_label);
-
-            // Fault (fast path — no RAX to restore)
-            self.asm.bind_label(fault_label);
-            self.asm.mov_store32_imm(CTX, CTX_PC as i32, pvm_pc as i32);
-            self.asm.mov_store32_imm(CTX, CTX_EXIT_REASON, EXIT_PAGE_FAULT as i32);
-            self.asm.mov_store32(CTX, CTX_EXIT_ARG, SCRATCH);
-            self.asm.jmp_label(self.exit_label);
-        } else {
-            // Slow path: dst is RAX (phi[11]) or SCRATCH — use push/pop RAX.
-            let fault_label = self.asm.new_label();
-            self.asm.push(Reg::RAX);                     // save phi[11]
-            self.asm.mov_rr(Reg::RAX, SCRATCH);          // eax = guest addr
-            self.asm.shr_ri32(Reg::RAX, 12);             // eax = page index
-            self.asm.cmp_byte_sib_disp32(CTX, Reg::RAX, -PERMS_OFFSET, 1);
-            self.asm.jcc_label(Cc::B, fault_label);
-
-            match _w {
-                1 => self.asm.movzx_load8_sib(dst, CTX, SCRATCH),
-                2 => self.asm.movzx_load16_sib(dst, CTX, SCRATCH),
-                4 => self.asm.mov_load32_sib(dst, CTX, SCRATCH),
-                8 => self.asm.mov_load64_sib(dst, CTX, SCRATCH),
-                _ => unreachable!(),
-            }
-            if dst == Reg::RAX {
-                self.asm.add_ri(Reg::RSP, 8);            // discard saved phi[11]
-            } else {
-                self.asm.pop(Reg::RAX);                  // restore phi[11]
-            }
-            self.asm.jmp_label(done_label);
-
-            // Fault (slow path — restore RAX)
-            self.asm.bind_label(fault_label);
-            self.asm.pop(Reg::RAX);
-            self.asm.mov_store32_imm(CTX, CTX_PC as i32, pvm_pc as i32);
-            self.asm.mov_store32_imm(CTX, CTX_EXIT_REASON, EXIT_PAGE_FAULT as i32);
-            self.asm.mov_store32(CTX, CTX_EXIT_ARG, SCRATCH);
-            self.asm.jmp_label(self.exit_label);
+        // Direct load: [R15 + guest_addr]
+        match w {
+            1 => self.asm.movzx_load8_sib(dst, CTX, SCRATCH),
+            2 => self.asm.movzx_load16_sib(dst, CTX, SCRATCH),
+            4 => self.asm.mov_load32_sib(dst, CTX, SCRATCH),
+            8 => self.asm.mov_load64_sib(dst, CTX, SCRATCH),
+            _ => unreachable!(),
         }
+        self.asm.jmp_label(done_label);
+
+        // Fault path (cold)
+        self.asm.bind_label(fault_label);
+        self.asm.mov_store32_imm(CTX, CTX_PC as i32, pvm_pc as i32);
+        self.asm.mov_store32_imm(CTX, CTX_EXIT_REASON, EXIT_PAGE_FAULT as i32);
+        self.asm.mov_store32(CTX, CTX_EXIT_ARG, SCRATCH);
+        self.asm.jmp_label(self.exit_label);
 
         self.asm.bind_label(done_label);
     }
 
-    /// Emit memory write. Address in SCRATCH, value in val_reg.
-    /// pvm_pc: the PVM PC stored in CTX_PC on fault for gas correction.
+    /// Emit memory write with bounds check.
+    /// JAR v0.8.0 linear memory: all addresses in [0, heap_top) are valid RW.
+    /// Hot path: cmp + jae + store (no push/pop, no permission table).
     fn emit_mem_write(&mut self, _addr_in_scratch: bool, val_reg: Reg, fn_addr: u64, pvm_pc: u32) {
         let w = if fn_addr == self.helpers.mem_write_u8 { 1u32 }
             else if fn_addr == self.helpers.mem_write_u16 { 2 }
             else if fn_addr == self.helpers.mem_write_u32 { 4 }
             else { 8 };
 
-        let done_label = self.asm.new_label();
         let fault_label = self.asm.new_label();
+        let done_label = self.asm.new_label();
 
-        // Permission check (>= 2 for write) using push/pop RAX (phi[11])
-        self.asm.push(Reg::RAX);                     // save phi[11]
-        self.asm.mov_rr(Reg::RAX, SCRATCH);          // eax = guest addr
-        self.asm.shr_ri32(Reg::RAX, 12);             // eax = page index
-        self.asm.cmp_byte_sib_disp32(CTX, Reg::RAX, -PERMS_OFFSET, 2);
-        self.asm.jcc_label(Cc::B, fault_label);
+        // Bounds check: cmp [R15 + CTX_HEAP_TOP], edx
+        self.asm.cmp_mem32_r(CTX, CTX_HEAP_TOP, SCRATCH);
+        self.asm.jcc_label(Cc::BE, fault_label);
 
         // Direct store: [R15 + guest_addr]
-        if val_reg == Reg::RAX {
-            // val_reg is RAX (phi[11]) which we pushed — reload from stack
-            self.asm.mov_load64(Reg::RAX, Reg::RSP, 0);  // reload value from stack
-            match w {
-                1 => self.asm.mov_store8_sib(CTX, SCRATCH, Reg::RAX),
-                2 => self.asm.mov_store16_sib(CTX, SCRATCH, Reg::RAX),
-                4 => self.asm.mov_store32_sib(CTX, SCRATCH, Reg::RAX),
-                8 => self.asm.mov_store64_sib(CTX, SCRATCH, Reg::RAX),
-                _ => unreachable!(),
-            }
-        } else {
-            match w {
-                1 => self.asm.mov_store8_sib(CTX, SCRATCH, val_reg),
-                2 => self.asm.mov_store16_sib(CTX, SCRATCH, val_reg),
-                4 => self.asm.mov_store32_sib(CTX, SCRATCH, val_reg),
-                8 => self.asm.mov_store64_sib(CTX, SCRATCH, val_reg),
-                _ => unreachable!(),
-            }
+        match w {
+            1 => self.asm.mov_store8_sib(CTX, SCRATCH, val_reg),
+            2 => self.asm.mov_store16_sib(CTX, SCRATCH, val_reg),
+            4 => self.asm.mov_store32_sib(CTX, SCRATCH, val_reg),
+            8 => self.asm.mov_store64_sib(CTX, SCRATCH, val_reg),
+            _ => unreachable!(),
         }
-        self.asm.pop(Reg::RAX);                      // restore phi[11]
         self.asm.jmp_label(done_label);
 
-        // Fault path
+        // Fault path (cold)
         self.asm.bind_label(fault_label);
-        self.asm.pop(Reg::RAX);                      // restore phi[11]
         self.asm.mov_store32_imm(CTX, CTX_PC as i32, pvm_pc as i32);
         self.asm.mov_store32_imm(CTX, CTX_EXIT_REASON, EXIT_PAGE_FAULT as i32);
         self.asm.mov_store32(CTX, CTX_EXIT_ARG, SCRATCH);
