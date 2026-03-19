@@ -1469,6 +1469,7 @@ def accone (ps : PartialState) (serviceId : ServiceId)
         let runFn := match JamConfig.gasModel with
           | .perInstruction => PVM.run
           | .basicBlock => PVM.runBlockGas
+          | .basicBlockSinglePass => PVM.runBlockGasSinglePass
         let (result, ctx') := PVM.runWithHostCalls AccContext
           prog 5 regs mem (Int64.ofUInt64 totalGas)
           (fun callId gas regs' mem' c =>
