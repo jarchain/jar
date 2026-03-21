@@ -141,6 +141,13 @@ def CommitScore.numWeightedDimensions : Nat := 5  -- 1 + 1 + 3
 def CommitScore.weighted (s : CommitScore) : Nat :=
   (s.difficulty + s.novelty + 3 * s.designQuality) / CommitScore.numWeightedDimensions
 
+/-- weightDelta is at most 100 when all dimension scores are at most 100. -/
+theorem CommitScore.weighted_le_100 (s : CommitScore)
+    (hd : s.difficulty ≤ 100) (hn : s.novelty ≤ 100) (hq : s.designQuality ≤ 100) :
+    s.weighted ≤ 100 := by
+  unfold weighted numWeightedDimensions
+  omega
+
 /-- A signed commit and the data needed to compute its rewards. -/
 structure SignedCommit where
   id : CommitId

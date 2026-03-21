@@ -147,6 +147,22 @@ def percentileFromRanking
     | none => 0
     | some pos => (n - 1 - pos) * 100 / (n - 1)
 
+/-- percentileFromRanking always returns a value ≤ 100. -/
+theorem percentileFromRanking_le_100 (ranking : Ranking) (pr : CommitId) :
+    percentileFromRanking ranking pr ≤ 100 := by
+  simp only [percentileFromRanking]
+  split <;> rename_i h
+  · -- n ≤ 1: returns 100
+    omega
+  · -- n > 1: match on findIdx?
+    split
+    · -- none: returns 0
+      omega
+    · -- some pos: (n - 1 - pos) * 100 / (n - 1) ≤ 100
+      rename_i pos _
+      apply Nat.div_le_of_le_mul
+      exact Nat.mul_le_mul_right 100 (Nat.sub_le ..)
+
 /-- Derive a score for the current PR from one reviewer's rankings.
     Each dimension is a percentile rank (0-100). -/
 def scoreFromReview
