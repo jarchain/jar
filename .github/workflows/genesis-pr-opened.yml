@@ -24,7 +24,7 @@ jobs:
           if echo "$CHANGED" | grep -qE '^\.github/(workflows/genesis-|cache/genesis\.json)'; then
             if [ "$AUTHOR" != "sorpaas" ]; then
               gh pr comment ${{ github.event.pull_request.number }} --body \
-                "**Genesis Bot:** This PR modifies protected genesis files (workflows or cache). Only the founder (sorpaas) may modify these. Genesis scoring is disabled for this PR."
+                "**JAR Bot:** This PR modifies protected genesis files (workflows or cache). Only the founder (sorpaas) may modify these. Genesis scoring is disabled for this PR."
               exit 1
             fi
           fi

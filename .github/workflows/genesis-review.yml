@@ -60,7 +60,7 @@ jobs:
           VERDICT=$(echo "$COMMENT_BODY" | grep -i '^verdict:' | sed 's/^verdict:\s*//' | tr -d ' ')
 
           if [ -z "$DIFFICULTY" ] || [ -z "$NOVELTY" ] || [ -z "$DESIGN" ] || [ -z "$VERDICT" ]; then
-            gh pr comment "$PR_NUMBER" --body "**Genesis Bot:** Could not parse review from @${COMMENT_AUTHOR}. Please check the format."
+            gh pr comment "$PR_NUMBER" --body "**JAR Bot:** Could not parse review from @${COMMENT_AUTHOR}. Please check the format."
             exit 0
           fi
 
@@ -98,6 +98,16 @@ jobs:
           MERGE_W=$(echo "$RESULT" | jq -r '.mergeWeight')
           TOTAL_W=$(echo "$RESULT" | jq -r '.totalWeight')
 
-          gh pr comment "$PR_NUMBER" --body \
-            "**Genesis Bot:** Review recorded from @${COMMENT_AUTHOR}.
-            Merge weight: ${MERGE_W}/${TOTAL_W} (ready: ${READY})."
+          if [ "$READY" = "true" ]; then
+            gh pr comment "$PR_NUMBER" --body \
+              "**JAR Bot:** Review recorded from @${COMMENT_AUTHOR}.
+              Merge weight: ${MERGE_W}/${TOTAL_W}. Quorum reached — merging."
+
+            # Trigger the merge workflow
+            gh workflow run genesis-merge.yml \
+              -f pr_number="$PR_NUMBER"
+          else
+            gh pr comment "$PR_NUMBER" --body \
+              "**JAR Bot:** Review recorded from @${COMMENT_AUTHOR}.
+              Merge weight: ${MERGE_W}/${TOTAL_W} (need >50%)."
+          fi
