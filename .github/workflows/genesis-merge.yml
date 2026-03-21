@@ -131,6 +131,7 @@ jobs:
           # Update cache on genesis-state branch
           UPDATED_CACHE=$(echo "$CACHE" | jq --argjson idx "$INDEX" '. + [$idx]')
           git worktree add /tmp/genesis-state origin/genesis-state
+          git -C /tmp/genesis-state checkout -B genesis-state origin/genesis-state
           echo "$UPDATED_CACHE" > /tmp/genesis-state/genesis.json
           git -C /tmp/genesis-state config user.name "JAR Bot"
           git -C /tmp/genesis-state config user.email "legal@bitarray.dev"
