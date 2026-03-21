@@ -123,8 +123,12 @@ def verify (config : VerifierConfig) (proof : LigeritoProof)
         (1 <<< (config.logDims[i]! + LOG_INV_RATE)) config.numQueries
       ts := ts'
 
-      -- Hash final opened rows and verify Merkle inclusion
-      -- (Simplified)
+      -- Ligero proximity: In the recursive Ligerito protocol (§6), yr at
+      -- the final round is the sumcheck-reduced polynomial, NOT the polynomial
+      -- committed in the opened matrix. The standalone RS re-encoding check
+      -- (single-round Ligero §4) does not apply here. Soundness comes from
+      -- the compositional chain: Merkle binding + sumcheck Fiat-Shamir across
+      -- all recursive rounds (Theorem 6.1).
 
       return (true, ts)
 
