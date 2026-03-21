@@ -19,8 +19,17 @@ jobs:
       contents: write
       pull-requests: write
     steps:
+      - name: Get PR base branch
+        id: pr-info
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BASE=$(gh pr view ${{ github.event.issue.number }} --repo ${{ github.repository }} --json baseRefName --jq '.baseRefName')
+          echo "base=$BASE" >> $GITHUB_OUTPUT
+
       - uses: actions/checkout@v4
         with:
+          ref: ${{ steps.pr-info.outputs.base }}
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
