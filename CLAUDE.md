@@ -113,11 +113,78 @@ lake build jarstf
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
 | `ci.yml` | push master, PRs | Build crypto-ffi + `make test` |
-| `genesis-pr-opened.yml` | PR opened (master) | Post comparison targets + review template |
-| `genesis-review.yml` | `/review` comment | Parse rankings, tally merge votes, auto-merge on quorum |
-| `genesis-merge.yml` | quorum or `/merge` | Evaluate commit, update cache, merge PR |
+| `genesis-pr-opened.yml` | `pull_request_target: [opened]` | Post comparison targets + review template |
+| `genesis-review.yml` | `/review` comment (`issue_comment`) | Parse rankings, tally merge votes, trigger merge on quorum |
+| `genesis-merge.yml` | quorum (`workflow_dispatch`) or `/merge` | Wait for CI, merge, confirm, update cache |
 
 Genesis bot identity: `JAR Bot <legal@bitarray.dev>`.
+
+### How the merge flow works
+
+```
+/review comment → genesis-review.yml:
+  1. Collect ALL /review comments from PR (last per author)
+  2. Collect meta-reviews (👍/👎 reactions on review comments)
+  3. Expand short hashes → full SHAs using comparison targets
+  4. Tally weighted merge votes via genesis_check_merge
+  5. If quorum (>50% weight): trigger genesis-merge.yml
+
+genesis-merge.yml:
+  1. Read cache from genesis-state branch
+  2. Fetch PR created_at (immutable anchor for comparison targets)
+  3. Compute comparison targets (filtered by epoch < prCreatedAt)
+  4. Collect reviews + meta-reviews with hash expansion
+  5. Build SignedCommit JSON, evaluate via genesis_evaluate
+  6. Wait for CI: gh pr checks --watch --fail-fast
+  7. Merge: gh pr merge --merge (synchronous, no --auto)
+  8. Confirm: check state == MERGED
+  9. Update genesis-state cache (only after confirmed merge)
+  10. Post result comment
+```
+
+### Key design decisions (learned the hard way)
+
+**`pull_request_target` not `pull_request`**: the PR-opened workflow uses `pull_request_target` because `pull_request` gives read-only `GITHUB_TOKEN` for fork PRs — the bot can't post comments.
+
+**Synchronous merge, not `--auto`**: `gh pr merge --auto` queues the merge for when CI passes, but the push created by auto-merge uses `GITHUB_TOKEN` which doesn't trigger `on: push` workflows. We tried a separate `genesis-cache-update.yml` workflow but it never fired. The fix: wait for CI in the merge workflow itself (`gh pr checks --watch`), then merge synchronously and update cache in the same step.
+
+**Cache after merge, not before**: the merge workflow updates `genesis-state` AFTER confirming the merge succeeded. An earlier design pushed the cache before merging — if the merge failed (e.g., CI not ready), the cache had an orphan entry that polluted future comparison targets. This caused a cascade that required force-pushing master to fix.
+
+**Comparison targets anchored to `prCreatedAt`**: targets are selected from commits merged before the PR's `created_at` timestamp (immutable, set by GitHub at PR open). This prevents targets from shifting when other PRs merge concurrently. The `SignedCommit` stores `prCreatedAt`; for legacy commits it falls back to `mergeEpoch`.
+
+**Short hash expansion**: reviewers use 8-char hashes in `/review` comments (copied from the bot's template), but the Lean spec needs full 40-char SHAs. `tools/genesis-collect-reviews.sh` expands short hashes by prefix-matching against comparison targets. `tools/genesis-replay.sh` does the same expansion when replaying from git trailers.
+
+**`issue_comment` workflows run from the default branch**: the review and merge workflows are triggered by `issue_comment`, which always runs from master regardless of which branch the PR targets. This means workflow changes for these files are always chicken-and-egg — they take effect immediately for ALL PRs, and bug fixes require direct pushes to master.
+
+### Diagnosing problems
+
+**PR opened but no bot comment**: check `genesis-pr-opened.yml` run. For fork PRs, ensure it uses `pull_request_target` (not `pull_request`). Check the "Select comparison targets" step logs.
+
+**Review posted but no merge**: check `genesis-review.yml` run. Look at "Collect all reviews and check merge readiness" — is mergeWeight > 50% of totalWeight? The reviewer must have `isReviewer = true` (weight ≥ 500 threshold).
+
+**Merge failed**: check `genesis-merge.yml` run. Common causes:
+- "base branch policy prohibits the merge" → CI hasn't passed. The workflow should wait via `gh pr checks --watch`, but if CI fails, the merge fails.
+- "not mergeable" → merge conflict. The PR needs a rebase.
+
+**Cache out of sync**: run `tools/genesis-replay.sh --verify-cache` to compare the `genesis-state` cache against a full rebuild from git trailers. If mismatched, rebuild:
+```bash
+lake build genesis_evaluate genesis_validate
+bash tools/genesis-replay.sh --rebuild > /tmp/cache.json
+# Then push to genesis-state branch
+```
+
+**Verify scoring integrity**: run both checks:
+```bash
+bash tools/genesis-replay.sh --verify        # trailers self-consistent
+bash tools/genesis-replay.sh --verify-cache  # cache matches rebuild
+```
+
+**Check current weights**:
+```bash
+lake build genesis_finalize
+CACHE=$(git show origin/genesis-state:genesis.json)
+echo "{\"indices\":${CACHE}}" | .lake/build/bin/genesis_finalize
+```
 
 ## Contributing (Proof of Intelligence)
 
