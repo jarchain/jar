@@ -59,13 +59,12 @@ def activeVariant (epoch : Epoch) : GenesisVariant :=
 
 /-! ### CommitIndex — Output of evaluating one signed commit -/
 
-/-- The output of evaluating a single signed commit.
+/-- CommitIndex as stored in Genesis-Index: trailers.
+    `globalRank` is `Option Nat` because old trailers predate this field.
 
     Contains only the raw facts needed for state reconstruction and
     future finalization. Token amounts are NOT stored here — they are
-    computed during finalization using the current spec's parameters.
-    This allows changing reward splits (e.g., 70/30 → 80/20) without
-    re-evaluating history. -/
+    computed during finalization using the current spec's parameters. -/
 structure CommitIndex where
   /-- Hash of the signed commit that was evaluated. -/
   commitHash : CommitId
@@ -89,7 +88,34 @@ structure CommitIndex where
   rejectVotes : List ContributorId
   /-- Whether the founder used the escape hatch to force this merge. -/
   founderOverride : Bool
+  /-- Position in the global quality ordering (0 = best).
+      `none` for old trailers that predate this field. -/
+  globalRank : Option Nat := none
   deriving Repr
+
+/-- CachedCommitIndex as stored in genesis.json cache.
+    `globalRank` is always present (computed during evaluate/rebuild). -/
+structure CachedCommitIndex where
+  commitHash : CommitId
+  epoch : Epoch
+  score : CommitScore
+  contributor : ContributorId
+  weightDelta : Nat
+  reviewers : List ContributorId
+  metaReviews : List MetaReview
+  mergeVotes : List ContributorId
+  rejectVotes : List ContributorId
+  founderOverride : Bool
+  globalRank : Nat
+  deriving Repr
+
+/-- Convert CachedCommitIndex to CommitIndex. -/
+def CachedCommitIndex.toCommitIndex (c : CachedCommitIndex) : CommitIndex :=
+  { commitHash := c.commitHash, epoch := c.epoch, score := c.score,
+    contributor := c.contributor, weightDelta := c.weightDelta,
+    reviewers := c.reviewers, metaReviews := c.metaReviews,
+    mergeVotes := c.mergeVotes, rejectVotes := c.rejectVotes,
+    founderOverride := c.founderOverride, globalRank := some c.globalRank }
 
 /-! ### Intermediate State -/
 
@@ -99,6 +125,8 @@ structure EvalState where
   contributors : List Contributor
   /-- Scored commits with their merge epochs (for comparison target selection). -/
   scoredCommits : List (CommitId × Epoch)
+  /-- Accumulated pairwise wins: (winner, list of losers). -/
+  pairwiseWins : List (CommitId × List CommitId) := []
 
 /-- Update or insert a contributor in a list. -/
 private def upsertContributor (cs : List Contributor) (updated : Contributor) : List Contributor :=
@@ -118,9 +146,9 @@ def initEvalState : EvalState := {
 section VariantScoped
 variable [gv : GenesisVariant]
 
-/-- Process one past index under the current variant's parameters.
-    Updates contributor weights and reviewer status. -/
-def stepState (state : EvalState) (idx : CommitIndex) : EvalState :=
+/-- Process one past cached index under the current variant's parameters.
+    Updates contributor weights, reviewer status, and ranking state. -/
+def stepState (state : EvalState) (idx : CachedCommitIndex) : EvalState :=
   let contributors :=
     if idx.weightDelta == 0 then state.contributors
     else
@@ -131,7 +159,8 @@ def stepState (state : EvalState) (idx : CommitIndex) : EvalState :=
       let updated : Contributor := ⟨c.id, c.balance, newWeight, c.isReviewer || meetsThreshold⟩
       upsertContributor state.contributors updated
   let scoredCommits := state.scoredCommits ++ [(idx.commitHash, idx.epoch)]
-  { contributors := contributors, scoredCommits := scoredCommits }
+  { contributors := contributors, scoredCommits := scoredCommits,
+    pairwiseWins := state.pairwiseWins }
 
 /-- Get reviewer weight from an EvalState. -/
 def EvalState.reviewerWeight (s : EvalState) (id : ContributorId) : Nat :=
@@ -140,8 +169,10 @@ def EvalState.reviewerWeight (s : EvalState) (id : ContributorId) : Nat :=
   | none => 0
 
 /-- Evaluate a single signed commit given pre-built state.
-    Uses the current [GenesisVariant] for scoring parameters. -/
-def evaluateWithState (state : EvalState) (commit : SignedCommit) : CommitIndex :=
+    Uses the current [GenesisVariant] for scoring parameters.
+    Returns CachedCommitIndex with computed globalRank, and updated EvalState
+    (with accumulated pairwise evidence). -/
+def evaluateWithState (state : EvalState) (commit : SignedCommit) : CachedCommitIndex × EvalState :=
   let score := commitScore commit
     state.scoredCommits (state.reviewerWeight ·)
   let approved := filterReviews commit.reviews commit.metaReviews (state.reviewerWeight ·)
@@ -154,24 +185,38 @@ def evaluateWithState (state : EvalState) (commit : SignedCommit) : CommitIndex 
   let rejectVoters := commit.reviews
     |>.filter (fun (r : EmbeddedReview) => r.verdict == .notMerge)
     |>.map (fun (r : EmbeddedReview) => r.reviewer)
-  { commitHash := commit.id,
-    epoch := commit.mergeEpoch,
-    score := score,
-    contributor := commit.author,
-    weightDelta := score.weighted,
-    reviewers := approvedReviewers,
-    metaReviews := commit.metaReviews,
-    mergeVotes := mergeVoters,
-    rejectVotes := rejectVoters,
-    founderOverride := commit.founderOverride }
+  -- Compute globalRank via full net-wins recomputation
+  let updatedWins := accumulatePairwise commit.reviews state.pairwiseWins
+  let pastCommitIds := state.scoredCommits.map (·.1)
+  let allCommits := pastCommitIds ++ [commit.id]
+  let netWins := computeNetWins allCommits updatedWins
+  let indexed := netWins.zip (List.range netWins.length)
+  let sorted := indexed.toArray.qsort (fun ((_, nw1), i1) ((_, nw2), i2) =>
+    if nw1 != nw2 then nw1 > nw2 else i1 < i2
+  ) |>.toList
+  let globalRank := sorted.findIdx? (fun ((c, _), _) => c == commit.id) |>.getD allCommits.length
+  let idx : CachedCommitIndex :=
+    { commitHash := commit.id,
+      epoch := commit.mergeEpoch,
+      score := score,
+      contributor := commit.author,
+      weightDelta := score.weighted,
+      reviewers := approvedReviewers,
+      metaReviews := commit.metaReviews,
+      mergeVotes := mergeVoters,
+      rejectVotes := rejectVoters,
+      founderOverride := commit.founderOverride,
+      globalRank := globalRank }
+  let newState := stepState state idx
+  (idx, { newState with pairwiseWins := updatedWins })
 
 end VariantScoped
 
 /-! ### Outer dispatch (resolves variant per-commit via schedule) -/
 
-/-- Reconstruct state from past indices. Each index is processed under
+/-- Reconstruct state from past cached indices. Each index is processed under
     the variant active at its epoch (idx.epoch). -/
-def reconstructState (pastIndices : List CommitIndex) : EvalState :=
+def reconstructState (pastIndices : List CachedCommitIndex) : EvalState :=
   pastIndices.foldl (fun state idx =>
     letI := activeVariant idx.epoch
     stepState state idx
@@ -180,20 +225,20 @@ def reconstructState (pastIndices : List CommitIndex) : EvalState :=
 /-- Evaluate a single signed commit.
     State reconstruction uses per-index variants.
     Scoring uses the variant active at commit.prCreatedAt. -/
-def evaluate (pastIndices : List CommitIndex) (commit : SignedCommit) : CommitIndex :=
+def evaluate (pastIndices : List CachedCommitIndex) (commit : SignedCommit) : CachedCommitIndex :=
   let state := reconstructState pastIndices
   letI := activeVariant commit.prCreatedAt
-  evaluateWithState state commit
+  (evaluateWithState state commit).1
 
 /-- Evaluate a full sequence of signed commits. -/
-def evaluateAll (signedCommits : List SignedCommit) : List CommitIndex :=
+def evaluateAll (signedCommits : List SignedCommit) : List CachedCommitIndex :=
   signedCommits.foldl (fun indices commit =>
     indices ++ [evaluate indices commit]
   ) []
 
 /-- Final weight for each contributor, computed from all indices.
     Weight = founderWeight + Σ weightDelta for authored commits. -/
-def finalWeights (indices : List CommitIndex) : List (ContributorId × Nat) :=
+def finalWeights (indices : List CachedCommitIndex) : List (ContributorId × Nat) :=
   let addToWeight (acc : List (ContributorId × Nat))
       (id : ContributorId) (amount : Nat) : List (ContributorId × Nat) :=
     if amount == 0 then acc
@@ -202,7 +247,7 @@ def finalWeights (indices : List CommitIndex) : List (ContributorId × Nat) :=
       | some _ => acc.map (fun (cid, w) => if cid == id then (cid, w + amount) else (cid, w))
       | none => acc ++ [(id, amount)]
   let init := [(founder, founderWeight)]
-  indices.foldl (fun acc (idx : CommitIndex) =>
+  indices.foldl (fun acc (idx : CachedCommitIndex) =>
     if idx.weightDelta == 0 then acc
     else addToWeight acc idx.contributor idx.weightDelta
   ) init

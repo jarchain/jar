@@ -13,7 +13,7 @@ open Genesis.Cli
 def main : IO UInt32 := runJsonPipe fun j => do
   let reviews ← IO.ofExcept (j.getObjValAs? (List EmbeddedReview) "reviews")
   let metaReviews ← IO.ofExcept (j.getObjValAs? (List MetaReview) "metaReviews")
-  let indices ← IO.ofExcept (j.getObjValAs? (List CommitIndex) "indices")
+  let indices ← IO.ofExcept (j.getObjValAs? (List CachedCommitIndex) "indices")
   let state := reconstructState indices
   -- Filter reviews by meta-review
   let approved := filterReviews reviews metaReviews (state.reviewerWeight ·)

@@ -220,3 +220,135 @@ def commitScore [gv : GenesisVariant]
     else
       -- Step 4: Derive score (percentile-based)
       deriveScore weightedReviews commit.id getWeight
+
+/-! ### Global Ranking (v2 target selection)
+
+  Build a global quality ordering from pairwise review evidence.
+  Each review's 3 dimension rankings are aggregated into one ordering
+  (1×diff + 1×nov + 3×design position). Pairwise wins are accumulated
+  across all reviews. Net-wins determines the global rank.
+-/
+
+/-- Compute aggregate position for each commit in a review.
+    Lower = better. Uses weighted positions: diff + nov + 3×design. -/
+def aggregateReviewRanking [gv : GenesisVariant]
+    (review : EmbeddedReview) : List (CommitId × Nat) :=
+  let commits := review.designQualityRanking
+  commits.map fun c =>
+    let dPos := review.difficultyRanking.findIdx? (· == c) |>.getD review.difficultyRanking.length
+    let nPos := review.noveltyRanking.findIdx? (· == c) |>.getD review.noveltyRanking.length
+    let qPos := review.designQualityRanking.findIdx? (· == c) |>.getD review.designQualityRanking.length
+    (c, dPos + nPos + gv.designWeight * qPos)
+
+/-- Extract pairwise outcomes from a single review.
+    Returns list of (winner, loser) pairs. -/
+def extractPairwise [GenesisVariant] (review : EmbeddedReview) : List (CommitId × CommitId) :=
+  let ranked := aggregateReviewRanking review
+  let sorted := ranked.toArray.qsort (fun a b => a.2 < b.2) |>.toList
+  let commits := sorted.map (·.1)
+  -- Each commit beats all those below it in the aggregate ordering
+  let indexed := commits.zip (List.range commits.length)
+  indexed.foldl (fun acc (winner, i) =>
+    acc ++ (commits.drop (i + 1)).map (fun loser => (winner, loser))
+  ) []
+
+/-- Accumulate pairwise wins from a list of reviews into a map.
+    Map: commitId → set of commitIds it beats. -/
+def accumulatePairwise [GenesisVariant]
+    (reviews : List EmbeddedReview)
+    (existing : List (CommitId × List CommitId)) : List (CommitId × List CommitId) :=
+  let pairs := reviews.foldl (fun acc r => acc ++ extractPairwise r) []
+  pairs.foldl (fun acc (winner, loser) =>
+    match acc.find? (fun (c, _) => c == winner) with
+    | some (_, losers) =>
+      if losers.contains loser then acc
+      else acc.map (fun (c, ls) => if c == winner then (c, ls ++ [loser]) else (c, ls))
+    | none => acc ++ [(winner, [loser])]
+  ) existing
+
+/-- Compute net-wins for each commit: |commits beaten| - |commits lost to|. -/
+def computeNetWins (commits : List CommitId)
+    (wins : List (CommitId × List CommitId)) : List (CommitId × Int) :=
+  let commitSet := commits
+  commits.map fun c =>
+    let beaten := match wins.find? (fun (w, _) => w == c) with
+      | some (_, losers) => losers.filter (commitSet.contains ·) |>.length
+      | none => 0
+    let lostTo := commits.foldl (fun acc other =>
+      match wins.find? (fun (w, _) => w == other) with
+      | some (_, losers) => if losers.contains c then acc + 1 else acc
+      | none => acc
+    ) 0
+    (c, (beaten : Int) - (lostTo : Int))
+
+/-- Compute globalRank for a new commit by insertion into existing ranking.
+    Uses the new commit's reviews to determine pairwise outcomes against targets,
+    then finds the insertion position based on targets' existing globalRanks.
+
+    The rank is the median of the valid range:
+    - Must be above (higher rank number than) all targets that beat it
+    - Must be below (lower rank number than) all targets it beats
+    Returns 0 (best) when the commit beats all its targets. -/
+def computeGlobalRank [GenesisVariant]
+    (pastRanking : List (CommitId × Nat))
+    (newCommitId : CommitId)
+    (reviews : List EmbeddedReview) : Nat :=
+  if pastRanking.isEmpty then 0
+  else
+    -- Extract pairwise outcomes from ALL reviews (not just approved ones —
+    -- pairwise evidence is structural, not weighted)
+    let allPairs := reviews.foldl (fun acc r => acc ++ extractPairwise r) []
+    -- Which targets does the new commit beat / lose to?
+    let beats := allPairs.filterMap fun (w, l) =>
+      if w == newCommitId then some l else none
+    let losesTo := allPairs.filterMap fun (w, l) =>
+      if l == newCommitId then some w else none
+    -- Find the globalRank bounds from targets in the existing ranking
+    -- bestBeaten: lowest globalRank (best) among targets we beat
+    -- worstLostTo: highest globalRank (worst) among targets that beat us
+    let n := pastRanking.length
+    let bestBeaten := pastRanking.foldl (fun acc (c, r) =>
+      if beats.contains c then min acc r else acc
+    ) n
+    let worstLostTo := pastRanking.foldl (fun acc (c, r) =>
+      if losesTo.contains c then max acc r else acc
+    ) 0
+    -- Insert: above all beaten (lower rank number), below all that beat us
+    -- If we beat everything: rank 0. If everything beats us: rank n.
+    -- Otherwise: midpoint of the valid range.
+    if beats.isEmpty && losesTo.isEmpty then n  -- no evidence: worst
+    else if losesTo.isEmpty then
+      -- Beat some targets, lost to none: go above the best we beat
+      if bestBeaten > 0 then bestBeaten / 2 else 0
+    else if beats.isEmpty then
+      -- Lost to some, beat none: go below the worst that beat us
+      (worstLostTo + n) / 2
+    else
+      -- Have both beats and losses: insert between them
+      (worstLostTo + bestBeaten) / 2
+
+/-- Select comparison targets using globalRank ordering (v2).
+    Sorts eligible commits by globalRank, then bucket-selects with hash jitter. -/
+def selectComparisonTargetsRanked
+    (scoredCommits : List (CommitId × Epoch × Nat))  -- (hash, epoch, globalRank)
+    (numTargets : Nat)
+    (prId : PRId)
+    (prCreatedAt : Epoch) : List CommitId :=
+  let eligible := scoredCommits.filter (fun (_, epoch, _) => epoch < prCreatedAt)
+  -- Sort by globalRank ascending (best first)
+  let sorted := eligible.toArray.qsort (fun a b => a.2.2 < b.2.2) |>.toList
+  let pastCommitIds := sorted.map (·.1)
+  let n := pastCommitIds.length
+  if n == 0 then []
+  else
+    let k := min numTargets n
+    let hash := prIdHash prId
+    List.range k |>.map fun i =>
+      let bucketStart := n * i / k
+      let bucketEnd := n * (i + 1) / k
+      let bucketSize := bucketEnd - bucketStart
+      if bucketSize == 0 then
+        pastCommitIds[bucketStart]!
+      else
+        let idx := bucketStart + (hash + i * 7) % bucketSize
+        pastCommitIds[idx]!

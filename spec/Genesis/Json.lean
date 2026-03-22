@@ -161,19 +161,25 @@ instance : FromJson Contributor where
 -- CommitIndex
 -- ============================================================================
 
+-- CommitIndex: for trailers. globalRank is Option Nat (old trailers lack it).
 instance : ToJson CommitIndex where
-  toJson idx := Json.mkObj [
-    ("commitHash", toJson idx.commitHash),
-    ("epoch", toJson idx.epoch),
-    ("score", toJson idx.score),
-    ("contributor", toJson idx.contributor),
-    ("weightDelta", toJson idx.weightDelta),
-    ("reviewers", toJson idx.reviewers),
-    ("metaReviews", toJson idx.metaReviews),
-    ("mergeVotes", toJson idx.mergeVotes),
-    ("rejectVotes", toJson idx.rejectVotes),
-    ("founderOverride", toJson idx.founderOverride)
-  ]
+  toJson idx :=
+    let fields := [
+      ("commitHash", toJson idx.commitHash),
+      ("epoch", toJson idx.epoch),
+      ("score", toJson idx.score),
+      ("contributor", toJson idx.contributor),
+      ("weightDelta", toJson idx.weightDelta),
+      ("reviewers", toJson idx.reviewers),
+      ("metaReviews", toJson idx.metaReviews),
+      ("mergeVotes", toJson idx.mergeVotes),
+      ("rejectVotes", toJson idx.rejectVotes),
+      ("founderOverride", toJson idx.founderOverride)
+    ]
+    let fields := match idx.globalRank with
+      | some r => fields ++ [("globalRank", toJson r)]
+      | none => fields
+    Json.mkObj fields
 
 instance : FromJson CommitIndex where
   fromJson? j := do
@@ -187,7 +193,45 @@ instance : FromJson CommitIndex where
     let mergeVotes ← j.getObjValAs? (List String) "mergeVotes"
     let rejectVotes ← j.getObjValAs? (List String) "rejectVotes"
     let founderOverride ← j.getObjValAs? Bool "founderOverride"
+    let globalRank := (j.getObjValAs? Nat "globalRank").toOption
     return { commitHash, epoch, score, contributor, weightDelta, reviewers,
-             metaReviews, mergeVotes, rejectVotes, founderOverride }
+             metaReviews, mergeVotes, rejectVotes, founderOverride, globalRank }
+
+-- ============================================================================
+-- CachedCommitIndex
+-- ============================================================================
+
+-- CachedCommitIndex: for cache. globalRank is always Nat.
+instance : ToJson CachedCommitIndex where
+  toJson idx := Json.mkObj [
+    ("commitHash", toJson idx.commitHash),
+    ("epoch", toJson idx.epoch),
+    ("score", toJson idx.score),
+    ("contributor", toJson idx.contributor),
+    ("weightDelta", toJson idx.weightDelta),
+    ("reviewers", toJson idx.reviewers),
+    ("metaReviews", toJson idx.metaReviews),
+    ("mergeVotes", toJson idx.mergeVotes),
+    ("rejectVotes", toJson idx.rejectVotes),
+    ("founderOverride", toJson idx.founderOverride),
+    ("globalRank", toJson idx.globalRank)
+  ]
+
+instance : FromJson CachedCommitIndex where
+  fromJson? j := do
+    let commitHash ← j.getObjValAs? String "commitHash"
+    let epoch ← j.getObjValAs? Nat "epoch"
+    let score ← j.getObjValAs? CommitScore "score"
+    let contributor ← j.getObjValAs? String "contributor"
+    let weightDelta ← j.getObjValAs? Nat "weightDelta"
+    let reviewers ← j.getObjValAs? (List String) "reviewers"
+    let metaReviews ← j.getObjValAs? (List MetaReview) "metaReviews"
+    let mergeVotes ← j.getObjValAs? (List String) "mergeVotes"
+    let rejectVotes ← j.getObjValAs? (List String) "rejectVotes"
+    let founderOverride ← j.getObjValAs? Bool "founderOverride"
+    -- Tolerate missing globalRank for backward compat (default 0)
+    let globalRank ← (j.getObjValAs? Nat "globalRank") <|> pure 0
+    return { commitHash, epoch, score, contributor, weightDelta, reviewers,
+             metaReviews, mergeVotes, rejectVotes, founderOverride, globalRank }
 
 end Genesis.Json

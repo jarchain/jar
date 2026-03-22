@@ -22,9 +22,9 @@ def main : IO UInt32 := runJsonPipe fun j => do
       ("errors", Json.arr #[Json.str s!"index count ({indices.length}) != commit count ({signedCommits.length})"])
     ]
   let mut errors : Array Json := #[]
-  let mut pastIndices : List CommitIndex := []
+  let mut pastCached : List CachedCommitIndex := []
   for (idx, commit) in indices.zip signedCommits do
-    let expected := evaluate pastIndices commit
+    let expected := evaluate pastCached commit
     -- Compare key fields
     if expected.commitHash != idx.commitHash then
       errors := errors.push (Json.str s!"commit {idx.commitHash}: hash mismatch")
@@ -34,7 +34,11 @@ def main : IO UInt32 := runJsonPipe fun j => do
       errors := errors.push (Json.str s!"commit {idx.commitHash}: weightDelta mismatch (expected {expected.weightDelta}, got {idx.weightDelta})")
     if expected.contributor != idx.contributor then
       errors := errors.push (Json.str s!"commit {idx.commitHash}: contributor mismatch")
-    pastIndices := pastIndices ++ [idx]
+    -- Only check globalRank if the trailer includes it
+    if let some trailerRank := idx.globalRank then
+      if expected.globalRank != trailerRank then
+        errors := errors.push (Json.str s!"commit {idx.commitHash}: globalRank mismatch (expected {expected.globalRank}, got {trailerRank})")
+    pastCached := pastCached ++ [expected]
   return Json.mkObj [
     ("valid", toJson errors.isEmpty),
     ("errors", Json.arr errors)
