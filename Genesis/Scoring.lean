@@ -18,45 +18,6 @@
 
 import Genesis.Types
 
-/-! ### Configurable Parameters
-
-  These are Lean constants, easy to adjust for experimentation.
--/
-
-/-- Number of past commits a reviewer must rank alongside the current PR.
-    Total items ranked = rankingSize + 1 (targets + current PR).
-    Higher = more context for scoring, more effort per review.
-    Lower = faster reviews, less context. -/
-def rankingSize : Nat := 7
-
-/-- Quantile for the weighted quantile scoring function, as num/den.
-    The score is the value at this quantile of the weighted distribution.
-
-    - 1/2 (median): safe up to 50% honest. Symmetric.
-    - 1/3 (lower third): safe up to 66% honest for inflation.
-      Meta-review covers deflation below 50%.
-    - 2/5 (lower two-fifths): safe up to 60% honest for inflation.
-
-    Lower quantile = more conservative scoring, higher Sybil resistance. -/
-def quantileNum : Nat := 1
-def quantileDen : Nat := 3
-
-/-! ### Evaluation Parameters -/
-
-/-- Parameters for the evaluation path (scoring + state reconstruction).
-    Reward parameters (emission, caps, splits) are deferred to finalization
-    and documented in Design.lean. -/
-structure EvalParams where
-  /-- Minimum weight to activate as a reviewer. -/
-  reviewerThreshold : Nat
-  /-- Minimum number of approved reviews required for scoring. -/
-  minReviews : Nat
-  deriving Repr
-
-def EvalParams.default : EvalParams where
-  reviewerThreshold := 500
-  minReviews := 1
-
 /-! ### Comparison Target Selection -/
 
 /-- Maps a PR ID to a pseudo-random natural number for target selection. -/
@@ -90,14 +51,14 @@ def selectComparisonTargets
         pastCommitIds[idx]!
 
 /-- Validate comparison targets in a signed commit. -/
-def validateComparisonTargets
+def validateComparisonTargets [gv : GenesisVariant]
     (commit : SignedCommit)
     (scoredCommits : List (CommitId × Epoch)) : Bool :=
   let eligible := scoredCommits.filter (fun (_, epoch) => epoch < commit.prCreatedAt)
   if eligible.isEmpty then commit.comparisonTargets.isEmpty
   else
     let expected := selectComparisonTargets scoredCommits
-      (min rankingSize eligible.length) commit.prId commit.prCreatedAt
+      (min gv.rankingSize eligible.length) commit.prId commit.prCreatedAt
     commit.comparisonTargets == expected
 
 /-! ### Meta-Review Filtering
@@ -188,8 +149,8 @@ def scoreFromReview
 /-- Weighted quantile of a list of (weight, value) pairs.
     Returns the value at the point where `quantileNum/quantileDen`
     of the total weight has been accumulated (walking from low to high). -/
-def weightedQuantile (entries : List (Nat × Nat))
-    (qNum : Nat := quantileNum) (qDen : Nat := quantileDen) : Nat :=
+def weightedQuantile [gv : GenesisVariant] (entries : List (Nat × Nat))
+    (qNum : Nat := gv.quantileNum) (qDen : Nat := gv.quantileDen) : Nat :=
   if entries.isEmpty then 0
   else
     let sorted := entries.toArray.qsort (fun a b => a.2 < b.2) |>.toList
@@ -210,7 +171,7 @@ def weightedQuantile (entries : List (Nat × Nat))
     Then take the weighted quantile across all reviewers per dimension.
 
     Reviews from non-reviewers (weight = 0) are silently ignored. -/
-def deriveScore
+def deriveScore [GenesisVariant]
     (reviews : List EmbeddedReview)
     (currentPR : CommitId)
     (getWeight : ContributorId → Nat) : CommitScore :=
@@ -239,8 +200,7 @@ def deriveScore
 
     Returns the CommitScore (percentile-based, 0-100 per dimension).
     Reward computation is deferred to finalization (see Design.lean). -/
-def commitScore
-    (ep : EvalParams)
+def commitScore [gv : GenesisVariant]
     (commit : SignedCommit)
     (scoredCommits : List (CommitId × Epoch))
     (getWeight : ContributorId → Nat)
@@ -255,7 +215,7 @@ def commitScore
     -- Step 3: Check minimum approved reviews from weighted reviewers
     let weightedReviews := approvedReviews.filter fun (r : EmbeddedReview) =>
       getWeight r.reviewer > 0
-    if weightedReviews.length < ep.minReviews then
+    if weightedReviews.length < gv.minReviews then
       zeroScore
     else
       -- Step 4: Derive score (percentile-based)

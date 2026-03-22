@@ -15,6 +15,8 @@ def main : IO UInt32 := runJsonPipe fun j => do
   let prCreatedAt ← IO.ofExcept (j.getObjValAs? Nat "prCreatedAt")
   let indices ← IO.ofExcept (j.getObjValAs? (List CommitIndex) "indices")
   let scoredCommits := indices.map (fun idx => (idx.commitHash, idx.epoch))
+  let v := activeVariant prCreatedAt
+  letI := v
   let eligible := scoredCommits.filter (fun (_, epoch) => epoch < prCreatedAt)
-  let targets := selectComparisonTargets scoredCommits (min rankingSize eligible.length) prId prCreatedAt
+  let targets := selectComparisonTargets scoredCommits (min v.rankingSize eligible.length) prId prCreatedAt
   return Json.mkObj [("targets", toJson targets)]

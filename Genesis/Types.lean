@@ -41,7 +41,57 @@
   - Reviewer reward per commit is capped.
   - Worst-case damage from a malicious spec = one commit's capped rewards.
   - Comparison targets are validated at spec time — forged targets → zero reward.
+
+  ## Variant System
+
+  Protocol parameters are grouped in GenesisConfig. The active config is
+  selected by epoch via a schedule (genesisSchedule), following the
+  blockchain hard-fork pattern. Parameter changes are non-retroactive:
+  PRs opened before the activation use the old config.
+
+  GenesisVariant extends GenesisConfig with variant-specific functions
+  (like JamVariant extends JamConfig in the JAR spec).
 -/
+
+/-! ### Genesis Config & Variant -/
+
+/-- Protocol parameters. Mirrors JamConfig's role in the JAR spec.
+    All configurable constants that affect scoring and state reconstruction
+    are defined here. Changes take effect via the activation schedule. -/
+structure GenesisConfig where
+  name : String
+  reviewerThreshold : Nat
+  minReviews : Nat
+  rankingSize : Nat
+  quantileNum : Nat
+  quantileDen : Nat
+  designWeight : Nat
+  numWeightedDimensions : Nat
+  deriving Repr
+
+/-- Protocol configuration typeclass. All configurable constants are
+    direct fields, accessed as GenesisVariant.reviewerThreshold etc.
+    Mirrors JamConfig in the JAR spec.
+    Future variant-specific functions can be added as fields here
+    (like JamVariant.pvmRun extends JamConfig). -/
+class GenesisVariant extends GenesisConfig
+
+/-! ### Standard Variants -/
+
+def GenesisConfig.v1 : GenesisConfig where
+  name := "genesis_v1"
+  reviewerThreshold := 500
+  minReviews := 1
+  rankingSize := 7
+  quantileNum := 1
+  quantileDen := 3
+  designWeight := 3
+  numWeightedDimensions := 5
+
+instance GenesisVariant.v1 : GenesisVariant where
+  toGenesisConfig := .v1
+
+/-! ### Core Types -/
 
 /-- GitHub username. -/
 abbrev ContributorId := String
@@ -141,19 +191,17 @@ structure CommitScore where
   designQuality : Nat
   deriving Repr, BEq
 
-/-- Number of scoring dimensions. Used to normalize the weighted total. -/
-def CommitScore.numWeightedDimensions : Nat := 5  -- 1 + 1 + 3
+/-- Combined weighted score from CommitScore.
+    designWeight and numWeightedDimensions come from the active variant.
+    Result is 0-100 (normalized). -/
+def CommitScore.weighted [gv : GenesisVariant] (s : CommitScore) : Nat :=
+  (s.difficulty + s.novelty + gv.designWeight * s.designQuality) / gv.numWeightedDimensions
 
-/-- Combined weighted score from CommitScore. designQuality is 3x.
-    Result is 0-100 (normalized by number of weighted dimensions). -/
-def CommitScore.weighted (s : CommitScore) : Nat :=
-  (s.difficulty + s.novelty + 3 * s.designQuality) / CommitScore.numWeightedDimensions
-
-/-- weightDelta is at most 100 when all dimension scores are at most 100. -/
-theorem CommitScore.weighted_le_100 (s : CommitScore)
+/-- weightDelta is at most 100 when all dimension scores are at most 100 (for v1). -/
+theorem CommitScore.weighted_le_100_v1 (s : CommitScore)
     (hd : s.difficulty ≤ 100) (hn : s.novelty ≤ 100) (hq : s.designQuality ≤ 100) :
-    s.weighted ≤ 100 := by
-  unfold weighted numWeightedDimensions
+    (letI := GenesisVariant.v1; s.weighted) ≤ 100 := by
+  simp only [weighted, GenesisVariant.v1, GenesisConfig.v1]
   omega
 
 /-- A signed commit and the data needed to compute its rewards. -/

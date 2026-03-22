@@ -190,20 +190,4 @@ instance : FromJson CommitIndex where
     return { commitHash, epoch, score, contributor, weightDelta, reviewers,
              metaReviews, mergeVotes, rejectVotes, founderOverride }
 
--- ============================================================================
--- EvalParams
--- ============================================================================
-
-instance : ToJson EvalParams where
-  toJson ep := Json.mkObj [
-    ("reviewerThreshold", toJson ep.reviewerThreshold),
-    ("minReviews", toJson ep.minReviews)
-  ]
-
-instance : FromJson EvalParams where
-  fromJson? j := do
-    let reviewerThreshold ← j.getObjValAs? Nat "reviewerThreshold"
-    let minReviews ← j.getObjValAs? Nat "minReviews"
-    return { reviewerThreshold, minReviews }
-
 end Genesis.Json

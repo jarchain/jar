@@ -1,21 +1,20 @@
 /-
   Genesis Protocol — Execution Model & State
 
-  ## Execution
+  ## Variant System
 
-  For commit N, any spec version ≥ the spec at commit N-1 must produce
-  the same CommitIndex. The spec is backward compatible (new handles old)
-  but not necessarily forward compatible (old may not handle new).
+  Protocol parameters are grouped in GenesisConfig/GenesisVariant.
+  The active variant is selected by epoch via genesisSchedule, following
+  the blockchain hard-fork pattern. Parameter changes are non-retroactive:
+  each past index is processed under the variant active at its epoch,
+  and each commit is scored under the variant active at its prCreatedAt.
 
-  The current spec on master is always a valid evaluator for all past
-  commits. This is enforced by CI (`genesis-replay.sh --verify`).
+  ## Spec Consistency Rule
 
-  Evaluation order:
-  1. Gather all signed commits from git history (merge commit trailers).
-  2. Evaluate the first signed commit with empty state → produces index_0.
-  3. Evaluate the second with [index_0] as past state → produces index_1.
-  4. Continue: each step receives all prior indices as input.
-  5. Finalization (future work): compute end balances from all indices.
+  The current spec on master evaluates ALL past commits correctly.
+  Spec changes (algorithms) must remain backward compatible.
+  Parameter changes use the variant schedule — no backward compat needed.
+  CI enforces via `genesis-replay.sh --verify`.
 -/
 
 import Genesis.Types
@@ -36,6 +35,27 @@ def genesisCommit : CommitId := "4cc102a03d715c6bb2b119d8a3a1c49e4694751f"
 
 /-- Initial weight for the founder. -/
 def founderWeight : Nat := 1
+
+/-! ### Activation Schedule -/
+
+/-- Activation schedule. Each entry: (activationEpoch, variant).
+    For a given epoch, the active variant is the last entry where
+    activationEpoch ≤ epoch. Uses idx.epoch for state reconstruction,
+    commit.prCreatedAt for scoring.
+
+    To change a parameter:
+    1. PR A: add new GenesisConfig + GenesisVariant instance. Safe (inactive).
+    2. PR B: add entry here with a future activation epoch. Must merge before that date. -/
+def genesisSchedule : List (Epoch × GenesisVariant) :=
+  [ (0, GenesisVariant.v1)
+  ]
+
+/-- Resolve the active variant for a given epoch. -/
+def activeVariant (epoch : Epoch) : GenesisVariant :=
+  let applicable := genesisSchedule.filter (fun (e, _) => e ≤ epoch)
+  match applicable.getLast? with
+  | some (_, v) => v
+  | none => GenesisVariant.v1
 
 /-! ### CommitIndex — Output of evaluating one signed commit -/
 
@@ -71,12 +91,7 @@ structure CommitIndex where
   founderOverride : Bool
   deriving Repr
 
-/-! ### Intermediate State
-
-  Reconstructed from past CommitIndices for evaluating the next commit.
-  This is NOT the final balance — it's the working state needed to
-  run the scoring algorithm (reviewer weights, past commit IDs).
--/
+/-! ### Intermediate State -/
 
 /-- Intermediate state reconstructed from past indices. -/
 structure EvalState where
@@ -92,29 +107,31 @@ private def upsertContributor (cs : List Contributor) (updated : Contributor) : 
   else
     cs ++ [updated]
 
-/-- Reconstruct the evaluation state from genesis + past indices.
-    Only needs weight and reviewer status — not balances (those are
-    computed during finalization). -/
-def reconstructState (pastIndices : List CommitIndex) (ep : EvalParams := .default) : EvalState :=
-  let init : EvalState := {
-    contributors := [⟨founder, 0, founderWeight, true⟩],
-    scoredCommits := []
-  }
-  pastIndices.foldl (fun state (idx : CommitIndex) =>
-    -- Apply weight change to the contributor (author)
-    let contributors :=
-      if idx.weightDelta == 0 then state.contributors
-      else
-        let existing := state.contributors.find? (fun (c : Contributor) => c.id == idx.contributor)
-        let c := existing.getD ⟨idx.contributor, 0, 0, false⟩
-        let newWeight := c.weight + idx.weightDelta
-        let meetsThreshold := newWeight ≥ ep.reviewerThreshold
-        let updated : Contributor := ⟨c.id, c.balance, newWeight, c.isReviewer || meetsThreshold⟩
-        upsertContributor state.contributors updated
-    -- Record scored commit with epoch for target selection
-    let scoredCommits := state.scoredCommits ++ [(idx.commitHash, idx.epoch)]
-    { contributors := contributors, scoredCommits := scoredCommits }
-  ) init
+/-- Initial evaluation state: founder with initial weight, no scored commits. -/
+def initEvalState : EvalState := {
+  contributors := [⟨founder, 0, founderWeight, true⟩],
+  scoredCommits := []
+}
+
+/-! ### Inner functions (use [GenesisVariant] typeclass) -/
+
+section VariantScoped
+variable [gv : GenesisVariant]
+
+/-- Process one past index under the current variant's parameters.
+    Updates contributor weights and reviewer status. -/
+def stepState (state : EvalState) (idx : CommitIndex) : EvalState :=
+  let contributors :=
+    if idx.weightDelta == 0 then state.contributors
+    else
+      let existing := state.contributors.find? (fun (c : Contributor) => c.id == idx.contributor)
+      let c := existing.getD ⟨idx.contributor, 0, 0, false⟩
+      let newWeight := c.weight + idx.weightDelta
+      let meetsThreshold := newWeight ≥ gv.reviewerThreshold
+      let updated : Contributor := ⟨c.id, c.balance, newWeight, c.isReviewer || meetsThreshold⟩
+      upsertContributor state.contributors updated
+  let scoredCommits := state.scoredCommits ++ [(idx.commitHash, idx.epoch)]
+  { contributors := contributors, scoredCommits := scoredCommits }
 
 /-- Get reviewer weight from an EvalState. -/
 def EvalState.reviewerWeight (s : EvalState) (id : ContributorId) : Nat :=
@@ -122,22 +139,10 @@ def EvalState.reviewerWeight (s : EvalState) (id : ContributorId) : Nat :=
   | some c => if c.isReviewer then c.weight else 0
   | none => 0
 
-/-! ### Evaluate — Produce a CommitIndex from a signed commit -/
-
-/-- Evaluate a single signed commit, producing a CommitIndex.
-
-    This is THE core function. It takes:
-    - All past indices (from prior evaluations)
-    - The current signed commit to evaluate
-
-    It reconstructs the evaluation state from past indices, then
-    runs the scoring algorithm to produce the new index. -/
-def evaluate
-    (pastIndices : List CommitIndex)
-    (commit : SignedCommit)
-    (ep : EvalParams := .default) : CommitIndex :=
-  let state := reconstructState pastIndices ep
-  let score := commitScore ep commit
+/-- Evaluate a single signed commit given pre-built state.
+    Uses the current [GenesisVariant] for scoring parameters. -/
+def evaluateWithState (state : EvalState) (commit : SignedCommit) : CommitIndex :=
+  let score := commitScore commit
     state.scoredCommits (state.reviewerWeight ·)
   let approved := filterReviews commit.reviews commit.metaReviews (state.reviewerWeight ·)
   let approvedReviewers := approved
@@ -160,13 +165,30 @@ def evaluate
     rejectVotes := rejectVoters,
     founderOverride := commit.founderOverride }
 
-/-- Evaluate a full sequence of signed commits, producing all indices.
-    Each commit is evaluated with all prior indices as context. -/
-def evaluateAll
-    (signedCommits : List SignedCommit)
-    (ep : EvalParams := .default) : List CommitIndex :=
+end VariantScoped
+
+/-! ### Outer dispatch (resolves variant per-commit via schedule) -/
+
+/-- Reconstruct state from past indices. Each index is processed under
+    the variant active at its epoch (idx.epoch). -/
+def reconstructState (pastIndices : List CommitIndex) : EvalState :=
+  pastIndices.foldl (fun state idx =>
+    letI := activeVariant idx.epoch
+    stepState state idx
+  ) initEvalState
+
+/-- Evaluate a single signed commit.
+    State reconstruction uses per-index variants.
+    Scoring uses the variant active at commit.prCreatedAt. -/
+def evaluate (pastIndices : List CommitIndex) (commit : SignedCommit) : CommitIndex :=
+  let state := reconstructState pastIndices
+  letI := activeVariant commit.prCreatedAt
+  evaluateWithState state commit
+
+/-- Evaluate a full sequence of signed commits. -/
+def evaluateAll (signedCommits : List SignedCommit) : List CommitIndex :=
   signedCommits.foldl (fun indices commit =>
-    indices ++ [evaluate indices commit ep]
+    indices ++ [evaluate indices commit]
   ) []
 
 /-- Final weight for each contributor, computed from all indices.
