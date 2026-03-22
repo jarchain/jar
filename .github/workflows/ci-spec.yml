@@ -3,9 +3,7 @@ name: "CI: Spec"
 on:
   push:
     branches: [master]
-    paths: ['spec/**']
   pull_request:
-    paths: ['spec/**']
 
 env:
   CARGO_TERM_COLOR: always

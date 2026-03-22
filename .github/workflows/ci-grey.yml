@@ -3,9 +3,7 @@ name: "CI: Grey"
 on:
   push:
     branches: [master]
-    paths: ['grey/**', 'spec/tests/vectors/**']
   pull_request:
-    paths: ['grey/**', 'spec/tests/vectors/**']
 
 env:
   CARGO_TERM_COLOR: always

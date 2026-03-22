@@ -4,6 +4,19 @@
 
 JAR is a blockchain protocol based on JAM (Join-Accumulate Machine). This monorepo contains both the formal specification and a full node implementation.
 
+## PVM Recompiler
+
+Grey's x86-64 JIT recompiler outperforms polkavm v0.32.0 on all workloads with pipeline gas metering. Benchmarks include full compile+execute each iteration (realistic JAM model where each work-package is compiled fresh):
+
+| Benchmark | Grey Recompiler | PolkaVM Generic | PolkaVM Linux | Grey vs best PolkaVM |
+|-----------|-----------------|-----------------|---------------|--------------|
+| Fibonacci (1M iter) | **416 µs** | 429 µs | 414 µs | 1.00x |
+| Host calls (100K ecalli) | **834 µs** | 3,177 µs | 30,164 µs | **3.8x faster** |
+| Sort (500 elements) | **434 µs** | 463 µs | 452 µs | **1.04x faster** |
+| Ecrecover (secp256k1) | **2,078 µs** | 3,122 µs | 2,958 µs | **1.42x faster** |
+
+Key optimizations: per-basic-block pipeline gas simulation, peephole instruction fusion, mprotect+SIGSEGV memory bounds checking (zero-instruction hot path), register-mapped PVM state, cold OOG/fault stubs.
+
 ## Repository Structure
 
 | Directory | Description |
