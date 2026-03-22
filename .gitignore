@@ -1,5 +1,14 @@
-/.lake
+# Spec (Lean)
+/spec/.lake
+/spec/_out
+/spec/crypto-ffi/target/
+/spec/fuzz/target/
+/spec/tools/__pycache__/
+
+# Grey (Rust)
+/grey/target
+/grey/.cargo/
+/grey/services/*/target
+
+# Shared
 /.claude/settings.local.json
-/_out
-/crypto-ffi/target/
-/tools/__pycache__/
