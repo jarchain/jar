@@ -2075,7 +2075,7 @@ checksum = "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2"
 
 [[package]]
 name = "javm"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "libc",
  "memoffset",
@@ -3093,6 +3093,8 @@ dependencies = [
 [[package]]
 name = "polkavm"
 version = "0.32.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe695ae43268c297264adda1c7b75ac5d2029a652c1420b85fe6db5c789ec535"
 dependencies = [
  "libc",
  "log",
@@ -3105,6 +3107,8 @@ dependencies = [
 [[package]]
 name = "polkavm-assembler"
 version = "0.32.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "48db9ab3568744d88514cfd8ca97f549913d17446e822fef20f9bd64598b8625"
 dependencies = [
  "log",
 ]
@@ -3112,6 +3116,8 @@ dependencies = [
 [[package]]
 name = "polkavm-common"
 version = "0.32.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7be32b303518704bb6deda7ce5a02feedbdadccccfd03da5bd3fe8eb1cd30694"
 dependencies = [
  "log",
  "picosimd",
@@ -3137,6 +3143,8 @@ dependencies = [
 [[package]]
 name = "polkavm-linux-raw"
 version = "0.32.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c8afb212d0effe4097b7243f0828feed74ca49105e3082e9b43dd5c2e89bc91c"
 
 [[package]]
 name = "polling"
