@@ -34,7 +34,6 @@ JAR is based on the JAM (Join-Accumulate Machine) protocol as specified in the G
 ## Building
 
 ```sh
-cd jar
 lake build
 ```
 
