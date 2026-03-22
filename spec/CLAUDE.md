@@ -194,6 +194,23 @@ CACHE=$(git show origin/genesis-state:genesis.json)
 echo "{\"indices\":${CACHE}}" | .lake/build/bin/genesis_finalize
 ```
 
+## PR Description Flags
+
+Structured flags in the leading lines of the PR description (before the first blank line) configure Genesis behavior.
+
+| Flag | Effect |
+|------|--------|
+| `Set-Genesis-Author: @username` | Override the Genesis author (tokens go to `username` instead of PR author) |
+
+Example PR description:
+```
+Set-Genesis-Author: @alice
+
+This PR implements feature X on behalf of alice.
+```
+
+To add new flags: edit `genesis-merge.yml`, add a `parse_flag "Set-Flag-Name"` call.
+
 ## Contributing (Proof of Intelligence)
 
 Every merged PR earns a genesis allocation scored on difficulty, novelty, and design quality. To contribute:

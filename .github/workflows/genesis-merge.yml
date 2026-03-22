@@ -88,11 +88,24 @@ jobs:
           CACHE=$(git show origin/genesis-state:genesis.json)
 
           # Get PR details (including immutable created_at for target anchoring)
-          PR_JSON=$(gh pr view "$PR_NUMBER" --json headRefOid,author,createdAt)
+          PR_JSON=$(gh pr view "$PR_NUMBER" --json headRefOid,author,createdAt,body)
           HEAD_SHA=$(echo "$PR_JSON" | jq -r '.headRefOid')
           AUTHOR=$(echo "$PR_JSON" | jq -r '.author.login')
           PR_CREATED_AT=$(echo "$PR_JSON" | jq -r '.createdAt')
           PR_CREATED_EPOCH=$(date -d "$PR_CREATED_AT" +%s)
+          PR_BODY=$(echo "$PR_JSON" | jq -r '.body // ""')
+
+          # Parse accepted flags from leading lines of PR body (before first blank line).
+          # To add new flags, add a new parse_flag call below.
+          parse_flag() {
+            local flag="$1"
+            echo "$PR_BODY" | awk '/^$/{exit} /^'"$flag"':/{print; exit}' | sed "s/^${flag}: *@\\{0,1\\}//"
+          }
+
+          GENESIS_AUTHOR=$(parse_flag "Set-Genesis-Author")
+          if [ -n "$GENESIS_AUTHOR" ]; then
+            AUTHOR="$GENESIS_AUTHOR"
+          fi
 
           # Get comparison targets anchored to PR creation time
           TARGETS_JSON=$(echo "{\"prId\":${PR_NUMBER},\"prCreatedAt\":${PR_CREATED_EPOCH},\"indices\":${CACHE}}" | \
