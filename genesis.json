@@ -698,5 +698,25 @@
       "novelty": 14
     },
     "weightDelta": 42
+  },
+  {
+    "commitHash": "50a2be19101a6ccab17543cc651b272bdbc86376",
+    "contributor": "mariopino",
+    "epoch": 1774280396,
+    "founderOverride": false,
+    "mergeVotes": [
+      "sorpaas"
+    ],
+    "metaReviews": [],
+    "rejectVotes": [],
+    "reviewers": [
+      "sorpaas"
+    ],
+    "score": {
+      "designQuality": 42,
+      "difficulty": 0,
+      "novelty": 0
+    },
+    "weightDelta": 25
   }
 ]
