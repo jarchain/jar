@@ -51,12 +51,17 @@ pub struct TranslationContext {
     pub is_64bit: bool,
     /// Map from RISC-V address to PVM code offset.
     pub address_map: std::collections::HashMap<u64, u32>,
-    /// Pending PC-relative fixups: (pvm_imm_offset, target_rv_address, fixup_size)
+    /// Pending branch fixups: (pvm_imm_offset, target_rv_address, fixup_size)
     fixups: Vec<(usize, u64, u8)>,
     /// Map from fixup imm offset → instruction PC (for PC-relative encoding)
     fixup_pcs: std::collections::HashMap<usize, u32>,
     /// Pending absolute fixups: (pvm_imm_offset, target_rv_address) — patched with absolute PVM PC
     abs_fixups: Vec<(usize, u64)>,
+    /// Return-address fixups: (jump_table_index, risc-v return address).
+    /// Resolved during `apply_fixups` to patch jump table entries.
+    return_fixups: Vec<(usize, u64)>,
+    /// Pending AUIPC: (rd, computed_address). Used to pair with the next JALR.
+    pending_auipc: Option<(u8, u64)>,
     /// Last immediate loaded into t0 (x5) — used for ecall → ecalli translation.
     last_t0_imm: Option<i32>,
 }
@@ -71,16 +76,64 @@ impl TranslationContext {
             address_map: std::collections::HashMap::new(),
             fixups: Vec::new(),
             fixup_pcs: std::collections::HashMap::new(),
-            last_t0_imm: None,
             abs_fixups: Vec::new(),
+            return_fixups: Vec::new(),
+            pending_auipc: None,
+            last_t0_imm: None,
         }
     }
 
+    /// Translate a code section from RISC-V to PVM.
+    pub fn translate_section(&mut self, data: &[u8], base_address: u64) -> Result<(), TranspileError> {
+        let mut offset = 0;
+        while offset < data.len() {
+            let rv_addr = base_address + offset as u64;
+            self.address_map.insert(rv_addr, self.code.len() as u32);
+
+            if offset + 4 > data.len() {
+                // Check for compressed instruction
+                if offset + 2 <= data.len() {
+                    let inst16 = u16::from_le_bytes([data[offset], data[offset + 1]]);
+                    if inst16 & 0x3 != 0x3 {
+                        return Err(TranspileError::UnsupportedInstruction {
+                            offset: rv_addr as usize,
+                            detail: "compressed instructions are not supported".into(),
+                        });
+                    }
+                }
+                break;
+            }
+
+            let inst = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]);
+
+            // Check if compressed (low 2 bits != 11)
+            if inst & 0x3 != 0x3 {
+                return Err(TranspileError::UnsupportedInstruction {
+                    offset: rv_addr as usize,
+                    detail: "compressed instructions are not supported".into(),
+                });
+            }
+
+            self.translate_one(inst, rv_addr)?;
+            offset += 4;
+        }
+
+        self.apply_fixups();
+
+        Ok(())
+    }
+
     /// Translate one or more 32-bit RISC-V instructions starting at `offset`.
-    /// Returns the number of bytes consumed (4 for a single instruction, 8 for fused pairs).
+    /// Returns the number of bytes consumed (always 4).
     pub(crate) fn translate_instruction(&mut self, section: &[u8], offset: usize, base: u64) -> Result<usize, TranspileError> {
         let inst = u32::from_le_bytes([section[offset], section[offset+1], section[offset+2], section[offset+3]]);
-        let _addr = base + offset as u64;
+        let addr = base + offset as u64;
+        self.translate_one(inst, addr)?;
+        Ok(4)
+    }
+
+    /// Translate a single 32-bit RISC-V instruction.
+    fn translate_one(&mut self, inst: u32, _addr: u64) -> Result<(), TranspileError> {
         let opcode = inst & 0x7F;
         let rd = ((inst >> 7) & 0x1F) as u8;
         let funct3 = (inst >> 12) & 0x7;
@@ -88,88 +141,47 @@ impl TranslationContext {
         let rs2 = ((inst >> 20) & 0x1F) as u8;
         let funct7 = (inst >> 25) & 0x7F;
 
+        // Flush pending auipc if this isn't a JALR that consumes it.
+        if opcode != 0x67 {
+            if let Some((auipc_rd, auipc_val)) = self.pending_auipc.take() {
+                self.emit_load_imm(auipc_rd, auipc_val as i64)?;
+            }
+        }
+
         match opcode {
             0x37 => { // LUI
                 let imm = (inst & 0xFFFFF000) as i32;
                 self.emit_load_imm(rd, imm as i64)?;
             }
-            0x17 => { // AUIPC: rd = PC + sign_extend(imm << 12)
-                let hi = (inst & 0xFFFFF000) as i32;
-
-                // Peek at next instruction for AUIPC+JALR fusion (call pattern).
-                if offset + 8 <= section.len() {
-                    let next = u32::from_le_bytes([
-                        section[offset+4], section[offset+5],
-                        section[offset+6], section[offset+7],
-                    ]);
-                    if next & 0x7f == 0x67 && (next >> 12) & 0x7 == 0 {
-                        let jalr_rs1 = ((next >> 15) & 0x1f) as u8;
-                        if jalr_rs1 == rd {
-                            let jalr_rd = ((next >> 7) & 0x1f) as u8;
-                            let lo = ((next as i32) >> 20) as i32;
-                            let target = ((_addr as i64) + (hi as i64) + (lo as i64)) as u64;
-                            let ret_addr = _addr + 8;
-
-                            // Save return address into JALR's link register
-                            self.emit_return_address(jalr_rd, ret_addr)?;
-                            // Jump to computed target
-                            self.emit_jump(target);
-                            // Map the JALR's RISC-V address for other fixups
-                            self.address_map.insert(_addr + 4, self.code.len() as u32);
-                            return Ok(8); // consumed both AUIPC and JALR
-                        }
-                    }
-                }
-
-                // Fallback: emit as load_imm with the RISC-V address (PC + hi)
-                let value = (_addr as i64).wrapping_add(hi as i64);
-                self.emit_load_imm(rd, value)?;
+            0x17 => { // AUIPC — PC + upper immediate
+                let imm = (inst & 0xFFFFF000) as i32;
+                let computed = (_addr as i64 + imm as i64) as u64;
+                // Record for pairing with the next JALR instruction.
+                // Don't emit anything yet — the JALR handler will use this.
+                self.pending_auipc = Some((rd, computed));
             }
-            0x6F => { // JAL: rd = PC+4, PC = PC + imm
+            0x6F => { // JAL
                 let imm = decode_j_imm(inst);
                 let target = (_addr as i64 + imm as i64) as u64;
-                let ret_addr = _addr + 4;
-
-                // Save return address into rd (link register) if rd != 0
-                if rd != 0 {
-                    self.emit_return_address(rd, ret_addr)?;
+                if rd == 0 {
+                    // Plain jump (tail call / goto)
+                    self.emit_jump(target);
+                } else {
+                    // Function call: set RA to jump table entry for return address
+                    let rv_return_addr = _addr + 4;
+                    let jt_idx = self.jump_table.len();
+                    self.jump_table.push(0); // placeholder
+                    self.return_fixups.push((jt_idx, rv_return_addr));
+                    let jt_addr = ((jt_idx + 1) * 2) as i64;
+                    self.emit_load_imm(rd, jt_addr)?;
+                    self.emit_jump(target);
                 }
-                self.emit_jump(target);
             }
-            0x67 => { // JALR: rd = PC+4, PC = (rs1 + imm) & ~1
+            0x67 => { // JALR
                 match funct3 {
                     0 => {
                         let imm = ((inst as i32) >> 20) as i32;
-                        if rd == 0 && rs1 == 1 && imm == 0 {
-                            // ret (jalr x0, ra, 0): return to caller via RA register.
-                            // RA contains either a PVM PC (set by emit_return_address in
-                            // the linker path) or 0 (basic transpiler, top-level return).
-                            // Use jump_ind for proper function returns.
-                            let pvm_rs1 = self.require_reg(rs1)?;
-                            self.emit_inst(50); // jump_ind
-                            self.emit_data(pvm_rs1);
-                            self.emit_imm32(0);
-                        } else if rd == 0 && imm == 0 {
-                            // jr rs1: indirect jump (tail call or computed goto)
-                            let pvm_rs1 = self.require_reg(rs1)?;
-                            self.emit_inst(50);
-                            self.emit_data(pvm_rs1);
-                            self.emit_imm32(0);
-                        } else if rd == 0 {
-                            // Tail call: jump_ind rs1, imm (no link)
-                            let pvm_rs1 = self.require_reg(rs1)?;
-                            self.emit_inst(50); // jump_ind
-                            self.emit_data(pvm_rs1);
-                            self.emit_imm32(imm);
-                        } else {
-                            // Indirect call: save return address, then jump_ind
-                            let ret_addr = _addr + 4;
-                            self.emit_return_address(rd, ret_addr)?;
-                            let pvm_rs1 = self.require_reg(rs1)?;
-                            self.emit_inst(50); // jump_ind
-                            self.emit_data(pvm_rs1);
-                            self.emit_imm32(imm);
-                        }
+                        self.translate_jalr(rd, rs1, imm, _addr)?;
                     }
                     _ => return Err(TranspileError::UnsupportedInstruction {
                         offset: _addr as usize,
@@ -233,10 +245,93 @@ impl TranslationContext {
             }
         }
 
-        Ok(4) // consumed one 32-bit instruction
+        Ok(())
     }
 
-fn translate_branch(&mut self, funct3: u32, rs1: u8, rs2: u8, target: u64) -> Result<(), TranspileError> {
+    /// Flush any pending AUIPC as a standalone load_imm.
+    pub(crate) fn flush_pending_auipc(&mut self) -> Result<(), TranspileError> {
+        if let Some((rd, val)) = self.pending_auipc.take() {
+            self.emit_load_imm(rd, val as i64)?;
+        }
+        Ok(())
+    }
+
+    fn translate_jalr(&mut self, rd: u8, rs1: u8, imm: i32, addr: u64) -> Result<(), TranspileError> {
+        // Check for auipc+jalr pair (PC-relative call/jump)
+        if let Some((auipc_rd, auipc_val)) = self.pending_auipc.take() {
+            if auipc_rd == rs1 {
+                // Combined auipc+jalr: target = auipc_val + imm
+                let target = (auipc_val as i64 + imm as i64) as u64;
+                if rd == 0 {
+                    // Tail call: just jump, no return address
+                    self.emit_jump(target);
+                } else {
+                    // Function call: set return address via jump table
+                    let rv_return_addr = addr + 4;
+                    self.emit_return_address_jt(rd, rv_return_addr)?;
+                    self.emit_jump(target);
+                }
+                return Ok(());
+            } else {
+                // auipc targeted a different register — emit it as load_imm
+                self.emit_load_imm(auipc_rd, auipc_val as i64)?;
+            }
+        }
+
+        // Plain JALR (no preceding auipc, or auipc was for different reg)
+        if rd == 0 && rs1 == 1 && imm == 0 {
+            // ret: jump_ind via RA (holds jump table addr or halt addr)
+            let pvm_rs1 = self.require_reg(rs1)?;
+            self.emit_inst(50); // jump_ind
+            self.emit_data(pvm_rs1);
+            self.emit_imm32(0);
+        } else {
+            // General JALR — uncommon without auipc pairing
+            let pvm_rs1 = self.require_reg(rs1)?;
+            self.emit_inst(50); // jump_ind
+            self.emit_data(pvm_rs1);
+            self.emit_imm32(imm);
+        }
+        Ok(())
+    }
+
+    fn translate_branch(&mut self, funct3: u32, rs1: u8, rs2: u8, target: u64) -> Result<(), TranspileError> {
+        // When one operand is x0 (zero register), use immediate branch variants
+        // since PVM register 0 = RA, not zero.
+        if rs2 == 0 {
+            let pvm_rs1 = self.require_reg(rs1)?;
+            let pvm_opcode = match funct3 {
+                0 => 81,  // BEQ x, x0 → branch_eq_imm x, 0
+                1 => 82,  // BNE x, x0 → branch_ne_imm x, 0
+                4 => 87,  // BLT x, x0 → branch_lt_s_imm x, 0
+                5 => 89,  // BGE x, x0 → branch_ge_s_imm x, 0
+                6 => 83,  // BLTU x, x0 → branch_lt_u_imm x, 0
+                7 => 85,  // BGEU x, x0 → branch_ge_u_imm x, 0
+                _ => return Err(TranspileError::UnsupportedInstruction {
+                    offset: 0, detail: format!("branch funct3={}", funct3),
+                }),
+            };
+            self.emit_branch_imm(pvm_opcode, pvm_rs1, 0, target);
+            return Ok(());
+        }
+
+        if rs1 == 0 {
+            // Compare x0 against rs2: flip the condition
+            let pvm_rs2 = self.require_reg(rs2)?;
+            match funct3 {
+                0 => self.emit_branch_imm(81, pvm_rs2, 0, target), // BEQ x0, y → branch_eq_imm y, 0
+                1 => self.emit_branch_imm(82, pvm_rs2, 0, target), // BNE x0, y → branch_ne_imm y, 0
+                4 => self.emit_branch_imm(89, pvm_rs2, 1, target), // BLT x0, rs2 → rs2 >= 1 (signed)
+                5 => self.emit_branch_imm(87, pvm_rs2, 1, target), // BGE x0, rs2 → rs2 < 1 (signed)
+                6 => self.emit_branch_imm(82, pvm_rs2, 0, target), // BLTU x0, rs2 → rs2 != 0
+                7 => self.emit_branch_imm(81, pvm_rs2, 0, target), // BGEU x0, rs2 → rs2 == 0
+                _ => return Err(TranspileError::UnsupportedInstruction {
+                    offset: 0, detail: format!("branch funct3={}", funct3),
+                }),
+            };
+            return Ok(());
+        }
+
         let pvm_rs1 = self.require_reg(rs1)?;
         let pvm_rs2 = self.require_reg(rs2)?;
 
@@ -266,6 +361,7 @@ fn translate_branch(&mut self, funct3: u32, rs1: u8, rs2: u8, target: u64) -> Re
     }
 
     fn translate_load(&mut self, funct3: u32, rd: u8, rs1: u8, imm: i32) -> Result<(), TranspileError> {
+        if rd == 0 { return Ok(()); } // Write to x0 is a no-op
         let pvm_rd = self.require_reg(rd)?;
         let pvm_rs1 = self.require_reg(rs1)?;
 
@@ -291,24 +387,22 @@ fn translate_branch(&mut self, funct3: u32, rs1: u8, rs2: u8, target: u64) -> Re
     }
 
     fn translate_store(&mut self, funct3: u32, rs1: u8, rs2: u8, imm: i32) -> Result<(), TranspileError> {
-        // store_ind: store rD (data) to [rA + imm]
-        // In RISC-V: store rs2 to [rs1 + imm]
-
-        // RISC-V x0 is hardwired to zero, but PVM reg 0 is RA.
+        // x0 (zero register) has no PVM equivalent — PVM reg 0 is RA, not zero.
         // Use store_imm_ind_* to store a literal zero instead.
         if rs2 == 0 {
             let pvm_rs1 = self.require_reg(rs1)?;
             let pvm_opcode = match funct3 {
-                0 => 70,  // SB x0 → store_imm_ind_u8(0)
-                1 => 71,  // SH x0 → store_imm_ind_u16(0)
-                2 => 72,  // SW x0 → store_imm_ind_u32(0)
-                3 => 73,  // SD x0 → store_imm_ind_u64(0)
+                0 => 70,  // store_imm_ind_u8
+                1 => 71,  // store_imm_ind_u16
+                2 => 72,  // store_imm_ind_u32
+                3 => 73,  // store_imm_ind_u64
                 _ => return Err(TranspileError::UnsupportedInstruction {
                     offset: 0, detail: format!("store funct3={}", funct3),
                 }),
             };
-            // OneRegTwoImm: reg_byte = ra | (lx << 4), imm_x = offset, imm_y = 0
-            // lx=4 for 4-byte offset, ly=0 so imm_y decodes as 0 (the value to store)
+            // Format: OneRegTwoImm — reg_byte encodes ra + imm_x length
+            // reg_byte = ra | (lx << 4), lx=4 for 4-byte imm_x (offset)
+            // imm_y has length 0, which decodes as 0 (the value we want to store)
             self.emit_inst(pvm_opcode);
             self.emit_data(pvm_rs1 | (4 << 4));
             self.emit_imm32(imm);
@@ -341,6 +435,8 @@ fn translate_branch(&mut self, funct3: u32, rs1: u8, rs2: u8, target: u64) -> Re
             self.last_t0_imm = Some(imm);
         }
 
+        if rd == 0 { return Ok(()); } // Write to x0 is a no-op in RISC-V
+
         // When rs1 = x0 (zero register), treat as loading immediate directly
         // because PVM has no zero register — x0 maps to RA which is NOT zero.
         if rs1 == 0 {
@@ -362,11 +458,12 @@ fn translate_branch(&mut self, funct3: u32, rs1: u8, rs2: u8, target: u64) -> Re
         let pvm_rd = self.require_reg(rd)?;
         let pvm_rs1 = self.require_reg(rs1)?;
 
+        // RV32 uses 32-bit PVM ops; RV64 uses 64-bit PVM ops
         let pvm_opcode = match funct3 {
-            0 => 149, // ADDI → add_imm_64
+            0 => if self.is_64bit { 149 } else { 131 }, // ADDI → add_imm_64/32
             1 => { // SLLI
-                let shamt = imm & 0x3F;
-                self.emit_inst(151); // shlo_l_imm_64
+                let shamt = imm & if self.is_64bit { 0x3F } else { 0x1F };
+                self.emit_inst(if self.is_64bit { 151 } else { 138 }); // shlo_l_imm_64/32
                 self.emit_data(pvm_rd | (pvm_rs1 << 4));
                 self.emit_imm32(shamt);
                 return Ok(());
@@ -375,11 +472,11 @@ fn translate_branch(&mut self, funct3: u32, rs1: u8, rs2: u8, target: u64) -> Re
             3 => 136, // SLTIU → set_lt_u_imm
             4 => 133, // XORI → xor_imm
             5 => { // SRLI/SRAI
-                let shamt = imm & 0x3F;
+                let shamt = imm & if self.is_64bit { 0x3F } else { 0x1F };
                 if funct7 & 0x20 != 0 {
-                    self.emit_inst(153); // shar_r_imm_64
+                    self.emit_inst(if self.is_64bit { 153 } else { 140 }); // shar_r_imm_64/32
                 } else {
-                    self.emit_inst(152); // shlo_r_imm_64
+                    self.emit_inst(if self.is_64bit { 152 } else { 139 }); // shlo_r_imm_64/32
                 }
                 self.emit_data(pvm_rd | (pvm_rs1 << 4));
                 self.emit_imm32(shamt);
@@ -398,39 +495,143 @@ fn translate_branch(&mut self, funct3: u32, rs1: u8, rs2: u8, target: u64) -> Re
     }
 
     fn translate_op(&mut self, funct3: u32, funct7: u32, rd: u8, rs1: u8, rs2: u8) -> Result<(), TranspileError> {
+        if rd == 0 { return Ok(()); } // Write to x0 is a no-op in RISC-V
+
+        // Handle x0 as source: PVM reg 0 = RA, not zero.
+        if rs1 == 0 && funct7 == 0 && funct3 == 0 {
+            // add rd, x0, rs2 → mv rd, rs2
+            let pvm_rd = self.require_reg(rd)?;
+            let pvm_rs2 = self.require_reg(rs2)?;
+            self.emit_inst(52); // move_reg
+            self.emit_data(pvm_rd | (pvm_rs2 << 4));
+            return Ok(());
+        }
+        if rs2 == 0 && funct7 == 0 && funct3 == 0 {
+            // add rd, rs1, x0 → mv rd, rs1
+            let pvm_rd = self.require_reg(rd)?;
+            let pvm_rs1 = self.require_reg(rs1)?;
+            self.emit_inst(52); // move_reg
+            self.emit_data(pvm_rd | (pvm_rs1 << 4));
+            return Ok(());
+        }
+        // SUB rd, x0, rs2 → neg rd, rs2
+        if rs1 == 0 && funct7 == 0x20 && funct3 == 0 {
+            let pvm_rd = self.require_reg(rd)?;
+            let pvm_rs2 = self.require_reg(rs2)?;
+            let neg_op = if self.is_64bit { 154 } else { 141 }; // neg_add_imm_64/32
+            self.emit_inst(neg_op);
+            self.emit_data(pvm_rd | (pvm_rs2 << 4));
+            self.emit_imm32(0);
+            return Ok(());
+        }
+        // Handle remaining x0 source cases
+        if rs1 == 0 {
+            let pvm_rd = self.require_reg(rd)?;
+            let pvm_rs2 = self.require_reg(rs2)?;
+            match (funct7, funct3) {
+                (0, 1) | (0, 5) | (0x20, 5) => {
+                    // SLL/SRL/SRA rd, x0, rs2 → shift 0 by rs2 = 0
+                    return self.emit_load_imm(rd, 0);
+                }
+                (0, 4) | (0, 6) => {
+                    // XOR/OR rd, x0, rs2 → rs2
+                    self.emit_inst(52);
+                    self.emit_data(pvm_rd | (pvm_rs2 << 4));
+                    return Ok(());
+                }
+                (0, 7) => {
+                    // AND rd, x0, rs2 → 0
+                    return self.emit_load_imm(rd, 0);
+                }
+                (0, 3) => {
+                    // SLTU rd, x0, rs2 → snez rd, rs2
+                    self.emit_load_imm(rd, 0)?;
+                    self.emit_inst(148); // cmov_nz_imm: if rs2 != 0 then rd = imm
+                    self.emit_data(pvm_rd | (pvm_rs2 << 4));
+                    self.emit_imm32(1);
+                    return Ok(());
+                }
+                (1, _) => {
+                    // M extension with x0 → result is 0
+                    return self.emit_load_imm(rd, 0);
+                }
+                _ => {
+                    tracing::warn!("unhandled x0-source op: funct7={funct7:#x} funct3={funct3}");
+                }
+            }
+        }
+        if rs2 == 0 {
+            let pvm_rd = self.require_reg(rd)?;
+            let pvm_rs1 = self.require_reg(rs1)?;
+            match (funct7, funct3) {
+                (0, 2) | (0, 3) => {
+                    // slt(u) rd, rs1, x0 → set_lt_(s|u)_imm rd, rs1, 0
+                    let pvm_opcode = if funct3 == 2 { 137 } else { 136 };
+                    self.emit_inst(pvm_opcode);
+                    self.emit_data(pvm_rd | (pvm_rs1 << 4));
+                    self.emit_imm32(0);
+                    return Ok(());
+                }
+                (0x20, 0) | (0, 4) | (0, 6) => {
+                    // SUB/XOR/OR rd, rs1, x0 → rs1 op 0 = rs1 → move
+                    self.emit_inst(52);
+                    self.emit_data(pvm_rd | (pvm_rs1 << 4));
+                    return Ok(());
+                }
+                (0, 7) => {
+                    // AND rd, rs1, x0 → 0
+                    return self.emit_load_imm(rd, 0);
+                }
+                (0, 1) | (0, 5) | (0x20, 5) => {
+                    // SLL/SRL/SRA rd, rs1, x0 → shift by 0 = rs1 → move
+                    self.emit_inst(52);
+                    self.emit_data(pvm_rd | (pvm_rs1 << 4));
+                    return Ok(());
+                }
+                (1, _) => {
+                    // M extension: mul rd, rs1, 0 = 0; div/rem by 0 is undefined
+                    return self.emit_load_imm(rd, 0);
+                }
+                _ => {
+                    tracing::warn!("unhandled x0-source op: funct7={funct7:#x} funct3={funct3}");
+                }
+            }
+        }
+
         let pvm_rd = self.require_reg(rd)?;
         let pvm_rs1 = self.require_reg(rs1)?;
         let pvm_rs2 = self.require_reg(rs2)?;
 
+        // RV32 uses 32-bit PVM ops; RV64 uses 64-bit PVM ops
         let pvm_opcode = if funct7 == 1 {
             // M extension (multiply/divide)
             match funct3 {
-                0 => 202, // MUL → mul_64
-                1 => 213, // MULH → mul_upper_ss
+                0 => if self.is_64bit { 202 } else { 192 }, // MUL
+                1 => 213, // MULH → mul_upper_ss (always 64-bit, gives upper bits)
                 2 => 215, // MULHSU → mul_upper_su
                 3 => 214, // MULHU → mul_upper_uu
-                4 => 204, // DIV → div_s_64
-                5 => 203, // DIVU → div_u_64
-                6 => 206, // REM → rem_s_64
-                7 => 205, // REMU → rem_u_64
+                4 => if self.is_64bit { 204 } else { 194 }, // DIV
+                5 => if self.is_64bit { 203 } else { 193 }, // DIVU
+                6 => if self.is_64bit { 206 } else { 196 }, // REM
+                7 => if self.is_64bit { 205 } else { 195 }, // REMU
                 _ => unreachable!(),
             }
         } else if funct7 == 0x20 {
             match funct3 {
-                0 => 201, // SUB → sub_64
-                5 => 209, // SRA → shar_r_64
+                0 => if self.is_64bit { 201 } else { 191 }, // SUB
+                5 => if self.is_64bit { 209 } else { 199 }, // SRA
                 _ => return Err(TranspileError::UnsupportedInstruction {
                     offset: 0, detail: format!("OP funct7=0x20 funct3={}", funct3),
                 }),
             }
         } else {
             match funct3 {
-                0 => 200, // ADD → add_64
-                1 => 207, // SLL → shlo_l_64
+                0 => if self.is_64bit { 200 } else { 190 }, // ADD
+                1 => if self.is_64bit { 207 } else { 197 }, // SLL
                 2 => 217, // SLT → set_lt_s
                 3 => 216, // SLTU → set_lt_u
                 4 => 211, // XOR → xor
-                5 => 208, // SRL → shlo_r_64
+                5 => if self.is_64bit { 208 } else { 198 }, // SRL
                 6 => 212, // OR → or
                 7 => 210, // AND → and
                 _ => unreachable!(),
@@ -438,7 +639,6 @@ fn translate_branch(&mut self, funct3: u32, rs1: u8, rs2: u8, target: u64) -> Re
         };
 
         // ThreeReg encoding: byte1 = rA | (rB << 4), byte2 = rD
-        // where rA=rs1 (source1), rB=rs2 (source2), rD=rd (destination)
         self.emit_inst(pvm_opcode);
         self.emit_data(pvm_rs1 | (pvm_rs2 << 4));
         self.emit_data(pvm_rd);
@@ -447,6 +647,7 @@ fn translate_branch(&mut self, funct3: u32, rs1: u8, rs2: u8, target: u64) -> Re
     }
 
     fn translate_op_imm_32(&mut self, funct3: u32, funct7: u32, rd: u8, rs1: u8, imm: i32) -> Result<(), TranspileError> {
+        if rd == 0 { return Ok(()); }
         let pvm_rd = self.require_reg(rd)?;
         let pvm_rs1 = self.require_reg(rs1)?;
 
@@ -481,6 +682,7 @@ fn translate_branch(&mut self, funct3: u32, rs1: u8, rs2: u8, target: u64) -> Re
     }
 
     fn translate_op_32(&mut self, funct3: u32, funct7: u32, rd: u8, rs1: u8, rs2: u8) -> Result<(), TranspileError> {
+        if rd == 0 { return Ok(()); }
         let pvm_rd = self.require_reg(rd)?;
         let pvm_rs1 = self.require_reg(rs1)?;
         let pvm_rs2 = self.require_reg(rs2)?;
@@ -579,7 +781,22 @@ fn translate_branch(&mut self, funct3: u32, rs1: u8, rs2: u8, target: u64) -> Re
         self.emit_imm32(0); // placeholder
     }
 
-/// Emit a load_imm for a return address (RISC-V addr → absolute PVM PC).
+    /// Emit a return address via jump table entry.
+    ///
+    /// Allocates a jump table slot for the return address and loads the
+    /// jump table address into the given register. The slot is patched
+    /// during `apply_fixups` to point to the PVM offset of `rv_ret_addr`.
+    pub(crate) fn emit_return_address_jt(&mut self, rd: u8, rv_ret_addr: u64) -> Result<(), TranspileError> {
+        if rd == 0 { return Ok(()); }
+        let jt_idx = self.jump_table.len();
+        self.jump_table.push(0); // placeholder
+        self.return_fixups.push((jt_idx, rv_ret_addr));
+        let jt_addr = ((jt_idx + 1) * 2) as i64;
+        self.emit_load_imm(rd, jt_addr)
+    }
+
+    /// Emit a load_imm for a return address (RISC-V addr → absolute PVM PC).
+    /// Used by the linker for CALL_PLT relocations.
     pub(crate) fn emit_return_address(&mut self, rd: u8, rv_ret_addr: u64) -> Result<(), TranspileError> {
         if rd == 0 { return Ok(()); }
         let pvm_rd = self.require_reg(rd)?;
@@ -596,6 +813,72 @@ fn translate_branch(&mut self, funct3: u32, rs1: u8, rs2: u8, target: u64) -> Re
         self.emit_imm32(id as i32);
     }
 
+    /// Emit a OneRegImmOffset instruction (used by branch_*_imm opcodes).
+    ///
+    /// PVM encoding: [opcode][ra | (lx << 4)][imm (lx bytes LE)][offset (4 bytes LE)]
+    /// where lx = minimum bytes to represent the signed immediate.
+    fn emit_branch_imm(&mut self, opcode: u8, ra: u8, imm: i32, target: u64) {
+        let inst_pc = self.code.len() as u32;
+        self.emit_inst(opcode);
+
+        // Determine minimum byte width for the signed immediate
+        let (lx, imm_bytes): (u8, Vec<u8>) = if imm == 0 {
+            (0, vec![])
+        } else if imm >= -128 && imm <= 127 {
+            (1, vec![imm as i8 as u8])
+        } else if imm >= -32768 && imm <= 32767 {
+            (2, (imm as i16).to_le_bytes().to_vec())
+        } else {
+            (4, imm.to_le_bytes().to_vec())
+        };
+
+        // Pack register and immediate length into one byte
+        self.emit_data(ra | (lx << 4));
+
+        // Emit immediate bytes
+        for b in &imm_bytes {
+            self.emit_data(*b);
+        }
+
+        // Emit offset placeholder (4 bytes, filled by fixup)
+        let fixup_pos = self.code.len();
+        self.fixups.push((fixup_pos, target, 4));
+        self.fixup_pcs.insert(fixup_pos, inst_pc);
+        self.emit_imm32(0);
+    }
+
+    /// Build a mapping from RISC-V code addresses to PVM jump table addresses.
+    ///
+    /// For each RISC-V code address in the address_map, creates a jump table entry
+    /// pointing to the corresponding PVM code offset. Returns a map of
+    /// RISC-V address → jump table address (= (index+1)*2).
+    ///
+    /// This is needed to fix indirect calls through function pointers stored in
+    /// data sections (vtables, callbacks, etc.). The PVM's `jump_ind` instruction
+    /// expects jump table addresses, not raw code offsets.
+    pub fn build_function_pointer_map(&mut self) -> std::collections::HashMap<u64, u32> {
+        let mut rv_to_jt: std::collections::HashMap<u64, u32> = std::collections::HashMap::new();
+
+        let mut code_addrs: Vec<(u64, u32)> = self.address_map
+            .iter()
+            .map(|(&rv, &pvm)| (rv, pvm))
+            .collect();
+        code_addrs.sort_by_key(|(rv, _)| *rv);
+
+        for (rv_addr, pvm_offset) in &code_addrs {
+            if (*pvm_offset as usize) < self.bitmask.len()
+                && self.bitmask[*pvm_offset as usize] == 1
+            {
+                let jt_idx = self.jump_table.len();
+                self.jump_table.push(*pvm_offset);
+                let jt_addr = ((jt_idx + 1) * 2) as u32;
+                rv_to_jt.insert(*rv_addr, jt_addr);
+            }
+        }
+
+        rv_to_jt
+    }
+
     pub(crate) fn apply_fixups(&mut self) {
         // PC-relative fixups (branches, jumps)
         for (pvm_offset, rv_target, size) in self.fixups.drain(..).collect::<Vec<_>>() {
@@ -606,10 +889,12 @@ fn translate_branch(&mut self, funct3: u32, rs1: u8, rs2: u8, target: u64) -> Re
                 for i in 0..size as usize {
                     self.code[pvm_offset + i] = bytes[i];
                 }
+            } else {
+                tracing::warn!("unresolved fixup: rv_target={:#x}, pvm_offset={}", rv_target, pvm_offset);
             }
-            // If target not found, leave as 0 (will trap)
         }
-        // Absolute fixups (return addresses in load_imm)
+
+        // Absolute fixups (return addresses in load_imm, used by linker)
         for (pvm_offset, rv_target) in self.abs_fixups.drain(..).collect::<Vec<_>>() {
             if let Some(&pvm_target) = self.address_map.get(&rv_target) {
                 let bytes = (pvm_target as i32).to_le_bytes();
@@ -617,6 +902,14 @@ fn translate_branch(&mut self, funct3: u32, rs1: u8, rs2: u8, target: u64) -> Re
                     self.code[pvm_offset + i] = bytes[i];
                 }
             }
+        }
+
+        // Resolve return address fixups in the jump table
+        for (jt_idx, rv_addr) in self.return_fixups.drain(..).collect::<Vec<_>>() {
+            if let Some(&pvm_target) = self.address_map.get(&rv_addr) {
+                self.jump_table[jt_idx] = pvm_target;
+            }
+            // If not found, leave as 0 (will trap on return)
         }
     }
 }
