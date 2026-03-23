@@ -264,8 +264,8 @@ def initStandard (blob' : ByteArray) (args : ByteArray)
 
   -- Registers (GP eq A.43): matching javm initialize_program
   let regs := Array.replicate PVM_REGISTERS (0 : RegisterValue)
-  let regs := regs.set! 0 (UInt64.ofNat (2^32 - 2^16))        -- ω[0]: SP init
-  let regs := regs.set! 1 (UInt64.ofNat stackTop)               -- ω[1]: stack top
+  let regs := regs.set! 0 (UInt64.ofNat (2^32 - 2^16))        -- ω[0]: RA (halt address)
+  let regs := regs.set! 1 (UInt64.ofNat stackTop)               -- ω[1]: SP (stack top)
   let regs := regs.set! 7 (UInt64.ofNat argBase)                -- ω[7]: argument base
   let regs := regs.set! 8 (UInt64.ofNat args.size)              -- ω[8]: argument length
 
@@ -339,8 +339,8 @@ def initLinear (blob' : ByteArray) (args : ByteArray)
 
   -- Registers
   let regs := Array.replicate PVM_REGISTERS (0 : RegisterValue)
-  let regs := regs.set! 0 (UInt64.ofNat s)           -- ω[0]: SP = top of stack
-  let regs := regs.set! 1 (UInt64.ofNat s)           -- ω[1]: stack top
+  let regs := regs.set! 0 (UInt64.ofNat (2^32 - 2^16))  -- ω[0]: RA (halt address, code addr)
+  let regs := regs.set! 1 (UInt64.ofNat s)              -- ω[1]: SP (top of stack)
   let regs := regs.set! 7 (UInt64.ofNat argStart)    -- ω[7]: argument base
   let regs := regs.set! 8 (UInt64.ofNat args.size)   -- ω[8]: argument length
 
