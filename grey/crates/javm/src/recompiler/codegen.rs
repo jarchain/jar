@@ -1202,30 +1202,22 @@ impl Compiler {
             }
             Opcode::SetLtUImm => {
                 if let Args::TwoRegImm { ra, rb, imm } = args {
-                    self.emit_cmp_imm(REG_MAP[*rb], *imm);
-                    self.asm.setcc(Cc::B, REG_MAP[*ra]);
-                    self.asm.movzx_8_64(REG_MAP[*ra], REG_MAP[*ra]);
+                    self.emit_setcc_imm(*ra, *rb, *imm, Cc::B);
                 }
             }
             Opcode::SetLtSImm => {
                 if let Args::TwoRegImm { ra, rb, imm } = args {
-                    self.emit_cmp_imm(REG_MAP[*rb], *imm);
-                    self.asm.setcc(Cc::L, REG_MAP[*ra]);
-                    self.asm.movzx_8_64(REG_MAP[*ra], REG_MAP[*ra]);
+                    self.emit_setcc_imm(*ra, *rb, *imm, Cc::L);
                 }
             }
             Opcode::SetGtUImm => {
                 if let Args::TwoRegImm { ra, rb, imm } = args {
-                    self.emit_cmp_imm(REG_MAP[*rb], *imm);
-                    self.asm.setcc(Cc::A, REG_MAP[*ra]);
-                    self.asm.movzx_8_64(REG_MAP[*ra], REG_MAP[*ra]);
+                    self.emit_setcc_imm(*ra, *rb, *imm, Cc::A);
                 }
             }
             Opcode::SetGtSImm => {
                 if let Args::TwoRegImm { ra, rb, imm } = args {
-                    self.emit_cmp_imm(REG_MAP[*rb], *imm);
-                    self.asm.setcc(Cc::G, REG_MAP[*ra]);
-                    self.asm.movzx_8_64(REG_MAP[*ra], REG_MAP[*ra]);
+                    self.emit_setcc_imm(*ra, *rb, *imm, Cc::G);
                 }
             }
             Opcode::ShloLImm32 => {
@@ -1615,20 +1607,12 @@ impl Compiler {
             // Set comparisons (three-register)
             Opcode::SetLtU => {
                 if let Args::ThreeReg { ra, rb, rd } = args {
-
-                    self.asm.cmp_rr(REG_MAP[*ra], REG_MAP[*rb]);
-                    self.asm.setcc(Cc::B, REG_MAP[*rd]);
-                    self.asm.movzx_8_64(REG_MAP[*rd], REG_MAP[*rd]);
-
+                    self.emit_setcc_3reg(*ra, *rb, *rd, Cc::B);
                 }
             }
             Opcode::SetLtS => {
                 if let Args::ThreeReg { ra, rb, rd } = args {
-
-                    self.asm.cmp_rr(REG_MAP[*ra], REG_MAP[*rb]);
-                    self.asm.setcc(Cc::L, REG_MAP[*rd]);
-                    self.asm.movzx_8_64(REG_MAP[*rd], REG_MAP[*rd]);
-
+                    self.emit_setcc_3reg(*ra, *rb, *rd, Cc::L);
                 }
             }
 
@@ -1891,6 +1875,37 @@ impl Compiler {
         self.asm.bind_label(djump_panic);
         self.asm.pop(Reg::RAX); // restore φ[11] before panicking
         self.asm.jmp_label(self.panic_label);
+    }
+
+    /// Emit setcc for three-register comparisons: rd = (ra CMP rb) ? 1 : 0.
+    /// When rd != ra and rd != rb, uses xor+cmp+setcc (eliminates movzx).
+    fn emit_setcc_3reg(&mut self, ra: usize, rb: usize, rd: usize, cc: Cc) {
+        let (a, b, d) = (REG_MAP[ra], REG_MAP[rb], REG_MAP[rd]);
+        if rd != ra && rd != rb {
+            // xor clears upper bits; setcc writes only the low byte.
+            self.asm.mov_ri64(d, 0); // xor r32,r32 (via mov_ri64 zero optimization)
+            self.asm.cmp_rr(a, b);
+            self.asm.setcc(cc, d);
+        } else {
+            self.asm.cmp_rr(a, b);
+            self.asm.setcc(cc, d);
+            self.asm.movzx_8_64(d, d);
+        }
+    }
+
+    /// Emit setcc for immediate comparisons: ra = (rb CMP imm) ? 1 : 0.
+    /// When ra != rb, uses xor+cmp+setcc (eliminates movzx).
+    fn emit_setcc_imm(&mut self, ra: usize, rb: usize, imm: u64, cc: Cc) {
+        let (a, b) = (REG_MAP[ra], REG_MAP[rb]);
+        if ra != rb {
+            self.asm.mov_ri64(a, 0); // xor r32,r32
+            self.emit_cmp_imm(b, imm);
+            self.asm.setcc(cc, a);
+        } else {
+            self.emit_cmp_imm(b, imm);
+            self.asm.setcc(cc, a);
+            self.asm.movzx_8_64(a, a);
+        }
     }
 
     /// Compare register against immediate, using cmp_ri for i32-range values.
