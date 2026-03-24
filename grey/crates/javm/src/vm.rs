@@ -2032,11 +2032,12 @@ pub fn compute_basic_block_starts(code: &[u8], bitmask: &[u8]) -> Vec<bool> {
         }
     }
 
-    // Pass 1: For each instruction, compute its skip (size - 1)
-    // Pass 2: Mark basic block starts from control flow
-    for i in 0..len {
-        if i >= bitmask.len() || bitmask[i] != 1 { continue; }
-        let Some(op) = Opcode::from_byte(code[i]) else { continue; };
+    // Iterate only over instruction starts (skip non-instruction bytes).
+    // This is O(n_instructions) instead of O(n_bytes).
+    let mut i = 0;
+    while i < len {
+        if i >= bitmask.len() || bitmask[i] != 1 { i += 1; continue; }
+        let Some(op) = Opcode::from_byte(code[i]) else { i += 1; continue; };
 
         let skip = {
             let mut s = 0;
@@ -2104,6 +2105,8 @@ pub fn compute_basic_block_starts(code: &[u8], bitmask: &[u8]) -> Vec<bool> {
             }
             _ => {}
         }
+
+        i += 1 + skip; // advance to next instruction start
     }
 
     starts

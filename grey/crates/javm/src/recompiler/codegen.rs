@@ -256,9 +256,6 @@ impl Compiler {
         self.emit_prologue();
 
         // Gas block starts: use the same basic block analysis as the interpreter.
-        // This ensures gas charging matches exactly. The inline discovery missed
-        // forward-reference targets (e.g., a branch at PC=664 targeting PC=604
-        // wouldn't be discovered before PC=604 is compiled).
         let mut gas_starts = crate::vm::compute_basic_block_starts(code, bitmask);
 
         // Single streaming pass: decode + gas blocks + codegen
