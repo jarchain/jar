@@ -166,6 +166,8 @@ pub struct Compiler {
     panic_label: Label,
     /// Label for shared page fault exit (sets PAGE_FAULT + jumps to exit).
     fault_exit_label: Label,
+    /// Label for OOG handler that reads PC from SCRATCH: stores PC, then falls through to oog_label.
+    oog_pc_label: Label,
     /// Per-gas-block OOG stubs: (label, pvm_pc) — emitted as cold code after main body.
     oog_stubs: Vec<(Label, u32, u32)>,  // (label, pvm_pc, block_cost)
     /// Per-memory-access fault stubs: (label, pvm_pc) — stores PC, jumps to shared handler.
@@ -205,6 +207,7 @@ impl Compiler {
         let oog_label = asm.new_label();
         let panic_label = asm.new_label();
         let fault_exit_label = asm.new_label();
+        let oog_pc_label = asm.new_label();
         Self {
             block_labels: vec![NO_LABEL; code_len + 1],
             asm,
@@ -212,6 +215,7 @@ impl Compiler {
             oog_label,
             panic_label,
             fault_exit_label,
+            oog_pc_label,
             oog_stubs: Vec::new(),
             fault_stubs: Vec::with_capacity(256),
             reg_defs: [RegDef::Unknown; 13],
@@ -2411,18 +2415,26 @@ impl Compiler {
 
     /// Emit exit sequences and epilogue.
     fn emit_exit_sequences(&mut self) {
-        // Per-gas-block OOG stubs: store PC, jump to shared OOG handler.
-        // JAR v0.8.0 pipeline gas: the full block cost is always the correct
-        // charge, so we let the subtraction stand (no gas restore needed).
+        // Shared OOG handler that reads PC from SCRATCH — emitted BEFORE OOG
+        // stubs so backward jumps from stubs can use jmp rel8 (2 bytes).
+        self.asm.bind_label(self.oog_pc_label);
+        self.asm.mov_store32(CTX, CTX_PC as i32, SCRATCH);
+        // fall through to oog_label:
+        self.asm.bind_label(self.oog_label);
+        self.asm.mov_store32_imm(CTX, CTX_EXIT_REASON as i32, EXIT_OOG as i32);
+        self.asm.jmp_label(self.exit_label);
+
+        // Per-gas-block OOG stubs: compact format — load PC into SCRATCH,
+        // jump to shared handler. Saves ~6 bytes per stub vs inline PC store.
         let stubs = std::mem::take(&mut self.oog_stubs);
         for (label, pvm_pc, _cost) in &stubs {
             self.asm.bind_label(*label);
-            self.asm.mov_store32_imm(CTX, CTX_PC as i32, *pvm_pc as i32);
-            self.asm.jmp_label(self.oog_label);
+            self.asm.mov_ri32(SCRATCH, *pvm_pc);
+            self.asm.jmp_label(self.oog_pc_label);
         }
 
-        // Per-memory-access fault stubs: store PC, jump to shared fault handler.
-        // Each stub is ~16 bytes (vs old ~35 bytes) thanks to shared handler.
+        // Per-memory-access fault stubs: keep inline PC store (SCRATCH holds
+        // the fault address which the fault handler needs).
         let fault_stubs = std::mem::take(&mut self.fault_stubs);
         for (label, pvm_pc) in &fault_stubs {
             self.asm.bind_label(*label);
@@ -2434,11 +2446,6 @@ impl Compiler {
         self.asm.bind_label(self.fault_exit_label);
         self.asm.mov_store32_imm(CTX, CTX_EXIT_REASON, EXIT_PAGE_FAULT as i32);
         self.asm.mov_store32(CTX, CTX_EXIT_ARG, SCRATCH);
-        self.asm.jmp_label(self.exit_label);
-
-        // Shared out-of-gas exit
-        self.asm.bind_label(self.oog_label);
-        self.asm.mov_store32_imm(CTX, CTX_EXIT_REASON as i32, EXIT_OOG as i32);
         self.asm.jmp_label(self.exit_label);
 
         // Panic exit
