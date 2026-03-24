@@ -1886,13 +1886,42 @@ impl Compiler {
         self.asm.shr_ri64(SCRATCH, 1);
         self.asm.sub_ri(SCRATCH, 1);
 
-        // Store idx in ctx and exit with DJUMP marker for host-side resolution.
-        // We avoid inlining the full jump table lookup to prevent clobbering
-        // PVM-mapped registers (e.g. RAX = φ[11]).
-        // The outer loop handles djump resolution.
-        self.asm.mov_store32(CTX, CTX_EXIT_ARG as i32, SCRATCH);
-        self.asm.mov_store32_imm(CTX, CTX_EXIT_REASON as i32, 5); // 5 = DJUMP
-        self.asm.jmp_label(self.exit_label);
+        // Inline djump resolution: idx is in SCRATCH (RDX).
+        // Bounds check: idx < jt_len
+        self.asm.cmp_mem32_r(CTX, CTX_JT_LEN, SCRATCH);
+        self.asm.jcc_label(Cc::BE, self.panic_label); // jt_len <= idx → panic
+
+        // target_pc = jt_ptr[idx] (u32 array, need idx*4)
+        self.asm.push(Reg::RAX); // save φ[11]
+        self.asm.shl_ri64(SCRATCH, 2); // idx *= 4
+        self.asm.mov_load64(Reg::RAX, CTX, CTX_JT_PTR);
+        self.asm.add_rr(Reg::RAX, SCRATCH);
+        self.asm.mov_load32(SCRATCH, Reg::RAX, 0); // SCRATCH = jt_ptr[idx]
+
+        // Validate: target_pc < bb_len && bb_starts[target_pc] == 1
+        let djump_panic = self.asm.new_label();
+        self.asm.cmp_mem32_r(CTX, CTX_BB_LEN, SCRATCH);
+        self.asm.jcc_label(Cc::BE, djump_panic); // bb_len <= target → panic
+        self.asm.mov_load64(Reg::RAX, CTX, CTX_BB_STARTS);
+        self.asm.movzx_load8_sib(Reg::RAX, Reg::RAX, SCRATCH);
+        self.asm.cmp_ri32(Reg::RAX, 1);
+        self.asm.jcc_label(Cc::NE, djump_panic);
+
+        // Dispatch: native_addr = code_base + dispatch_table[target_pc]
+        self.asm.mov_load64(Reg::RAX, CTX, CTX_DISPATCH_TABLE);
+        self.asm.movsxd_load_sib4(Reg::RAX, Reg::RAX, SCRATCH);
+        self.asm.add_r64_mem(Reg::RAX, CTX, CTX_CODE_BASE);
+        // Store target PC for gas block tracking
+        self.asm.mov_store32(CTX, CTX_PC as i32, SCRATCH);
+        // RAX = native addr, [rsp] = saved φ[11].
+        // Use SCRATCH (which we no longer need) to swap.
+        self.asm.mov_rr(SCRATCH, Reg::RAX);  // SCRATCH = native addr
+        self.asm.pop(Reg::RAX);               // restore φ[11]
+        self.asm.jmp_reg(SCRATCH);            // jump to native addr
+
+        self.asm.bind_label(djump_panic);
+        self.asm.pop(Reg::RAX); // restore φ[11] before panicking
+        self.asm.jmp_label(self.panic_label);
     }
 
     /// Emit a branch comparing register against immediate.
