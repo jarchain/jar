@@ -310,6 +310,13 @@ impl Compiler {
                 gas_starts[next_pc as usize] = true;
             }
 
+            // At basic block boundaries (branch targets, post-terminators),
+            // invalidate all reg_defs since registers may have different values
+            // when entered from different paths (e.g., loop back-edges).
+            if gas_starts[pc] {
+                self.invalidate_all_regs();
+            }
+
             // Gas block boundary check
             if gas_starts[pc] {
                 if let Some((stub_label, block_pc, patch_offset)) = pending_gas.take() {
