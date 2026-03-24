@@ -486,6 +486,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "build-crate"
+version = "0.1.0"
+
+[[package]]
+name = "build-javm"
+version = "0.1.0"
+dependencies = [
+ "build-crate",
+ "grey-transpiler",
+]
+
+[[package]]
+name = "build-pvm"
+version = "0.1.0"
+dependencies = [
+ "build-crate",
+ "polkavm-linker",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1356,13 +1376,14 @@ dependencies = [
 name = "grey-bench"
 version = "0.1.0"
 dependencies = [
+ "build-javm",
+ "build-pvm",
  "criterion",
  "grey-transpiler",
  "javm",
  "k256",
  "polkavm",
  "polkavm-common",
- "polkavm-linker",
 ]
 
 [[package]]

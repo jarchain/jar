@@ -14,7 +14,10 @@ javm = { workspace = true }
 grey-transpiler = { workspace = true }
 polkavm = "0.32.0"
 polkavm-common = "0.32.0"
-polkavm-linker = "0.32.0"
+
+[build-dependencies]
+build-javm = { path = "../build-javm" }
+build-pvm = { path = "../build-pvm" }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

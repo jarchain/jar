@@ -438,48 +438,19 @@ pub fn polkavm_hostcall_blob(n: u64) -> Vec<u8> {
 
 // ---------------------------------------------------------------------------
 // Ecrecover benchmark: secp256k1 ECDSA public key recovery (k256 crate)
-// Same RISC-V ELF compiled for both grey (via transpiler) and polkavm (via linker).
+// ELFs are auto-built by build.rs via build-javm and build-pvm crates.
 // ---------------------------------------------------------------------------
 
-/// Grey rv64em ELF (bin target, +e,+m features).
-const GREY_ECRECOVER_ELF: &[u8] = include_bytes!(
-    "../../../services/bench-ecrecover/target/riscv64em-javm/release/bench-ecrecover.elf"
-);
+include!(concat!(env!("OUT_DIR"), "/guest_blobs.rs"));
 
-/// PolkaVM rv64emac ELF (cdylib target, full ISA features, per-function sections).
-const POLKAVM_ECRECOVER_ELF: &[u8] = include_bytes!(
-    "../../../services/bench-ecrecover/target/riscv64emac-polkavm/release/bench_ecrecover.elf"
-);
-
-/// Grey PVM blob for ecrecover (rv64em ELF → PVM via linker).
-///
-/// To regenerate the ELF:
-/// ```sh
-/// cd services/bench-ecrecover
-/// cargo +nightly build --release --bin bench-ecrecover --target ../riscv64em-javm.json -Zbuild-std=core,alloc -Zjson-target-spec
-/// ```
-pub fn grey_ecrecover_blob() -> Vec<u8> {
-    grey_transpiler::link_elf(GREY_ECRECOVER_ELF).expect("link ecrecover ELF for grey PVM")
+/// Grey PVM blob for ecrecover (pre-built and transpiled at compile time).
+pub fn grey_ecrecover_blob() -> &'static [u8] {
+    GREY_ECRECOVER_BLOB
 }
 
-/// PolkaVM blob for ecrecover (rv64emac cdylib ELF → polkavm blob).
-///
-/// To regenerate the ELF:
-/// ```sh
-/// cd services/bench-ecrecover
-/// RUSTFLAGS="-Zunstable-options -Cpanic=immediate-abort" RUSTC_BOOTSTRAP=1 CARGO_PROFILE_RELEASE_STRIP=false \
-///   cargo +nightly build --release --lib --target ../riscv64emac-polkavm.json -Zbuild-std=core,alloc -Zjson-target-spec
-/// ```
-pub fn polkavm_ecrecover_blob() -> Vec<u8> {
-    let mut config = polkavm_linker::Config::default();
-    config.set_strip(true);
-    config.set_min_stack_size(65536);
-    polkavm_linker::program_from_elf(
-        config,
-        polkavm_linker::TargetInstructionSet::JamV1,
-        POLKAVM_ECRECOVER_ELF,
-    )
-    .expect("link ecrecover ELF for polkavm")
+/// PolkaVM blob for ecrecover (pre-built and linked at compile time).
+pub fn polkavm_ecrecover_blob() -> &'static [u8] {
+    POLKAVM_ECRECOVER_BLOB
 }
 
 #[cfg(test)]

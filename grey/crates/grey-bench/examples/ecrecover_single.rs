@@ -57,10 +57,10 @@ fn main() {
 
     // ---- Grey interpreter (measure gas consumed in 10s) ----
     {
-        let blob = grey_blob.clone();
+        let blob = grey_blob;
         run_with_timeout("grey-interpreter", move || {
             let t = Instant::now();
-            let mut pvm = javm::program::initialize_program(&blob, &[], GAS).unwrap();
+            let mut pvm = javm::program::initialize_program(blob, &[], GAS).unwrap();
             // Run for 1s, report gas consumed rate
             loop {
                 let (exit, _) = pvm.run();
@@ -81,10 +81,10 @@ fn main() {
 
     // ---- Grey recompiler ----
     {
-        let blob = grey_blob.clone();
+        let blob = grey_blob;
         run_with_timeout("grey-recompiler", move || {
             let t = Instant::now();
-            let mut pvm = javm::recompiler::initialize_program_recompiled(&blob, &[], GAS).unwrap();
+            let mut pvm = javm::recompiler::initialize_program_recompiled(blob, &[], GAS).unwrap();
             let compile_ms = t.elapsed().as_secs_f64() * 1000.0;
             let t_exec = Instant::now();
             loop {
@@ -106,7 +106,7 @@ fn main() {
 
     // ---- PolkaVM compiler ----
     {
-        let blob = pvm_blob.clone();
+        let blob = pvm_blob;
         run_with_timeout("polkavm", move || {
             use polkavm::*;
             use polkavm_common::program::Reg as PReg;

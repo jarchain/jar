@@ -1,0 +1,6 @@
+[package]
+name = "build-crate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Generic cargo-inside-cargo orchestration for cross-compiling guest programs"

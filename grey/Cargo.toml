@@ -16,6 +16,9 @@ members = [
     "crates/grey-store",
     "crates/grey-rpc",
     "crates/grey-bench",
+    "crates/build-crate",
+    "crates/build-javm",
+    "crates/build-pvm",
 ]
 exclude = [
     "services/sample-service",
