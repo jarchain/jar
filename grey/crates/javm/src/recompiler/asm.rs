@@ -421,6 +421,42 @@ impl Assembler {
         self.modrm_sib_base_index(src.lo(), base, index);
     }
 
+    /// mov dword [base + index], imm32
+    pub fn mov_store32_sib_imm(&mut self, base: Reg, index: Reg, imm: i32) {
+        let rex = 0x40 | (index.hi() << 1) | base.hi();
+        if rex != 0x40 { self.emit(rex); }
+        self.emit(0xC7); // MOV r/m32, imm32
+        self.modrm_sib_base_index(0, base, index);
+        self.emit_i32(imm);
+    }
+
+    /// mov qword [base + index], sign-extended imm32
+    pub fn mov_store64_sib_imm(&mut self, base: Reg, index: Reg, imm: i32) {
+        self.emit(0x48 | (index.hi() << 1) | base.hi()); // REX.W
+        self.emit(0xC7); // MOV r/m64, imm32
+        self.modrm_sib_base_index(0, base, index);
+        self.emit_i32(imm);
+    }
+
+    /// mov byte [base + index], imm8
+    pub fn mov_store8_sib_imm(&mut self, base: Reg, index: Reg, imm: u8) {
+        self.emit(0x40 | (index.hi() << 1) | base.hi()); // REX for uniform byte access
+        self.emit(0xC6); // MOV r/m8, imm8
+        self.modrm_sib_base_index(0, base, index);
+        self.emit(imm);
+    }
+
+    /// mov word [base + index], imm16
+    pub fn mov_store16_sib_imm(&mut self, base: Reg, index: Reg, imm: u16) {
+        self.emit(0x66); // operand size prefix
+        let rex = 0x40 | (index.hi() << 1) | base.hi();
+        if rex != 0x40 { self.emit(rex); }
+        self.emit(0xC7); // MOV r/m16, imm16
+        self.modrm_sib_base_index(0, base, index);
+        self.emit(imm as u8);
+        self.emit((imm >> 8) as u8);
+    }
+
     /// add r64, qword [base + disp32]
     pub fn add_r64_mem(&mut self, dst: Reg, base: Reg, disp: i32) {
         self.rex_w(dst, base);
