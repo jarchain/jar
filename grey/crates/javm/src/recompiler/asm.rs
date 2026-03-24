@@ -190,21 +190,52 @@ impl Assembler {
     }
 
     /// ModR/M byte: mod=2 (register + disp32), reg field, base.
-    fn modrm_disp32(&mut self, reg: u8, base: Reg) {
-        // RBP/R13 with mod=0 means RIP-relative, so always use disp32 for them.
-        // RSP/R12 need SIB byte.
-        if base.lo() == 4 {
-            // Need SIB byte
-            self.emit(0x80 | (reg << 3) | 4); // ModR/M with SIB
-            self.emit(0x24); // SIB: scale=0, index=RSP(none), base=RSP/R12
+    /// Emit ModR/M (+ optional SIB) + displacement for [base + disp] addressing.
+    /// Automatically picks disp0 (mod=00), disp8 (mod=01), or disp32 (mod=10).
+    fn modrm_disp(&mut self, reg: u8, base: Reg, disp: i32) {
+        let bl = base.lo();
+        let needs_sib = bl == 4; // RSP/R12 need SIB byte
+
+        if disp == 0 && bl != 5 {
+            // mod=00: no displacement (RBP/R13 can't use mod=00, it means RIP-relative)
+            if needs_sib {
+                self.emit((reg << 3) | 4);
+                self.emit(0x24);
+            } else {
+                self.emit((reg << 3) | bl);
+            }
+        } else if disp >= -128 && disp <= 127 {
+            // mod=01: disp8
+            if needs_sib {
+                self.emit(0x40 | (reg << 3) | 4);
+                self.emit(0x24);
+            } else {
+                self.emit(0x40 | (reg << 3) | bl);
+            }
+            self.emit(disp as u8);
         } else {
-            self.emit(0x80 | (reg << 3) | base.lo());
+            // mod=10: disp32
+            if needs_sib {
+                self.emit(0x80 | (reg << 3) | 4);
+                self.emit(0x24);
+            } else {
+                self.emit(0x80 | (reg << 3) | bl);
+            }
+            self.emit_i32(disp);
         }
     }
 
-    /// ModR/M for [base + disp32] with a register operand.
-    fn modrm_mem_disp32(&mut self, reg: Reg, base: Reg) {
-        self.modrm_disp32(reg.lo(), base);
+    /// Emit ModR/M + displacement for [base + disp] with always-disp32 encoding.
+    /// Used when the immediate after the displacement must be at a fixed offset
+    /// (e.g., for patch-based gas metering where the imm32 is written later).
+    fn modrm_disp32(&mut self, reg: u8, base: Reg, disp: i32) {
+        if base.lo() == 4 {
+            self.emit(0x80 | (reg << 3) | 4);
+            self.emit(0x24);
+        } else {
+            self.emit(0x80 | (reg << 3) | base.lo());
+        }
+        self.emit_i32(disp);
     }
 
     // === Instruction emission ===
@@ -254,20 +285,18 @@ impl Assembler {
         self.emit_u32(imm);
     }
 
-    /// mov r32, [base + disp32] — zero-extending 32-bit load
+    /// mov r32, [base + disp] — zero-extending 32-bit load
     pub fn mov_load32(&mut self, dst: Reg, base: Reg, disp: i32) {
         self.rex_opt(dst, base);
         self.emit(0x8B);
-        self.modrm_mem_disp32(dst, base);
-        self.emit_i32(disp);
+        self.modrm_disp(dst.lo(), base, disp);
     }
 
-    /// mov r64, [base + disp32]
+    /// mov r64, [base + disp]
     pub fn mov_load64(&mut self, dst: Reg, base: Reg, disp: i32) {
         self.rex_w(dst, base);
         self.emit(0x8B);
-        self.modrm_mem_disp32(dst, base);
-        self.emit_i32(disp);
+        self.modrm_disp(dst.lo(), base, disp);
     }
 
     /// movsxd r64, dword [base + index*4] — sign-extending load with SIB scale=4
@@ -281,37 +310,33 @@ impl Assembler {
         self.emit(0x80 | (index.lo() << 3) | base.lo());
     }
 
-    /// mov dword [base + disp32], r32 — 32-bit store
+    /// mov dword [base + disp], r32 — 32-bit store
     pub fn mov_store32(&mut self, base: Reg, disp: i32, src: Reg) {
         self.rex_opt(src, base);
         self.emit(0x89);
-        self.modrm_mem_disp32(src, base);
-        self.emit_i32(disp);
+        self.modrm_disp(src.lo(), base, disp);
     }
 
-    /// mov [base + disp32], r64
+    /// mov [base + disp], r64
     pub fn mov_store64(&mut self, base: Reg, disp: i32, src: Reg) {
         self.rex_w(src, base);
         self.emit(0x89);
-        self.modrm_mem_disp32(src, base);
-        self.emit_i32(disp);
+        self.modrm_disp(src.lo(), base, disp);
     }
 
-    /// mov dword [base + disp32], imm32
+    /// mov dword [base + disp], imm32
     pub fn mov_store32_imm(&mut self, base: Reg, disp: i32, imm: i32) {
         self.rex_opt_b(base);
         self.emit(0xC7);
-        self.modrm_disp32(0, base);
-        self.emit_i32(disp);
+        self.modrm_disp(0, base, disp);
         self.emit_i32(imm);
     }
 
-    /// mov qword [base + disp32], sign-extended imm32
+    /// mov qword [base + disp], sign-extended imm32
     pub fn mov_store64_imm(&mut self, base: Reg, disp: i32, imm: i32) {
         self.rex_w_b(base);
         self.emit(0xC7);
-        self.modrm_disp32(0, base);
-        self.emit_i32(disp);
+        self.modrm_disp(0, base, disp);
         self.emit_i32(imm);
     }
 
@@ -400,8 +425,7 @@ impl Assembler {
     pub fn add_r64_mem(&mut self, dst: Reg, base: Reg, disp: i32) {
         self.rex_w(dst, base);
         self.emit(0x03);
-        self.modrm_mem_disp32(dst, base);
-        self.emit_i32(disp);
+        self.modrm_disp(dst.lo(), base, disp);
     }
 
     /// movzx r64, byte [rax] (simple deref, no SIB needed) — for perm table lookup
@@ -483,20 +507,33 @@ impl Assembler {
     pub fn add_rr32(&mut self, dst: Reg, src: Reg) { self.alu_rr32(0x01, dst, src); }
     pub fn sub_rr32(&mut self, dst: Reg, src: Reg) { self.alu_rr32(0x29, dst, src); }
 
-    // -- ALU reg,imm32 (64-bit) --
+    // -- ALU reg,imm (64-bit) --
+    // Uses imm8 (opcode 0x83) when immediate fits in -128..127, saving 3 bytes.
 
     fn alu_ri64(&mut self, ext: u8, dst: Reg, imm: i32) {
         self.rex_w_b(dst);
-        self.emit(0x81);
-        self.emit(0xC0 | (ext << 3) | dst.lo());
-        self.emit_i32(imm);
+        if imm >= -128 && imm <= 127 {
+            self.emit(0x83);
+            self.emit(0xC0 | (ext << 3) | dst.lo());
+            self.emit(imm as u8);
+        } else {
+            self.emit(0x81);
+            self.emit(0xC0 | (ext << 3) | dst.lo());
+            self.emit_i32(imm);
+        }
     }
 
     fn alu_ri32(&mut self, ext: u8, dst: Reg, imm: i32) {
         self.rex_opt_b(dst);
-        self.emit(0x81);
-        self.emit(0xC0 | (ext << 3) | dst.lo());
-        self.emit_i32(imm);
+        if imm >= -128 && imm <= 127 {
+            self.emit(0x83);
+            self.emit(0xC0 | (ext << 3) | dst.lo());
+            self.emit(imm as u8);
+        } else {
+            self.emit(0x81);
+            self.emit(0xC0 | (ext << 3) | dst.lo());
+            self.emit_i32(imm);
+        }
     }
 
     pub fn add_ri(&mut self, dst: Reg, imm: i32) { self.alu_ri64(0, dst, imm); }
@@ -510,33 +547,31 @@ impl Assembler {
     pub fn sub_ri32(&mut self, dst: Reg, imm: i32) { self.alu_ri32(5, dst, imm); }
     pub fn cmp_ri32(&mut self, a: Reg, imm: i32) { self.alu_ri32(7, a, imm); }
 
-    /// cmp dword [base + disp32], imm32
+    /// cmp dword [base + disp], imm32
     pub fn cmp_mem32_imm(&mut self, base: Reg, disp: i32, imm: i32) {
         if base.hi() != 0 {
             self.emit(0x41);             // REX.B for extended base register
         }
         self.emit(0x81);                 // ALU r/m32, imm32
-        self.modrm_disp32(7, base);     // /7 = CMP
-        self.emit_i32(disp);
+        self.modrm_disp(7, base, disp);
         self.emit_i32(imm);
     }
 
-    /// cmp dword [base + disp32], reg32  (sets flags: mem vs reg)
+    /// cmp dword [base + disp], reg32  (sets flags: mem vs reg)
     pub fn cmp_mem32_r(&mut self, base: Reg, disp: i32, src: Reg) {
         if base.hi() != 0 || src.hi() != 0 {
             self.emit(0x40 | src.hi() << 2 | base.hi()); // REX
         }
         self.emit(0x39);                 // CMP r/m32, r32
-        self.modrm_disp32(src.lo(), base);
-        self.emit_i32(disp);
+        self.modrm_disp(src.lo(), base, disp);
     }
 
-    /// sub qword [base + disp32], sign-extended imm32
+    /// sub qword [base + disp32], sign-extended imm32.
+    /// Always uses disp32 encoding (the imm32 is patched after emission for gas metering).
     pub fn sub_mem64_imm32(&mut self, base: Reg, disp: i32, imm: i32) {
         self.rex_w_b(base);          // REX.W (+ REX.B if base is R8-R15)
         self.emit(0x81);             // ALU r/m64, imm32
-        self.modrm_disp32(5, base);  // /5 = SUB
-        self.emit_i32(disp);
+        self.modrm_disp32(5, base, disp);
         self.emit_i32(imm);
     }
 
@@ -544,8 +579,7 @@ impl Assembler {
     pub fn add_mem64_imm32(&mut self, base: Reg, disp: i32, imm: i32) {
         self.rex_w_b(base);          // REX.W (+ REX.B if base is R8-R15)
         self.emit(0x81);             // ALU r/m64, imm32
-        self.modrm_disp32(0, base);  // /0 = ADD
-        self.emit_i32(disp);
+        self.modrm_disp32(0, base, disp);
         self.emit_i32(imm);
     }
 
@@ -910,12 +944,11 @@ impl Assembler {
 
     // -- LEA --
 
-    /// lea r64, [base + disp32]
+    /// lea r64, [base + disp]
     pub fn lea(&mut self, dst: Reg, base: Reg, disp: i32) {
         self.rex_w(dst, base);
         self.emit(0x8D);
-        self.modrm_mem_disp32(dst, base);
-        self.emit_i32(disp);
+        self.modrm_disp(dst.lo(), base, disp);
     }
 
     /// lea r32, [base32 + index32 * 4]  (32-bit result, auto zero-extends to 64)
