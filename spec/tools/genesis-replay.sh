@@ -101,7 +101,7 @@ if [ "$MODE" = "--rebuild" ]; then
       --argjson ranking "$RANKING_SNAPSHOT" \
       'if $ranking == null then {commit: $commit, pastIndices: $pastIndices[0]}
        else {commit: $commit, pastIndices: $pastIndices[0], ranking: $ranking} end')
-    INDEX=$(echo "$INPUT" | .lake/build/bin/genesis_evaluate)
+    INDEX=$(echo "$INPUT" | .lake/build/bin/genesis_evaluate | jq -c 'del(.warnings)')
     jq --argjson idx "$INDEX" '. + [$idx]' "$TMP_INDICES" > "$TMP_INDICES.tmp" && mv "$TMP_INDICES.tmp" "$TMP_INDICES"
     jq --argjson c "$COMMIT" '. + [$c]' "$TMP_COMMITS" > "$TMP_COMMITS.tmp" && mv "$TMP_COMMITS.tmp" "$TMP_COMMITS"
     SNAPSHOT=$(jq -n --slurpfile sc "$TMP_COMMITS" --slurpfile idx "$TMP_INDICES" \
@@ -134,7 +134,7 @@ elif [ "$MODE" = "--verify" ]; then
       --argjson ranking "$RANKING_SNAPSHOT" \
       'if $ranking == null then {commit: $commit, pastIndices: $pastIndices[0]}
        else {commit: $commit, pastIndices: $pastIndices[0], ranking: $ranking} end')
-    VERIFY_INDEX=$(echo "$INPUT" | .lake/build/bin/genesis_evaluate)
+    VERIFY_INDEX=$(echo "$INPUT" | .lake/build/bin/genesis_evaluate | jq -c 'del(.warnings)')
     jq --argjson idx "$VERIFY_INDEX" '. + [$idx]' "$TMP_INDICES" > "$TMP_INDICES.tmp" && mv "$TMP_INDICES.tmp" "$TMP_INDICES"
     jq --argjson c "$COMMIT" '. + [$c]' "$TMP_COMMITS" > "$TMP_COMMITS.tmp" && mv "$TMP_COMMITS.tmp" "$TMP_COMMITS"
     SNAPSHOT=$(jq -n --slurpfile sc "$TMP_COMMITS" --slurpfile idx "$TMP_INDICES" \
@@ -178,7 +178,7 @@ elif [ "$MODE" = "--verify-cache" ]; then
       --argjson ranking "$RANKING_SNAPSHOT" \
       'if $ranking == null then {commit: $commit, pastIndices: $pastIndices[0]}
        else {commit: $commit, pastIndices: $pastIndices[0], ranking: $ranking} end')
-    INDEX=$(echo "$INPUT" | .lake/build/bin/genesis_evaluate)
+    INDEX=$(echo "$INPUT" | .lake/build/bin/genesis_evaluate | jq -c 'del(.warnings)')
     jq --argjson idx "$INDEX" '. + [$idx]' "$TMP_INDICES" > "$TMP_INDICES.tmp" && mv "$TMP_INDICES.tmp" "$TMP_INDICES"
     jq --argjson c "$COMMIT" '. + [$c]' "$TMP_COMMITS" > "$TMP_COMMITS.tmp" && mv "$TMP_COMMITS.tmp" "$TMP_COMMITS"
     SNAPSHOT=$(jq -n --slurpfile sc "$TMP_COMMITS" --slurpfile idx "$TMP_INDICES" \
