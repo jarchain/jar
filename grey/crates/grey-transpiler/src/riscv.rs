@@ -76,6 +76,8 @@ pub struct TranslationContext {
     return_fixups: Vec<(usize, u64)>,
     /// Pending AUIPC: (rd, computed_address). Used to pair with the next JALR.
     pending_auipc: Option<(u8, u64)>,
+    /// Pending LUI: (rd, upper_imm). Used to fuse LUI+ADDI into single load_imm.
+    pending_lui: Option<(u8, i64)>,
     /// Last immediate loaded into t0 (x5) — used for ecall → ecalli translation.
     last_t0_imm: Option<i32>,
 }
@@ -92,8 +94,20 @@ impl TranslationContext {
             fixup_pcs: std::collections::HashMap::new(),
             return_fixups: Vec::new(),
             pending_auipc: None,
+            pending_lui: None,
             last_t0_imm: None,
         }
+    }
+
+    /// Flush any pending buffered instructions (LUI, AUIPC) at section boundaries.
+    pub(crate) fn flush_pending(&mut self) -> Result<(), TranspileError> {
+        if let Some((auipc_rd, auipc_val)) = self.pending_auipc.take() {
+            self.emit_load_imm(auipc_rd, auipc_val as i64)?;
+        }
+        if let Some((lui_rd, lui_val)) = self.pending_lui.take() {
+            self.emit_load_imm(lui_rd, lui_val)?;
+        }
+        Ok(())
     }
 
     /// Translate one or more 32-bit RISC-V instructions starting at `offset`.
@@ -121,10 +135,21 @@ impl TranslationContext {
             }
         }
 
+        // Flush pending LUI if this isn't an OP-IMM (ADDI) that consumes it.
+        if opcode != 0x13 {
+            if let Some((lui_rd, lui_val)) = self.pending_lui.take() {
+                self.emit_load_imm(lui_rd, lui_val)?;
+            }
+        }
+
         match opcode {
-            0x37 => { // LUI
+            0x37 => { // LUI — buffer for potential LUI+ADDI fusion
                 let imm = (inst & 0xFFFFF000) as i32;
-                self.emit_load_imm(rd, imm as i64)?;
+                // Flush any previous pending LUI (consecutive LUIs)
+                if let Some((prev_rd, prev_val)) = self.pending_lui.take() {
+                    self.emit_load_imm(prev_rd, prev_val)?;
+                }
+                self.pending_lui = Some((rd, imm as i64));
             }
             0x17 => { // AUIPC — PC + upper immediate
                 let imm = (inst & 0xFFFFF000) as i32;
@@ -398,6 +423,17 @@ impl TranslationContext {
         // Track `li t0, N` (ADDI x5, x0, N) for ecall ID translation
         if funct3 == 0 && rd == 5 && rs1 == 0 {
             self.last_t0_imm = Some(imm);
+        }
+
+        // LUI+ADDI fusion: if there's a pending LUI and this is ADDI rd, rd, imm
+        // with the same register, fuse into a single load_imm with the combined value.
+        if let Some((lui_rd, lui_val)) = self.pending_lui.take() {
+            if funct3 == 0 && rd == lui_rd && rs1 == lui_rd && rd != 0 {
+                let combined = lui_val.wrapping_add(imm as i64);
+                return self.emit_load_imm(rd, combined);
+            }
+            // Not a matching ADDI — flush the pending LUI
+            self.emit_load_imm(lui_rd, lui_val)?;
         }
 
         if rd == 0 { return Ok(()); } // Write to x0 is a no-op in RISC-V

@@ -570,5 +570,8 @@ fn translate_section_linked(
         offset += consumed;
     }
 
+    // Flush any pending LUI/AUIPC at section boundary
+    ctx.flush_pending()?;
+
     Ok(())
 }
