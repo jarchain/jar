@@ -78,6 +78,10 @@ pub struct TranslationContext {
     pending_auipc: Option<(u8, u64)>,
     /// Pending LUI: (rd, upper_imm). Used to fuse LUI+ADDI into single load_imm.
     pending_lui: Option<(u8, i64)>,
+    /// Last emitted load_imm: (rd, value, code_position_before_emit).
+    /// Enables fusion with a subsequent ADD/AND/OR/XOR into the immediate form,
+    /// eliminating the load_imm instruction entirely.
+    pending_load_imm: Option<(u8, i64, usize)>,
     /// Last immediate loaded into t0 (x5) — used for ecall → ecalli translation.
     last_t0_imm: Option<i32>,
 }
@@ -95,6 +99,7 @@ impl TranslationContext {
             return_fixups: Vec::new(),
             pending_auipc: None,
             pending_lui: None,
+            pending_load_imm: None,
             last_t0_imm: None,
         }
     }
@@ -106,6 +111,10 @@ impl TranslationContext {
         }
         if let Some((lui_rd, lui_val)) = self.pending_lui.take() {
             self.emit_load_imm(lui_rd, lui_val)?;
+        }
+        // pending_load_imm is already emitted — just clear the tracking
+        if self.pending_load_imm.is_some() {
+            self.pending_load_imm = None;
         }
         Ok(())
     }
@@ -140,6 +149,12 @@ impl TranslationContext {
             if let Some((lui_rd, lui_val)) = self.pending_lui.take() {
                 self.emit_load_imm(lui_rd, lui_val)?;
             }
+        }
+
+        // Clear pending_load_imm if this isn't an OP (R-type ALU) that can consume it.
+        // The OP handler (0x33) will check and potentially fuse.
+        if opcode != 0x33 {
+            self.pending_load_imm = None; // already emitted, just clear tracking
         }
 
         match opcode {
@@ -430,7 +445,11 @@ impl TranslationContext {
         if let Some((lui_rd, lui_val)) = self.pending_lui.take() {
             if funct3 == 0 && rd == lui_rd && rs1 == lui_rd && rd != 0 {
                 let combined = lui_val.wrapping_add(imm as i64);
-                return self.emit_load_imm(rd, combined);
+                // Track for potential fusion with subsequent ALU op
+                let pos = self.code.len();
+                self.emit_load_imm(rd, combined)?;
+                self.pending_load_imm = Some((rd, combined, pos));
+                return Ok(());
             }
             // Not a matching ADDI — flush the pending LUI
             self.emit_load_imm(lui_rd, lui_val)?;
@@ -512,6 +531,47 @@ impl TranslationContext {
 
     fn translate_op(&mut self, funct3: u32, funct7: u32, rd: u8, rs1: u8, rs2: u8, addr: u64) -> Result<(), TranspileError> {
         if rd == 0 { return Ok(()); } // Write to x0 is a no-op in RISC-V
+
+        // Fuse load_imm + ALU op: if one operand was just loaded via load_imm
+        // and the value fits in i32, undo the load_imm and emit the immediate
+        // form instead (saves one instruction).
+        if let Some((load_rd, load_val, undo_pos)) = self.pending_load_imm.take() {
+            if load_val >= i32::MIN as i64 && load_val <= i32::MAX as i64 {
+                let imm = load_val as i32;
+                // Check if rs2 is the loaded register (ADD/AND/OR/XOR rd, rs1, load_rd)
+                let (fuse_base, commutative) = if rs2 == load_rd && rs1 != load_rd {
+                    (Some(rs1), true)
+                } else if rs1 == load_rd && rs2 != load_rd && (funct7, funct3) != (0x20, 0) {
+                    // rs1 is the loaded register — only for commutative ops (not SUB)
+                    (Some(rs2), true)
+                } else {
+                    (None, false)
+                };
+
+                if let Some(base) = fuse_base {
+                    let pvm_imm_opcode = match (funct7, funct3) {
+                        (0, 0) => Some(if self.is_64bit { 149 } else { 131 }), // ADD → add_imm
+                        (0, 7) => Some(132), // AND → and_imm
+                        (0, 6) => Some(134), // OR → or_imm
+                        (0, 4) => Some(133), // XOR → xor_imm
+                        _ => None,
+                    };
+
+                    if let Some(pvm_opcode) = pvm_imm_opcode {
+                        // Undo the load_imm and emit immediate form instead
+                        self.code.truncate(undo_pos);
+                        self.bitmask.truncate(undo_pos);
+                        let pvm_rd = self.require_reg(rd)?;
+                        let pvm_base = self.require_reg(base)?;
+                        self.emit_inst(pvm_opcode);
+                        self.emit_data(pvm_rd | (pvm_base << 4));
+                        self.emit_var_imm(imm);
+                        return Ok(());
+                    }
+                }
+            }
+            // Couldn't fuse — load_imm is already emitted, just proceed normally
+        }
 
         // Handle x0 as source: PVM reg 0 = RA, not zero.
         if rs1 == 0 && funct7 == 0 && funct3 == 0 {
