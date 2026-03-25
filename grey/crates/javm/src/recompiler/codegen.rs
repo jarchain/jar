@@ -189,7 +189,10 @@ pub struct Compiler {
 }
 
 /// Sentinel label meaning "no label assigned for this PC".
-const NO_LABEL: Label = Label(u32::MAX);
+/// Label(0) is reserved (index 0 in the assembler's label table) so that
+/// block_labels can use zero-initialized memory (OS-provided zeroed pages
+/// via mmap/calloc are much faster than explicit memset with 0xFF).
+const NO_LABEL: Label = Label(0);
 
 impl Compiler {
     pub fn new(
@@ -198,11 +201,13 @@ impl Compiler {
         helpers: HelperFns,
         code_len: usize,
     ) -> Self {
-        // Estimate native code size: ~8 bytes per PVM code byte (empirically ~5-6x).
-        let estimated_native = code_len * 8;
-        // Labels: estimate ~1 label per 3 code bytes + overhead.
-        let estimated_labels = code_len / 3 + 256;
+        // Estimate native code size: ~2x PVM code (empirically ~1.8x after encoding optimizations).
+        let estimated_native = code_len * 2 + 4096;
+        // Labels: ~1 per 4 code bytes + fixed overhead.
+        let estimated_labels = code_len / 4 + 256;
         let mut asm = Assembler::with_capacity(estimated_native, estimated_labels);
+        // Reserve label 0 as the NO_LABEL sentinel.
+        let _reserved = asm.new_label(); // Label(0) — never bound
         let exit_label = asm.new_label();
         let oog_label = asm.new_label();
         let panic_label = asm.new_label();
@@ -368,9 +373,11 @@ impl Compiler {
         // Emit epilogue and exit sequences
         self.emit_exit_sequences();
 
-        // Build dispatch table: PVM PC → native code offset
+        // Build dispatch table: PVM PC → native code offset.
+        // Use 0 as invalid sentinel (zero-init via OS zeroed pages).
+        // Valid entries are always > 0 since the prologue precedes all basic blocks.
         let table_len = code_len + 1; // +1 so PC=code.len() is valid (maps to panic)
-        let mut dispatch_table = vec![-1i32; table_len];
+        let mut dispatch_table = vec![0i32; table_len];
         for (pvm_pc, &label) in self.block_labels.iter().enumerate() {
             if label != NO_LABEL {
                 if let Some(offset) = self.asm.label_offset(label) {
