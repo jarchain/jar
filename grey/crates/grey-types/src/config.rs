@@ -82,7 +82,7 @@ impl Config {
         }
     }
 
-    /// Validators super-majority threshold: ceil(2V/3) + 1.
+    /// Validators super-majority threshold: floor(2V/3) + 1.
     pub fn super_majority(&self) -> u16 {
         (self.validators_count * 2 / 3) + 1
     }
