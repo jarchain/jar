@@ -21,7 +21,7 @@ pub fn build(manifest_dir: &str, bin_name: &str) -> PathBuf {
     // More inlining → fewer function calls → fewer jump table entries →
     // fewer gas block transitions in the recompiler → faster compile+exec.
     let extra_rustflags = vec![
-        "-Cllvm-args=--inline-threshold=375".to_string(),
+        "-Cllvm-args=--inline-threshold=275".to_string(),
     ];
     let guest = GuestBuild {
         manifest_dir: resolved,
