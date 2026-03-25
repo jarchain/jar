@@ -275,12 +275,6 @@ fn compute_accumulatable_with_new(
     let edited = edit_queue(&all_queued, &immediate_hashes);
 
     let queue_resolved = resolve_queue(&edited);
-    eprintln!("accumulatable: immediate={} all_queued={} edited={} resolved={}", immediate.len(), all_queued.len(), edited.len(), queue_resolved.len());
-    for (i, rr) in edited.iter().enumerate() {
-        if rr.dependencies.len() <= 2 {
-            eprintln!("  edited[{}]: deps={}", i, rr.dependencies.len());
-        }
-    }
     let mut result = immediate.to_vec();
     result.extend(queue_resolved);
     result
