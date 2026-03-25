@@ -137,7 +137,7 @@ def runScoringTest (input : ScoringInput) : ScoringOutput :=
   match input.function with
   | .percentileFromRanking =>
     let ranking := input.ranking.getD []
-    let pr := input.currentPR.getD ""
+    let pr := input.currentPR.getD .invalid
     { result := percentileFromRanking ranking pr }
   | .weightedQuantile =>
     let entries := input.entries.getD []
