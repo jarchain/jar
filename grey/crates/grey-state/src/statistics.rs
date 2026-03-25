@@ -90,7 +90,7 @@ pub fn update_statistics(
     compute_service_statistics(stats, extrinsic, incoming_reports, accumulation_stats);
 }
 
-/// Compute per-core statistics π_C (GP eq 2046-2085).
+/// Compute per-core statistics π_C (eq 13.3).
 ///
 /// For each core c:
 ///   R(c) = sum over (d in r.results, r in I, r.core_index == c) of refine-load fields
