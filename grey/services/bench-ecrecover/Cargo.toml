@@ -15,6 +15,7 @@ k256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 polkavm-derive = "0.32.0"
 
 [profile.release]
-opt-level = "s"
+opt-level = 3
+codegen-units = 1
 lto = true
 panic = "abort"
