@@ -205,8 +205,8 @@ impl Compiler {
     ) -> Self {
         // Estimate native code size: ~2x PVM code (empirically ~1.8x after encoding optimizations).
         let estimated_native = code_len * 2 + 4096;
-        // Labels: ~1 per 4 code bytes + fixed overhead.
-        let estimated_labels = code_len / 4 + 256;
+        // Labels: ~1 per 16 code bytes (only gas block starts get labels) + fixed overhead.
+        let estimated_labels = code_len / 16 + 256;
         let mut asm = Assembler::with_capacity(estimated_native, estimated_labels);
         // Reserve label 0 as the NO_LABEL sentinel.
         let _reserved = asm.new_label(); // Label(0) — never bound
@@ -217,7 +217,7 @@ impl Compiler {
         let oog_pc_label = asm.new_label();
         Self {
             block_labels: vec![NO_LABEL; code_len + 1],
-            labeled_pcs: Vec::with_capacity(code_len / 4),
+            labeled_pcs: Vec::with_capacity(code_len / 16),
             asm,
             exit_label,
             oog_label,
@@ -268,6 +268,16 @@ impl Compiler {
         let (mut gas_starts, skip_table) =
             crate::vm::compute_basic_block_starts_with_skips(code, bitmask);
 
+        // Ensure jump table target PCs are marked as gas block starts.
+        // Dynamic jumps (jump_ind) dispatch through the dispatch table,
+        // so these PCs need labels and dispatch table entries.
+        for i in 0..self.jump_table.len() {
+            let target_pc = self.jump_table[i] as usize;
+            if target_pc < code_len {
+                gas_starts[target_pc] = true;
+            }
+        }
+
         // Single streaming pass: decode + gas blocks + codegen
         let mut gas_sim = GasSimulator::new();
         let mut pending_gas: Option<(Label, u32, usize)> = None;
@@ -296,9 +306,15 @@ impl Compiler {
             let raw_rb = if pc + 1 < code.len() { (code[pc + 1] >> 4) & 0x0F } else { 0xFF };
             let raw_rd = if pc + 2 < code.len() { code[pc + 2] & 0x0F } else { 0xFF };
 
-            // Bind label (on-demand creation — no pre-pass needed)
-            let label = self.label_for_pc(pc as u32);
-            self.asm.bind_label(label);
+            // Only create and bind labels for PCs that need dispatch table entries:
+            // gas block starts (branch targets, post-terminators, post-ecalli,
+            // jump table targets) for OOG/ecalli re-entry and branch dispatch.
+            // Other instruction PCs don't need labels — they're only reached by
+            // native code fallthrough, never by dispatch table lookup.
+            if gas_starts[pc] {
+                let label = self.label_for_pc(pc as u32);
+                self.asm.bind_label(label);
+            }
 
             // Full decode
             let category = opcode.category();
