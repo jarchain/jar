@@ -5,6 +5,9 @@ on:
     branches: [master]
   pull_request:
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -32,3 +35,21 @@ jobs:
         run: cargo test --workspace
         env:
           GREY_PVM: recompiler
+
+  harness:
+    name: Integration harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rust-src
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: grey
+
+      - name: Run harness
+        working-directory: grey
+        run: cargo run -p harness

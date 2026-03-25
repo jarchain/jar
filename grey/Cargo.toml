@@ -19,6 +19,7 @@ members = [
     "crates/build-crate",
     "crates/build-javm",
     "crates/build-pvm",
+    "harness",
 ]
 exclude = [
     "services/sample-service",
