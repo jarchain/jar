@@ -149,4 +149,39 @@ mod tests {
         let msg = "Just a plain commit message\n";
         assert_eq!(parse_trailer(msg, "Genesis-Commit"), None);
     }
+
+    #[test]
+    fn test_parse_trailer_compact_json() {
+        // Real-world trailer with compact JSON
+        let msg = r#"Merge PR #97
+
+Genesis-Commit: {"id":"abc","prId":97,"author":"alice","mergeEpoch":1000,"comparisonTargets":[],"reviews":[],"metaReviews":[],"founderOverride":false}
+Genesis-Index: {"commitHash":"abc","epoch":1000,"score":{"difficulty":85,"novelty":100,"designQuality":85},"contributor":"alice","weightDelta":88,"reviewers":[],"metaReviews":[],"mergeVotes":[],"rejectVotes":[],"founderOverride":false}
+Genesis-PR: #97
+Genesis-Author: alice
+"#;
+        let commit = parse_trailer(msg, "Genesis-Commit").unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&commit).unwrap();
+        assert_eq!(parsed["id"], "abc");
+        assert_eq!(parsed["prId"], 97);
+
+        let index = parse_trailer(msg, "Genesis-Index").unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&index).unwrap();
+        assert_eq!(parsed["commitHash"], "abc");
+        assert_eq!(parsed["score"]["difficulty"], 85);
+    }
+
+    #[test]
+    fn test_parse_trailer_pr_number() {
+        let msg = "Merge PR #42\n\nGenesis-PR: #42\n";
+        assert_eq!(parse_trailer(msg, "Genesis-PR"), Some("#42".to_string()));
+    }
+
+    #[test]
+    fn test_parse_trailer_only_index_no_commit() {
+        // A merge commit that has Genesis-Index but no Genesis-Commit (shouldn't happen but test it)
+        let msg = "Merge PR #1\n\nGenesis-Index: {\"commitHash\":\"abc\"}\n";
+        assert!(parse_trailer(msg, "Genesis-Index").is_some());
+        assert!(parse_trailer(msg, "Genesis-Commit").is_none());
+    }
 }

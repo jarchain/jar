@@ -141,4 +141,51 @@ mod tests {
         assert_eq!(strip_carriage_returns("merge"), "merge");
         assert_eq!(strip_carriage_returns("a\rb\rc\r"), "abc");
     }
+
+    #[test]
+    fn test_normalize_different_repo_url() {
+        let url = "https://github.com/other-org/other-repo/commit/abcdef1234567890abcdef1234567890abcdef12";
+        assert_eq!(
+            normalize_commit_ref(url),
+            "abcdef1234567890abcdef1234567890abcdef12"
+        );
+    }
+
+    #[test]
+    fn test_normalize_no_commit_path() {
+        // URL without /commit/ should pass through
+        let url = "https://github.com/jarchain/jar/pull/95";
+        assert_eq!(normalize_commit_ref(url), url);
+    }
+
+    #[test]
+    fn test_expand_empty_short_hash() {
+        let candidates = vec!["abcdef1234567890abcdef1234567890abcdef12".to_string()];
+        // Empty string is technically valid hex (0 chars) but won't match
+        // because every candidate starts with it — should be ambiguous if multiple
+        let result = expand_short_hash("", &candidates);
+        // Empty string matches everything by prefix — but it's also valid hex (vacuously)
+        assert!(result.is_ok() || matches!(result, Err(HashError::Ambiguous(_, _))));
+    }
+
+    #[test]
+    fn test_expand_full_hash_invalid() {
+        // 40 chars but contains non-hex
+        let candidates = vec![];
+        let hash = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+        let result = expand_short_hash(hash, &candidates);
+        assert!(matches!(result, Err(HashError::InvalidHex(_))));
+    }
+
+    #[test]
+    fn test_is_valid_hex_hash_empty() {
+        assert!(!is_valid_hex_hash(""));
+    }
+
+    #[test]
+    fn test_is_valid_hex_hash_39_chars() {
+        assert!(!is_valid_hex_hash(
+            "204e93abf18ab00e339d92787c6f807269517cd"
+        ));
+    }
 }
