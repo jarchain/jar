@@ -23,5 +23,8 @@ def main : IO UInt32 := runJsonPipe fun j => do
     |>.map some
   else
     pure none
-  let idx := evaluate pastIndices commit ranking
-  return toJson idx
+  let (idx, warnings) := evaluateWithWarnings pastIndices commit ranking
+  let baseJson := toJson idx
+  match baseJson with
+  | .obj kvs => return .obj (kvs.insert "warnings" (toJson warnings))
+  | other => return other

@@ -166,6 +166,31 @@ def evaluateWithState (state : EvalState) (commit : SignedCommit)
     rejectVotes := rejectVoters,
     founderOverride := commit.founderOverride }
 
+/-- Like evaluateWithState but also returns validation warnings. -/
+def evaluateWithStateAndWarnings (state : EvalState) (commit : SignedCommit)
+    (ranking : Option (List CommitId) := none) : CommitIndex × List String :=
+  let (score, warnings) := commitScoreWithWarnings commit state.scoredCommits ranking state.reviewerWeight
+  let approved := filterReviews commit.reviews commit.metaReviews (state.reviewerWeight ·)
+  let approvedReviewers := approved
+    |>.filter (fun (r : EmbeddedReview) => state.reviewerWeight r.reviewer > 0)
+    |>.map (fun (r : EmbeddedReview) => r.reviewer)
+  let mergeVoters := commit.reviews
+    |>.filter (fun (r : EmbeddedReview) => r.verdict == .merge)
+    |>.map (fun (r : EmbeddedReview) => r.reviewer)
+  let rejectVoters := commit.reviews
+    |>.filter (fun (r : EmbeddedReview) => r.verdict == .notMerge)
+    |>.map (fun (r : EmbeddedReview) => r.reviewer)
+  ({ commitHash := commit.id,
+     epoch := commit.mergeEpoch,
+     score := score,
+     contributor := commit.author,
+     weightDelta := score.weighted,
+     reviewers := approvedReviewers,
+     metaReviews := commit.metaReviews,
+     mergeVotes := mergeVoters,
+     rejectVotes := rejectVoters,
+     founderOverride := commit.founderOverride }, warnings)
+
 end VariantScoped
 
 /-! ### Outer dispatch (resolves variant per-commit via schedule) -/
@@ -186,6 +211,13 @@ def evaluate (pastIndices : List CommitIndex) (commit : SignedCommit)
   let state := reconstructState pastIndices
   letI := activeVariant commit.prCreatedAt
   evaluateWithState state commit ranking
+
+/-- Like evaluate but also returns validation warnings. -/
+def evaluateWithWarnings (pastIndices : List CommitIndex) (commit : SignedCommit)
+    (ranking : Option (List CommitId) := none) : CommitIndex × List String :=
+  let state := reconstructState pastIndices
+  letI := activeVariant commit.prCreatedAt
+  evaluateWithStateAndWarnings state commit ranking
 
 /-- Evaluate a full sequence of signed commits. -/
 def evaluateAll (signedCommits : List SignedCommit) : List CommitIndex :=

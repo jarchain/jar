@@ -368,3 +368,53 @@ def commitScore [gv : GenesisVariant]
       zeroScore
     else
       deriveScore weightedReviews commit.id getWeight
+
+/-! ### Review Validation Warnings
+
+  Generate human-readable warnings for review data issues.
+  These don't affect scoring (which already handles bad data by zeroing)
+  but allow the bot to surface actionable feedback to reviewers. -/
+
+/-- Validate a single review's rankings against expected hashes.
+    Returns a list of warning strings (empty = no issues). -/
+def validateReview
+    (review : EmbeddedReview)
+    (currentPR : CommitId)
+    (comparisonTargets : List CommitId) : List String :=
+  let expected := comparisonTargets ++ [currentPR]
+  let expectedLen := expected.length
+  let checkRanking (dimName : String) (ranking : Ranking) : List String :=
+    let ws := if ranking.length != expectedLen then
+        [s!"reviewer {review.reviewer}: {dimName} ranking has {ranking.length} entries, expected {expectedLen}"]
+      else []
+    let unknown := ranking.filter (fun h => !expected.contains h)
+    let ws := ws ++ unknown.map (fun h =>
+      s!"reviewer {review.reviewer}: {dimName} ranking contains unknown hash {h.take 8}...")
+    let ws := if !ranking.contains currentPR then
+        ws ++ [s!"reviewer {review.reviewer}: {dimName} ranking missing current PR"]
+      else ws
+    ws
+  checkRanking "difficulty" review.difficultyRanking ++
+  checkRanking "novelty" review.noveltyRanking ++
+  checkRanking "design" review.designQualityRanking
+
+/-- Compute score with warnings for a single signed commit. -/
+def commitScoreWithWarnings [gv : GenesisVariant]
+    (commit : SignedCommit)
+    (scoredCommits : List (CommitId × Epoch))
+    (ranking : Option (List CommitId))
+    (getWeight : ContributorId → Nat)
+    : CommitScore × List String :=
+  let zeroScore : CommitScore := { difficulty := 0, novelty := 0, designQuality := 0 }
+  if !(validateComparisonTargets commit scoredCommits ranking) then
+    (zeroScore, ["score is zero: comparison targets validation failed"])
+  else
+    let reviewWarnings := commit.reviews.foldl (fun acc r =>
+      acc ++ validateReview r commit.id commit.comparisonTargets) []
+    let approvedReviews := filterReviews commit.reviews commit.metaReviews getWeight
+    let weightedReviews := approvedReviews.filter fun (r : EmbeddedReview) =>
+      getWeight r.reviewer > 0
+    if weightedReviews.length < gv.minReviews then
+      (zeroScore, reviewWarnings ++ [s!"score is zero: {weightedReviews.length} weighted reviews, need {gv.minReviews}"])
+    else
+      (deriveScore weightedReviews commit.id getWeight, reviewWarnings)
