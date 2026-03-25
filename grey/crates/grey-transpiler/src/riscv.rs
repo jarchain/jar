@@ -250,6 +250,62 @@ impl TranslationContext {
             0x0F => { // FENCE
                 self.emit_inst(1); // → fallthrough (nop)
             }
+            0x0B => { // CUSTOM-0 — T-Head extensions
+                match (funct7, funct3) {
+                    (0x20, 1) => { // th.mveqz rd, rs1, rs2: if rs2 == 0 then rd = rs1
+                        if rd == 0 { /* nop */ } else if rs2 == 0 {
+                            // Condition is x0 (always 0) → always execute: rd = rs1
+                            if rs1 == 0 {
+                                self.emit_load_imm(rd, 0)?;
+                            } else {
+                                let pvm_rd = self.require_reg(rd)?;
+                                let pvm_rs1 = self.require_reg(rs1)?;
+                                self.emit_inst(100); // move_reg
+                                self.emit_data(pvm_rd | (pvm_rs1 << 4));
+                            }
+                        } else if rs1 == 0 {
+                            // Source is x0 (always 0): if rs2 == 0 then rd = 0
+                            let pvm_rd = self.require_reg(rd)?;
+                            let pvm_rs2 = self.require_reg(rs2)?;
+                            self.emit_inst(147); // CmovIzImm
+                            self.emit_data(pvm_rd | (pvm_rs2 << 4));
+                            self.emit_var_imm(0);
+                        } else {
+                            let pvm_rd = self.require_reg(rd)?;
+                            let pvm_rs1 = self.require_reg(rs1)?;
+                            let pvm_rs2 = self.require_reg(rs2)?;
+                            self.emit_inst(218); // CmovIz
+                            self.emit_data(pvm_rs1 | (pvm_rs2 << 4));
+                            self.emit_data(pvm_rd);
+                        }
+                    }
+                    (0x21, 1) => { // th.mvnez rd, rs1, rs2: if rs2 != 0 then rd = rs1
+                        if rd == 0 || rs2 == 0 {
+                            // rd==0: nop. rs2==x0: condition "x0 != 0" is always false → nop
+                            self.emit_inst(1); // fallthrough
+                        } else if rs1 == 0 {
+                            let pvm_rd = self.require_reg(rd)?;
+                            let pvm_rs2 = self.require_reg(rs2)?;
+                            self.emit_inst(148); // CmovNzImm
+                            self.emit_data(pvm_rd | (pvm_rs2 << 4));
+                            self.emit_var_imm(0);
+                        } else {
+                            let pvm_rd = self.require_reg(rd)?;
+                            let pvm_rs1 = self.require_reg(rs1)?;
+                            let pvm_rs2 = self.require_reg(rs2)?;
+                            self.emit_inst(219); // CmovNz
+                            self.emit_data(pvm_rs1 | (pvm_rs2 << 4));
+                            self.emit_data(pvm_rd);
+                        }
+                    }
+                    _ => {
+                        return Err(TranspileError::UnsupportedInstruction {
+                            offset: _addr as usize,
+                            detail: format!("custom-0 funct7={:#x} funct3={}", funct7, funct3),
+                        });
+                    }
+                }
+            }
             _ => {
                 return Err(TranspileError::UnsupportedInstruction {
                     offset: _addr as usize,
