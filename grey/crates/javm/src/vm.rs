@@ -1445,10 +1445,6 @@ impl Pvm {
         None
     }
 
-    /// Check that a memory address is not in the low 2^16 range (eq A.7-A.8).
-    // JAR v0.8.0: no guard zone — address 0 is valid in linear memory model.
-    // check_read_low and check_write_low removed.
-
     /// Run the machine until it exits (eq A.1).
     ///
     /// Uses pre-decoded instructions for speed (avoids per-instruction decode overhead).
