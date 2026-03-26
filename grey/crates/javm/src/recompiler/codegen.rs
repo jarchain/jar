@@ -102,12 +102,18 @@ pub const EXIT_HOST_CALL: u32 = 4;
 
 /// Result of compilation.
 pub struct CompileResult {
+    /// Native code bytes (used when mmap_ptr is None).
     pub native_code: Vec<u8>,
     pub dispatch_table: Vec<i32>,
     #[cfg(feature = "signals")]
     pub trap_table: Vec<(u32, u32)>,
     #[cfg(feature = "signals")]
     pub exit_label_offset: u32,
+    /// If set, code is already mmap'd and mprotected as PROT_READ|PROT_EXEC.
+    /// Skips the copy in NativeCode::new.
+    pub mmap_ptr: Option<*mut u8>,
+    pub mmap_len: usize,
+    pub mmap_cap: usize,
 }
 
 /// Helper function pointers passed to compiled code.
@@ -190,13 +196,19 @@ impl Compiler {
         jump_table: &[u32],
         helpers: HelperFns,
         code_len: usize,
+        use_mmap: bool,
     ) -> Self {
         // Estimate native code size: ~3x PVM code provides safety margin for
         // direct-write emission (no per-byte capacity checks in hot loop).
         let estimated_native = code_len * 3 + 8192;
         // Labels: ~1 per 16 code bytes (only gas block starts get labels) + fixed overhead.
         let estimated_labels = code_len / 16 + 256;
-        let mut asm = Assembler::with_capacity(estimated_native, estimated_labels);
+        let mut asm = if use_mmap {
+            Assembler::with_mmap(estimated_native, estimated_labels)
+                .unwrap_or_else(|_| Assembler::with_capacity(estimated_native, estimated_labels))
+        } else {
+            Assembler::with_capacity(estimated_native, estimated_labels)
+        };
         // Reserve label 0 as the NO_LABEL sentinel.
         let _reserved = asm.new_label(); // Label(0) — never bound
         let exit_label = asm.new_label();
@@ -371,13 +383,38 @@ impl Compiler {
         #[cfg(feature = "signals")]
         let trap_table = self.trap_entries;
 
-        CompileResult {
-            native_code: self.asm.finalize(),
-            dispatch_table,
-            #[cfg(feature = "signals")]
-            trap_table,
-            #[cfg(feature = "signals")]
-            exit_label_offset,
+        // If the assembler uses mmap, finalize directly to executable memory
+        // (no copy). Otherwise fall back to Vec-based finalize.
+        match self.asm.finalize_executable() {
+            Ok((ptr, code_len, mmap_cap)) => {
+                // Wrap in a Vec that will munmap on drop (via NativeCode).
+                // We return a CompileResult with a dummy native_code — the caller
+                // should use native_mmap_ptr/len/cap instead.
+                CompileResult {
+                    native_code: Vec::new(), // not used when mmap_ptr is set
+                    dispatch_table,
+                    #[cfg(feature = "signals")]
+                    trap_table,
+                    #[cfg(feature = "signals")]
+                    exit_label_offset,
+                    mmap_ptr: Some(ptr),
+                    mmap_len: code_len,
+                    mmap_cap,
+                }
+            }
+            Err(_) => {
+                CompileResult {
+                    native_code: self.asm.finalize(),
+                    dispatch_table,
+                    #[cfg(feature = "signals")]
+                    trap_table,
+                    #[cfg(feature = "signals")]
+                    exit_label_offset,
+                    mmap_ptr: None,
+                    mmap_len: 0,
+                    mmap_cap: 0,
+                }
+            }
         }
     }
 

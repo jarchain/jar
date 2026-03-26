@@ -67,10 +67,13 @@ pub struct JitContext {
 struct NativeCode {
     ptr: *mut u8,
     len: usize,
+    /// The mmap region capacity (may be > len due to pre-allocation).
+    mmap_cap: usize,
 }
 
 impl NativeCode {
     /// Allocate an executable code buffer and copy machine code into it.
+    /// This is the fallback path; the mmap-direct path skips the copy.
     fn new(code: &[u8]) -> Result<Self, String> {
         if code.is_empty() {
             return Err("empty code buffer".into());
@@ -98,7 +101,7 @@ impl NativeCode {
                 return Err("mprotect failed".into());
             }
         }
-        Ok(Self { ptr, len })
+        Ok(Self { ptr, len, mmap_cap: len })
     }
 
     /// Get the function pointer for the compiled code entry.
@@ -110,7 +113,7 @@ impl NativeCode {
 impl Drop for NativeCode {
     fn drop(&mut self) {
         unsafe {
-            libc::munmap(self.ptr as *mut libc::c_void, self.len);
+            libc::munmap(self.ptr as *mut libc::c_void, self.mmap_cap);
         }
     }
 }
@@ -515,23 +518,36 @@ impl RecompiledPvm {
             &jump_table,
             helpers,
             code.len(),
+            true, // use mmap-backed assembler
         );
         let compile_result = compiler.compile(&code, &bitmask);
         let _t_compile = _t2.elapsed();
-        let native = compile_result.native_code;
         let dispatch_table = compile_result.dispatch_table;
 
-        if debug {
-            let _ = std::fs::write("/tmp/pvm_native.bin", &native);
-            tracing::debug!(
-                native_bytes = native.len(),
-                basic_blocks = bitmask.iter().filter(|&&b| b == 1).count(),
-                "wrote native code to /tmp/pvm_native.bin"
-            );
-        }
-
         let _t3 = std::time::Instant::now();
-        let native_code = NativeCode::new(&native)?;
+        let native_code = if let Some(mmap_ptr) = compile_result.mmap_ptr {
+            // Code is already mmap'd and PROT_READ|PROT_EXEC — no copy needed.
+            let nc = NativeCode { ptr: mmap_ptr, len: compile_result.mmap_len, mmap_cap: compile_result.mmap_cap };
+            if debug {
+                let code_slice = unsafe { std::slice::from_raw_parts(mmap_ptr, compile_result.mmap_len) };
+                let _ = std::fs::write("/tmp/pvm_native.bin", code_slice);
+                tracing::debug!(
+                    native_bytes = compile_result.mmap_len,
+                    "wrote native code to /tmp/pvm_native.bin (mmap path)"
+                );
+            }
+            nc
+        } else {
+            let native = compile_result.native_code;
+            if debug {
+                let _ = std::fs::write("/tmp/pvm_native.bin", &native);
+                tracing::debug!(
+                    native_bytes = native.len(),
+                    "wrote native code to /tmp/pvm_native.bin (copy path)"
+                );
+            }
+            NativeCode::new(&native)?
+        };
         let _t_native = _t3.elapsed();
 
         // Signal-based bounds checking: build trap table and install guard pages.
@@ -555,7 +571,7 @@ impl RecompiledPvm {
             compile_us = _t_compile.as_micros() as u64,
             native_us = _t_native.as_micros() as u64,
             code_len = code.len(),
-            native_len = native.len(),
+            native_len = native_code.len,
             "recompiler::new() timing"
         );
 

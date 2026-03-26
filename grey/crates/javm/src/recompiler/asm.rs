@@ -75,15 +75,22 @@ struct Fixup {
     label: Label,
 }
 
+/// Code buffer mode: either Vec-backed (for tests) or mmap-backed (for JIT).
+enum CodeBuf {
+    /// Heap-allocated via Vec (used by tests and small programs).
+    Vec(Vec<u8>),
+    /// mmap-backed (PROT_READ|PROT_WRITE). Avoids the copy in NativeCode::new
+    /// by writing directly to the buffer that will become executable.
+    Mmap { ptr: *mut u8, capacity: usize },
+}
+
 /// x86-64 assembler with label support.
 ///
 /// Uses direct pointer writes to the pre-allocated buffer for emission,
 /// avoiding per-byte Vec::push overhead (capacity check + len update).
-/// The Vec's len is only synced at finalization.
 pub struct Assembler {
-    pub code: Vec<u8>,
-    /// Write position — may be ahead of code.len(). All emission goes through
-    /// this pointer to avoid Vec::push overhead in the hot compilation loop.
+    code_buf: CodeBuf,
+    /// Raw pointer to the start of the code buffer.
     buf: *mut u8,
     write_pos: usize,
     capacity: usize,
@@ -100,7 +107,7 @@ impl Assembler {
         let buf = code.as_mut_ptr();
         let capacity = code.capacity();
         Self {
-            code,
+            code_buf: CodeBuf::Vec(code),
             buf,
             write_pos: 0,
             capacity,
@@ -110,12 +117,13 @@ impl Assembler {
     }
 
     /// Create with pre-allocated capacity for code and labels.
+    /// Uses Vec-backed buffer (for tests or when mmap is not needed).
     pub fn with_capacity(code_capacity: usize, label_capacity: usize) -> Self {
         let mut code = Vec::with_capacity(code_capacity);
         let buf = code.as_mut_ptr();
         let capacity = code.capacity();
         Self {
-            code,
+            code_buf: CodeBuf::Vec(code),
             buf,
             write_pos: 0,
             capacity,
@@ -124,18 +132,62 @@ impl Assembler {
         }
     }
 
+    /// Create with an mmap-backed code buffer. Code is written directly to the
+    /// mmap region during compilation. After finalize_mmap(), the buffer is
+    /// mprotected to PROT_READ|PROT_EXEC — no copy needed.
+    pub fn with_mmap(code_capacity: usize, label_capacity: usize) -> Result<Self, String> {
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                code_capacity,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_ANONYMOUS | libc::MAP_PRIVATE,
+                -1,
+                0,
+            )
+        };
+        if ptr == libc::MAP_FAILED || ptr.is_null() {
+            return Err("mmap failed for assembler code buffer".into());
+        }
+        let ptr = ptr as *mut u8;
+        Ok(Self {
+            code_buf: CodeBuf::Mmap { ptr, capacity: code_capacity },
+            buf: ptr,
+            write_pos: 0,
+            capacity: code_capacity,
+            labels: Vec::with_capacity(label_capacity),
+            fixups: Vec::with_capacity(label_capacity),
+        })
+    }
+
     /// Ensure at least `additional` bytes of capacity remain.
     /// Called before emitting large sequences. Most individual instructions
     /// need at most ~32 bytes, so this is rarely needed mid-compilation.
     #[cold]
     fn grow(&mut self, additional: usize) {
-        // Sync len so Vec knows how much data we've written
-        unsafe { self.code.set_len(self.write_pos); }
-        self.code.reserve(additional);
-        self.buf = self.code.as_mut_ptr();
-        self.capacity = self.code.capacity();
-        // Reset len to 0 — we track position via write_pos
-        unsafe { self.code.set_len(0); }
+        match &mut self.code_buf {
+            CodeBuf::Vec(code) => {
+                unsafe { code.set_len(self.write_pos); }
+                code.reserve(additional);
+                self.buf = code.as_mut_ptr();
+                self.capacity = code.capacity();
+                unsafe { code.set_len(0); }
+            }
+            CodeBuf::Mmap { ptr, capacity } => {
+                // For mmap buffers, mremap to a larger size
+                let new_cap = (*capacity + additional).next_power_of_two();
+                let new_ptr = unsafe {
+                    libc::mremap(*ptr as *mut libc::c_void, *capacity, new_cap, libc::MREMAP_MAYMOVE)
+                };
+                if new_ptr == libc::MAP_FAILED {
+                    panic!("mremap failed: need {} bytes", new_cap);
+                }
+                *ptr = new_ptr as *mut u8;
+                *capacity = new_cap;
+                self.buf = *ptr;
+                self.capacity = new_cap;
+            }
+        }
     }
 
     /// Check capacity and grow if needed. Inlined for the fast path (no grow).
@@ -1015,7 +1067,7 @@ impl Assembler {
             let target = bound;
             // Backward jump — label already bound, try rel8.
             // rel8 offset = target - (current + 2), where 2 = size of jmp rel8
-            let rel = target as isize - (self.code.len() as isize + 2);
+            let rel = target as isize - (self.write_pos as isize + 2);
             if rel >= i8::MIN as isize && rel <= i8::MAX as isize {
                 self.emit(0xEB);
                 self.emit(rel as u8);
@@ -1034,7 +1086,7 @@ impl Assembler {
             let target = bound;
             // Backward jump — label already bound, try rel8.
             // rel8 offset = target - (current + 2), where 2 = size of jcc rel8
-            let rel = target as isize - (self.code.len() as isize + 2);
+            let rel = target as isize - (self.write_pos as isize + 2);
             if rel >= i8::MIN as isize && rel <= i8::MAX as isize {
                 self.emit(0x70 + cc as u8);
                 self.emit(rel as u8);
@@ -1137,26 +1189,102 @@ impl Assembler {
 
     /// Sync Vec length with the write cursor. Call before accessing `self.code` directly.
     pub fn sync_len(&mut self) {
-        unsafe { self.code.set_len(self.write_pos); }
+        if let CodeBuf::Vec(code) = &mut self.code_buf {
+            unsafe { code.set_len(self.write_pos); }
+        }
     }
 
-    /// Resolve all label fixups and return the final machine code.
-    /// Panics if any label is unbound.
-    pub fn finalize(mut self) -> Vec<u8> {
-        // Sync Vec len with our write position so the returned Vec has correct length.
-        self.sync_len();
-
+    /// Resolve all label fixups in-place (works for both Vec and mmap buffers).
+    fn resolve_fixups(&mut self) {
         for fixup in &self.fixups {
             let target = self.labels[fixup.label.0 as usize];
             assert!(target != LABEL_UNBOUND, "unbound label {:?}", fixup.label);
-            // rel32 = target - (fixup_offset + 4) because the offset is relative
-            // to the end of the instruction (after the 4-byte immediate).
             let rel = (target as i64) - (fixup.offset as i64 + 4);
             let rel32 = rel as i32;
-            self.code[fixup.offset..fixup.offset + 4]
-                .copy_from_slice(&rel32.to_le_bytes());
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    rel32.to_le_bytes().as_ptr(),
+                    self.buf.add(fixup.offset),
+                    4,
+                );
+            }
         }
-        self.code
+    }
+
+    /// Resolve fixups and return the code as a Vec<u8> (for Vec-backed buffers).
+    pub fn finalize(&mut self) -> Vec<u8> {
+        self.resolve_fixups();
+        match &mut self.code_buf {
+            CodeBuf::Vec(code) => {
+                unsafe { code.set_len(self.write_pos); }
+                std::mem::take(code)
+            }
+            CodeBuf::Mmap { ptr, capacity } => {
+                // Copy from mmap to Vec (fallback path)
+                let mut v = Vec::with_capacity(self.write_pos);
+                unsafe {
+                    std::ptr::copy_nonoverlapping(*ptr, v.as_mut_ptr(), self.write_pos);
+                    v.set_len(self.write_pos);
+                    libc::munmap(*ptr as *mut libc::c_void, *capacity);
+                }
+                *ptr = std::ptr::null_mut();
+                *capacity = 0;
+                v
+            }
+        }
+    }
+
+    /// Resolve fixups, mprotect the buffer to PROT_READ|PROT_EXEC, and return
+    /// the executable buffer pointer and length. Only works for mmap-backed buffers.
+    /// Returns (ptr, code_len, mmap_capacity) for NativeCode construction.
+    pub fn finalize_executable(&mut self) -> Result<(*mut u8, usize, usize), String> {
+        self.resolve_fixups();
+        match &mut self.code_buf {
+            CodeBuf::Mmap { ptr, capacity } => {
+                let code_len = self.write_pos;
+                let p = *ptr;
+                let cap = *capacity;
+                unsafe {
+                    if libc::mprotect(
+                        p as *mut libc::c_void,
+                        cap,
+                        libc::PROT_READ | libc::PROT_EXEC,
+                    ) != 0 {
+                        libc::munmap(p as *mut libc::c_void, cap);
+                        *ptr = std::ptr::null_mut();
+                        *capacity = 0;
+                        return Err("mprotect failed".into());
+                    }
+                }
+                // Prevent Drop from double-freeing — ownership transfers to caller
+                *ptr = std::ptr::null_mut();
+                *capacity = 0;
+                Ok((p, code_len, cap))
+            }
+            CodeBuf::Vec(_) => Err("finalize_executable requires mmap-backed buffer".into()),
+        }
+    }
+
+    /// Get a slice of the written code bytes (for tests). Syncs Vec len first.
+    #[cfg(test)]
+    pub fn code_bytes(&mut self) -> &[u8] {
+        self.sync_len();
+        match &self.code_buf {
+            CodeBuf::Vec(v) => v.as_slice(),
+            CodeBuf::Mmap { ptr, .. } => unsafe {
+                std::slice::from_raw_parts(*ptr, self.write_pos)
+            },
+        }
+    }
+}
+
+impl Drop for Assembler {
+    fn drop(&mut self) {
+        if let CodeBuf::Mmap { ptr, capacity } = self.code_buf {
+            if !ptr.is_null() && capacity > 0 {
+                unsafe { libc::munmap(ptr as *mut libc::c_void, capacity); }
+            }
+        }
     }
 }
 
@@ -1168,18 +1296,16 @@ mod tests {
     fn test_mov_ri64_zero() {
         let mut asm = Assembler::new();
         asm.mov_ri64(Reg::RAX, 0);
-        asm.sync_len();
         // xor eax, eax → 0x31 0xC0
-        assert_eq!(&asm.code, &[0x31, 0xC0]);
+        assert_eq!(asm.code_bytes(), &[0x31, 0xC0]);
     }
 
     #[test]
     fn test_mov_ri64_small() {
         let mut asm = Assembler::new();
         asm.mov_ri64(Reg::RAX, 42);
-        asm.sync_len();
         // mov eax, 42 → 0xB8, 0x2A, 0x00, 0x00, 0x00
-        assert_eq!(&asm.code, &[0xB8, 0x2A, 0x00, 0x00, 0x00]);
+        assert_eq!(asm.code_bytes(), &[0xB8, 0x2A, 0x00, 0x00, 0x00]);
     }
 
     #[test]
@@ -1203,8 +1329,7 @@ mod tests {
         let mut asm = Assembler::new();
         asm.push(Reg::R15);
         asm.pop(Reg::R15);
-        asm.sync_len();
         // push r15: 41 57, pop r15: 41 5F
-        assert_eq!(&asm.code, &[0x41, 0x57, 0x41, 0x5F]);
+        assert_eq!(asm.code_bytes(), &[0x41, 0x57, 0x41, 0x5F]);
     }
 }
