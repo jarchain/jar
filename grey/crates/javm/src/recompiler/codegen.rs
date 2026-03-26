@@ -307,9 +307,42 @@ impl Compiler {
             // this check is almost always false (no branch misprediction).
             self.asm.ensure_capacity(512);
 
+            // Fast skip for Fallthrough/Unlikely: these produce zero native code
+            // (especially after gas block coarsening PR #150). Skip all decode,
+            // gas cost, and reg_defs work — just advance PC.
+            let raw_byte = code[pc];
+            if raw_byte == 1 || raw_byte == 2 { // Fallthrough=1, Unlikely=2
+                let skip = skip_table[pc] as usize;
+                // Still need to handle gas block boundary if this PC is one
+                // (rare after coarsening, but possible if it's a branch target)
+                if gas_starts.get(pc) {
+                    let label = self.gas_block_labels[gas_block_counter];
+                    gas_block_counter += 1;
+                    self.asm.bind_label(label);
+                    self.invalidate_all_regs();
+                    if let Some((stub_label, block_pc, patch_offset)) = pending_gas.take() {
+                        let cost = gas_sim.flush_and_get_cost();
+                        self.asm.patch_i32(patch_offset, cost as i32);
+                        self.oog_stubs.push((stub_label, block_pc, cost));
+                    }
+                    gas_sim.reset();
+                    let stub_label = self.asm.new_label();
+                    self.asm.sub_mem64_imm32(CTX, CTX_GAS, 0);
+                    let patch_offset = self.asm.offset() - 4;
+                    self.asm.jcc_label(Cc::S, stub_label);
+                    pending_gas = Some((stub_label, pc as u32, patch_offset));
+                }
+                // Feed gas sim with trivial cost (fallthrough = 2 cycles, 1 decode slot)
+                gas_sim.feed(&crate::gas_cost::FastCost {
+                    cycles: 2, decode_slots: 1, exec_unit: 0,
+                    src_mask: 0, dst_mask: 0, is_terminator: true, is_move_reg: false,
+                });
+                pc += 1 + skip;
+                continue;
+            }
+
             // Combined opcode validation + category lookup in a single array access.
-            // Eliminates the separate Opcode::from_byte and category LUT lookups.
-            let (opcode, category) = match crate::instruction::decode_opcode_fast(code[pc]) {
+            let (opcode, category) = match crate::instruction::decode_opcode_fast(raw_byte) {
                 Some(oc) => oc,
                 None => {
                     self.asm.mov_store32_imm(CTX, CTX_PC as i32, pc as i32);
