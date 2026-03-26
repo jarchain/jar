@@ -290,6 +290,10 @@ impl Compiler {
         while pc < code.len() && (pc >= bitmask.len() || bitmask[pc] != 1) { pc += 1; }
 
         while pc < code.len() {
+            // Ensure assembler capacity for this instruction + gas block overhead.
+            // Batched: capacity is generously pre-allocated (code_len*3+8192), so
+            // this check is almost always false (no branch misprediction).
+            self.asm.ensure_capacity(512);
 
             // Decode instruction inline
             let opcode = match Opcode::from_byte(code[pc]) {
@@ -900,11 +904,8 @@ impl Compiler {
     }
 
     /// Compile a single PVM instruction.
+    /// Caller must ensure the assembler has sufficient capacity (at least 256 bytes).
     fn compile_instruction(&mut self, opcode: Opcode, args: &Args, pc: u32, next_pc: u32) {
-        // Ensure capacity for this instruction's native code emission.
-        // Most PVM instructions emit at most ~64 bytes of x86. Memory access
-        // with helper calls can emit ~128. This avoids per-byte capacity checks.
-        self.asm.ensure_capacity(256);
         match opcode {
             // === A.5.1: No arguments ===
             Opcode::Trap => {
