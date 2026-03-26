@@ -62,10 +62,8 @@ jobs:
         run: make book
 
       # -- Combine --
-      - name: Combine sites
-        run: |
-          cp -r spec/_out/html-multi site/spec
-          cp docs/CNAME site/CNAME
+      - name: Copy JarBook into site
+        run: cp -r spec/_out/html-multi site/spec
 
       # -- Deploy (master only) --
       - uses: actions/configure-pages@v5
