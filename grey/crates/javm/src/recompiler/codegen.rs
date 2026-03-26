@@ -266,11 +266,11 @@ impl Compiler {
         // Emit prologue
         self.emit_prologue();
 
-        // Gas block starts as compact bitset (1.75KB). Ecalli post-PCs are
-        // included from the pre-pass so gas_starts is immutable during compilation.
-        let (gas_starts, skip_table) = {
-            let (mut gs, st) = crate::vm::compute_basic_block_starts_bitset(code, bitmask);
-            // Ensure jump table target PCs are marked as gas block starts.
+        // Lightweight gas block start discovery — no skip_table allocation.
+        // Scans only branch/terminator opcodes to find gas block start PCs.
+        // Skip is computed inline in the main loop via skip_for_bitmask().
+        let gas_starts = {
+            let mut gs = crate::vm::compute_gas_starts_only(code, bitmask);
             let jt_len = self.jump_table_len;
             for i in 0..jt_len {
                 let target_pc = unsafe { *self.jump_table_ptr.add(i) } as usize;
@@ -278,7 +278,7 @@ impl Compiler {
                     gs.set(target_pc);
                 }
             }
-            (gs, st) // gas_starts is now immutable
+            gs
         };
 
         // Pre-create labels for ALL gas block starts using ranked bitset.
@@ -312,7 +312,7 @@ impl Compiler {
             // gas cost, and reg_defs work — just advance PC.
             let raw_byte = code[pc];
             if raw_byte == 1 || raw_byte == 2 { // Fallthrough=1, Unlikely=2
-                let skip = skip_table[pc] as usize;
+                let skip = crate::vm::skip_for_bitmask(bitmask, pc);
                 // Still need to handle gas block boundary if this PC is one
                 // (rare after coarsening, but possible if it's a branch target)
                 if gas_starts.get(pc) {
@@ -351,7 +351,7 @@ impl Compiler {
                     continue;
                 }
             };
-            let skip = skip_table[pc] as usize;
+            let skip = crate::vm::skip_for_bitmask(bitmask, pc);
             let next_pc = (pc + 1 + skip) as u32;
             let decoded_args = match category {
                 crate::instruction::InstructionCategory::ThreeReg => {
