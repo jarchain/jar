@@ -2110,7 +2110,12 @@ pub fn compute_basic_block_starts_bitset(code: &[u8], bitmask: &[u8]) -> (BitSet
         };
         skip_table[i] = skip as u8;
 
-        if op.is_terminator() {
+        // Mark post-terminator PCs as gas block starts, EXCEPT after
+        // Fallthrough/Unlikely which don't change control flow. Post-fallthrough
+        // blocks are only reachable by sequential execution and will already be
+        // marked if they're branch targets. This coarsens gas blocks for
+        // straight-line code, reducing gas check overhead.
+        if op.is_terminator() && !matches!(op, Opcode::Fallthrough | Opcode::Unlikely) {
             let next = i + 1 + skip;
             if next < len && next < bitmask.len() && bitmask[next] == 1 {
                 starts.set(next);
