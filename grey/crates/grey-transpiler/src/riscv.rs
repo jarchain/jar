@@ -151,9 +151,9 @@ impl TranslationContext {
             }
         }
 
-        // Clear pending_load_imm if this isn't an OP (R-type ALU) that can consume it.
-        // The OP handler (0x33) will check and potentially fuse.
-        if opcode != 0x33 {
+        // Clear pending_load_imm if this isn't an instruction that can consume it.
+        // OP (0x33) and Branch (0x63) handlers check and potentially fuse.
+        if opcode != 0x33 && opcode != 0x63 {
             self.pending_load_imm = None; // already emitted, just clear tracking
         }
 
@@ -351,6 +351,52 @@ impl TranslationContext {
     }
 
     fn translate_branch(&mut self, funct3: u32, rs1: u8, rs2: u8, target: u64) -> Result<(), TranspileError> {
+        // Fuse load_imm + branch: if one operand was just loaded via load_imm,
+        // use the immediate branch form instead of a two-register branch.
+        // Saves one PVM instruction (the load_imm) per fused branch.
+        if let Some((load_rd, load_val, undo_pos)) = self.pending_load_imm.take() {
+            if load_val >= i32::MIN as i64 && load_val <= i32::MAX as i64 {
+                let imm = load_val as i32;
+                // Check if rs2 is the loaded register: branch_*_imm rs1, imm, target
+                if rs2 == load_rd && rs1 != load_rd {
+                    let pvm_rs1 = self.require_reg(rs1)?;
+                    let pvm_opcode = match funct3 {
+                        0 => Some(81),  // BEQ → branch_eq_imm
+                        1 => Some(82),  // BNE → branch_ne_imm
+                        4 => Some(87),  // BLT → branch_lt_s_imm
+                        5 => Some(89),  // BGE → branch_ge_s_imm
+                        6 => Some(83),  // BLTU → branch_lt_u_imm
+                        7 => Some(85),  // BGEU → branch_ge_u_imm
+                        _ => None,
+                    };
+                    if let Some(opc) = pvm_opcode {
+                        self.code.truncate(undo_pos);
+                        self.bitmask.truncate(undo_pos);
+                        self.emit_branch_imm(opc, pvm_rs1, imm, target);
+                        return Ok(());
+                    }
+                }
+                // Check if rs1 is the loaded register: flip the comparison
+                // BEQ/BNE are symmetric. BLT(rs1,rs2) with rs1=imm → BGE(rs2,imm+1) etc.
+                // Only handle symmetric cases (EQ, NE) to avoid off-by-one complexity.
+                if rs1 == load_rd && rs2 != load_rd {
+                    let pvm_rs2 = self.require_reg(rs2)?;
+                    let pvm_opcode = match funct3 {
+                        0 => Some(81),  // BEQ is symmetric → branch_eq_imm rs2, imm
+                        1 => Some(82),  // BNE is symmetric → branch_ne_imm rs2, imm
+                        _ => None,      // Inequalities need careful flipping, skip for now
+                    };
+                    if let Some(opc) = pvm_opcode {
+                        self.code.truncate(undo_pos);
+                        self.bitmask.truncate(undo_pos);
+                        self.emit_branch_imm(opc, pvm_rs2, imm, target);
+                        return Ok(());
+                    }
+                }
+            }
+            // Couldn't fuse — load_imm was already emitted, just clear tracking
+        }
+
         // When one operand is x0 (zero register), use immediate branch variants
         // since PVM register 0 = RA, not zero.
         if rs2 == 0 {
