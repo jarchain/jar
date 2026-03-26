@@ -180,14 +180,9 @@ impl TranslationContext {
                     // Plain jump (tail call / goto)
                     self.emit_jump(target);
                 } else {
-                    // Function call: set RA to jump table entry for return address
+                    // Function call: fused load_imm_jump (opcode 80)
                     let rv_return_addr = _addr + 4;
-                    let jt_idx = self.jump_table.len();
-                    self.jump_table.push(0); // placeholder
-                    self.return_fixups.push((jt_idx, rv_return_addr));
-                    let jt_addr = ((jt_idx + 1) * 2) as i64;
-                    self.emit_load_imm(rd, jt_addr)?;
-                    self.emit_jump(target);
+                    self.emit_call(rd, rv_return_addr, target)?;
                 }
             }
             0x67 => { // JALR
@@ -327,10 +322,9 @@ impl TranslationContext {
                     // Tail call: just jump, no return address
                     self.emit_jump(target);
                 } else {
-                    // Function call: set return address via jump table
+                    // Function call: fused load_imm_jump (opcode 80)
                     let rv_return_addr = addr + 4;
-                    self.emit_return_address_jt(rd, rv_return_addr)?;
-                    self.emit_jump(target);
+                    self.emit_call(rd, rv_return_addr, target)?;
                 }
                 return Ok(());
             } else {
@@ -1016,6 +1010,14 @@ impl TranslationContext {
     /// PVM instruction categories OneRegOneImm and TwoRegOneImm derive
     /// immediate length from the instruction skip distance, so shorter
     /// encodings are automatically decoded correctly via sign extension.
+    /// Compute the number of bytes needed for a variable-length immediate.
+    fn var_imm_byte_count(imm: i32) -> usize {
+        if imm == 0 { 0 }
+        else if imm >= -128 && imm <= 127 { 1 }
+        else if imm >= -32768 && imm <= 32767 { 2 }
+        else { 4 }
+    }
+
     pub(crate) fn emit_var_imm(&mut self, imm: i32) {
         if imm == 0 {
             // Zero bytes — decoder gets lx=0, sign_extend(0, 0) = 0
@@ -1060,11 +1062,48 @@ impl TranslationContext {
         self.emit_imm32(0); // placeholder
     }
 
-    /// Emit a return address via jump table entry.
-    ///
-    /// Allocates a jump table slot for the return address and loads the
-    /// jump table address into the given register. The slot is patched
-    /// during `apply_fixups` to point to the PVM offset of `rv_ret_addr`.
+    /// Emit load_imm_jump: fuse load_imm + jump into a single PVM instruction.
+    /// Opcode 80: OneRegImmOffset format — sets register and jumps in one step.
+    /// Saves one instruction (and one gas block boundary) per function call.
+    fn emit_load_imm_jump(&mut self, rd: u8, imm: i64, target: u64) -> Result<(), TranspileError> {
+        let pvm_rd = self.require_reg(rd)?;
+
+        let inst_pc = self.code.len() as u32;
+        self.emit_inst(80); // load_imm_jump
+
+        // OneRegImmOffset encoding: reg_byte (rd + lX), then imm bytes, then offset bytes.
+        // Use variable-length encoding for the immediate.
+        let imm_len = Self::var_imm_byte_count(imm as i32);
+        let reg_byte = pvm_rd | ((imm_len as u8) << 4);
+        self.emit_data(reg_byte);
+        self.emit_var_imm(imm as i32);
+
+        // Offset (4 bytes, patched by fixup)
+        let fixup_pos = self.code.len();
+        self.fixups.push((fixup_pos, target, 4));
+        self.fixup_pcs.insert(fixup_pos, inst_pc);
+        self.emit_imm32(0); // placeholder offset
+        Ok(())
+    }
+
+    /// Emit a function call: load return address into rd and jump to target.
+    /// Uses load_imm_jump (opcode 80) to fuse into a single PVM instruction,
+    /// saving one instruction per call site.
+    pub(crate) fn emit_call(&mut self, rd: u8, rv_ret_addr: u64, target: u64) -> Result<(), TranspileError> {
+        if rd == 0 {
+            // No return address needed — just jump
+            self.emit_jump(target);
+            return Ok(());
+        }
+        let jt_idx = self.jump_table.len();
+        self.jump_table.push(0); // placeholder
+        self.return_fixups.push((jt_idx, rv_ret_addr));
+        let jt_addr = ((jt_idx + 1) * 2) as i64;
+        self.emit_load_imm_jump(rd, jt_addr, target)
+    }
+
+    /// Emit a return address via jump table entry (without jump).
+    /// Used when the jump is emitted separately (e.g., for indirect calls).
     pub(crate) fn emit_return_address_jt(&mut self, rd: u8, rv_ret_addr: u64) -> Result<(), TranspileError> {
         if rd == 0 { return Ok(()); }
         let jt_idx = self.jump_table.len();
