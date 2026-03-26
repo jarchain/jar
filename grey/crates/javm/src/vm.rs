@@ -2079,13 +2079,43 @@ impl BitSet {
 /// The bitset is 64x smaller than Vec<bool>, improving L1 cache utilization
 /// during the hot compilation loop (~1.75KB vs ~112KB for ecrecover).
 /// Compute the skip (number of argument bytes) for instruction at `pc` by
-/// scanning the bitmask for the next instruction start. Inline-friendly.
+/// scanning the bitmask for the next instruction start.
+///
+/// Uses u64 word-at-a-time scanning when possible. The bitmask has value 1
+/// at instruction starts and 0 for argument bytes. We find the first 1 after
+/// pc+1 by loading 8 bytes at a time and using trailing-zero count.
 #[inline(always)]
 pub fn skip_for_bitmask(bitmask: &[u8], pc: usize) -> usize {
+    let start = pc + 1;
+    let bm_len = bitmask.len();
+
+    // Fast path: if we have at least 8 bytes, use a u64 scan.
+    // Most instructions are 1-6 bytes, so the first word usually suffices.
+    if start + 8 <= bm_len {
+        let word = unsafe {
+            std::ptr::read_unaligned(bitmask.as_ptr().add(start) as *const u64)
+        };
+        // Each byte is 0 or 1. A byte with value 1 means "instruction start".
+        // We want the position of the first non-zero byte.
+        if word != 0 {
+            // The first non-zero byte position (little-endian: trailing zeros / 8)
+            return (word.trailing_zeros() / 8) as usize;
+        }
+        // All 8 bytes are 0 — continue with scalar scan from start+8
+        let mut j = 8;
+        while j < 25 {
+            let idx = start + j;
+            if idx >= bm_len || bitmask[idx] == 1 { return j; }
+            j += 1;
+        }
+        return 0;
+    }
+
+    // Scalar fallback for near end of bitmask
     let mut s = 0;
     for j in 0..25 {
-        let idx = pc + 1 + j;
-        let bit = if idx < bitmask.len() { bitmask[idx] } else { 1 };
+        let idx = start + j;
+        let bit = if idx < bm_len { bitmask[idx] } else { 1 };
         if bit == 1 { s = j; break; }
     }
     s
@@ -2099,72 +2129,72 @@ pub fn compute_basic_block_starts_bitset(code: &[u8], bitmask: &[u8]) -> (BitSet
 
     let mut starts = BitSet::new(len);
     let mut skip_table = vec![0u8; len];
+    let bm_len = bitmask.len();
 
     // Index 0 is always a basic block start if it's a valid instruction
-    if !bitmask.is_empty() && bitmask[0] == 1 {
+    if bm_len > 0 && bitmask[0] == 1 {
         if Opcode::from_byte(code[0]).is_some() {
             starts.set(0);
         }
     }
 
+    // Use the precomputed fast opcode table for combined opcode+category lookup.
+    // This avoids calling Opcode::from_byte + op.category() separately.
+    use crate::instruction::{decode_opcode_fast, InstructionCategory};
+
     let mut i = 0;
     while i < len {
-        if i >= bitmask.len() || bitmask[i] != 1 { i += 1; continue; }
-        let Some(op) = Opcode::from_byte(code[i]) else { i += 1; continue; };
+        // Skip non-instruction bytes. For well-formed programs, bitmask[i]==1
+        // at instruction starts and 0 for argument bytes. The skip_table
+        // already jumps past argument bytes, so this loop only triggers for
+        // leading non-instruction bytes (rare).
+        if i >= bm_len || bitmask[i] != 1 { i += 1; continue; }
 
-        let skip = {
-            let mut s = 0;
-            for j in 0..25 {
-                let idx = i + 1 + j;
-                let bit = if idx < bitmask.len() { bitmask[idx] } else { 1 };
-                if bit == 1 { s = j; break; }
-            }
-            s
+        // Combined opcode validation + category in single LUT access
+        let raw = code[i];
+        let (op, cat) = match decode_opcode_fast(raw) {
+            Some(oc) => oc,
+            None => { i += 1; continue; }
         };
+
+        // Compute skip: scan bitmask for next instruction start.
+        // Use word-at-a-time scan when possible.
+        let skip = skip_for_bitmask(bitmask, i);
         skip_table[i] = skip as u8;
 
-        // Mark post-terminator PCs as gas block starts, EXCEPT after
-        // Fallthrough/Unlikely which don't change control flow. Post-fallthrough
-        // blocks are only reachable by sequential execution and will already be
-        // marked if they're branch targets. This coarsens gas blocks for
-        // straight-line code, reducing gas check overhead.
-        if op.is_terminator() && !matches!(op, Opcode::Fallthrough | Opcode::Unlikely) {
-            let next = i + 1 + skip;
-            if next < len && next < bitmask.len() && bitmask[next] == 1 {
+        // Mark post-terminator and post-ecalli PCs as gas block starts.
+        // Combined check avoids calling is_terminator() separately.
+        let next = i + 1 + skip;
+        let next_valid = next < len && next < bm_len && bitmask[next] == 1;
+        if next_valid {
+            let is_term_not_fallthrough = op.is_terminator()
+                && !matches!(op, Opcode::Fallthrough | Opcode::Unlikely);
+            if is_term_not_fallthrough || matches!(op, Opcode::Ecalli) {
                 starts.set(next);
             }
         }
 
-        // Mark post-ecalli PCs as gas block starts (so gas_starts is
-        // complete after the pre-pass and immutable during compilation).
-        if matches!(op, Opcode::Ecalli) {
-            let next = i + 1 + skip;
-            if next < len && next < bitmask.len() && bitmask[next] == 1 {
-                starts.set(next);
-            }
-        }
-
-        let cat = op.category();
+        // Extract branch target and mark as gas block start.
         match cat {
-            crate::instruction::InstructionCategory::OneOffset => {
+            InstructionCategory::OneOffset => {
                 if i + 5 <= len {
                     let off = i32::from_le_bytes([code[i+1], code[i+2], code[i+3], code[i+4]]);
                     let target = (i as i64 + off as i64) as usize;
-                    if target < len && target < bitmask.len() && bitmask[target] == 1 {
+                    if target < len && target < bm_len && bitmask[target] == 1 {
                         starts.set(target);
                     }
                 }
             }
-            crate::instruction::InstructionCategory::TwoRegOneOffset => {
+            InstructionCategory::TwoRegOneOffset => {
                 if i + 6 <= len {
                     let off = i32::from_le_bytes([code[i+2], code[i+3], code[i+4], code[i+5]]);
                     let target = (i as i64 + off as i64) as usize;
-                    if target < len && target < bitmask.len() && bitmask[target] == 1 {
+                    if target < len && target < bm_len && bitmask[target] == 1 {
                         starts.set(target);
                     }
                 }
             }
-            crate::instruction::InstructionCategory::OneRegImmOffset => {
+            InstructionCategory::OneRegImmOffset => {
                 if i + 2 <= len {
                     let reg_byte = code[i + 1];
                     let lx = ((reg_byte as usize / 16) % 8).min(4);
@@ -2178,7 +2208,7 @@ pub fn compute_basic_block_starts_bitset(code: &[u8], bitmask: &[u8]) -> (BitSet
                         }
                         let off = i32::from_le_bytes(buf);
                         let target = (i as i64 + off as i64) as usize;
-                        if target < len && target < bitmask.len() && bitmask[target] == 1 {
+                        if target < len && target < bm_len && bitmask[target] == 1 {
                             starts.set(target);
                         }
                     }
