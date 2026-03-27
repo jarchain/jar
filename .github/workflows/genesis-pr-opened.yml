@@ -19,6 +19,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Sync to latest master
+        run: git pull origin master --ff-only
+
       - name: Check for protected file changes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
