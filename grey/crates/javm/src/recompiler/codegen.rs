@@ -2678,20 +2678,28 @@ impl Compiler {
             self.asm.jmp_label(self.oog_pc_label);
         }
 
-        // Per-memory-access fault stubs: keep inline PC store (SCRATCH holds
-        // the fault address which the fault handler needs).
+        // Shared page fault handler with PC from stack — emitted BEFORE
+        // per-stub code so backward jumps from stubs can use jmp rel8.
+        //
+        // Each stub pushes its PVM PC onto the stack, then jumps here.
+        // SCRATCH still holds the faulting address from the bounds check.
+        // Handler: save fault addr, pop PC, save PC, set exit reason, exit.
+        let fault_pc_label = self.asm.new_label();
+        self.asm.bind_label(fault_pc_label);
+        self.asm.mov_store32(CTX, CTX_EXIT_ARG as i32, SCRATCH);
+        self.asm.pop(SCRATCH);
+        self.asm.mov_store32(CTX, CTX_PC as i32, SCRATCH);
+        self.asm.mov_store32_imm(CTX, CTX_EXIT_REASON, EXIT_PAGE_FAULT as i32);
+        self.asm.jmp_label(self.exit_label);
+
+        // Per-memory-access fault stubs: compact format — push PC, jump
+        // to shared handler. Saves ~7 bytes per stub vs inline PC store.
         let fault_stubs = std::mem::take(&mut self.fault_stubs);
         for (label, pvm_pc) in &fault_stubs {
             self.asm.bind_label(*label);
-            self.asm.mov_store32_imm(CTX, CTX_PC as i32, *pvm_pc as i32);
-            self.asm.jmp_label(self.fault_exit_label);
+            self.asm.push_imm32(*pvm_pc as i32);
+            self.asm.jmp_label(fault_pc_label);
         }
-
-        // Shared page fault handler: set exit reason, store fault addr, exit.
-        self.asm.bind_label(self.fault_exit_label);
-        self.asm.mov_store32_imm(CTX, CTX_EXIT_REASON, EXIT_PAGE_FAULT as i32);
-        self.asm.mov_store32(CTX, CTX_EXIT_ARG, SCRATCH);
-        self.asm.jmp_label(self.exit_label);
 
         // Panic exit
         self.asm.bind_label(self.panic_label);

@@ -1256,6 +1256,12 @@ impl Assembler {
         self.emit(0x58 + reg.lo());
     }
 
+    /// push sign-extended imm32 (5 bytes: 0x68 + imm32).
+    pub fn push_imm32(&mut self, imm: i32) {
+        self.emit(0x68);
+        self.emit_i32(imm);
+    }
+
     // -- Branches and jumps --
 
     /// jmp to label — uses rel8 for backward jumps within ±127 bytes.
