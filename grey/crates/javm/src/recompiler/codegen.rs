@@ -1884,13 +1884,20 @@ impl Compiler {
             Opcode::SetLtU => {
                 if let Args::ThreeReg { ra, rb, rd } = args {
                     // Carry flag fusion: if the previous instruction was add64 D, A, B,
-                    // and this is setLtU C, D, A (or D, B), CF already holds the result.
-                    // Skip the redundant cmp and just use setb.
+                    // and this is setLtU where rd = (ra < rb), CF already holds the carry.
+                    // Pattern: ra == D (the sum), rb == A or B (one of the addends).
+                    // Result goes to rd (the carry register).
                     let fused = if let Some((add_d, add_a, add_b)) = self.last_add_cf {
-                        // setLtU ra, rb, rd means: ra = (rb < rd) ? 1 : 0
-                        // We need: rb == add_d, and (rd == add_a or rd == add_b)
-                        if *rb == add_d && (*rd == add_a || *rd == add_b) {
-                            let d = REG_MAP[*ra];
+                        // Carry flag fusion: ra must be the sum register (add_d),
+                        // and rb must be an UNMODIFIED original addend (not add_d,
+                        // which now holds the sum). If rb == add_d, both sides of
+                        // the comparison would be the sum, giving 0 always, but CF
+                        // might be 1.
+                        if *ra == add_d && *rb != add_d
+                            && (*rb == add_a || *rb == add_b)
+                            && *rd != *rb
+                        {
+                            let d = REG_MAP[*rd];
                             // CF is valid from the add — use setb directly (no cmp needed).
                             // Cannot use xor to clear upper bits (it would clobber CF).
                             // Instead: setb + movzx (2 insns vs xor+cmp+setb = 3 insns).

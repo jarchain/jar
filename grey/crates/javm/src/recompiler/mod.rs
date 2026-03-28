@@ -1005,6 +1005,41 @@ mod tests {
     }
 
     #[test]
+    fn test_carry_flag_fusion() {
+        // Test: add64 + setLtU carry detection (overflow case)
+        // r2 = r0 + r1 (overflow: u64::MAX + 1 = 0)
+        // r3 = (r2 < r1) ? 1 : 0  (should be 1 because of overflow)
+        // Then ecalli 0 to exit
+        let code = vec![
+            200, 0x01, 2,   // add64: rd=2, ra=0, rb=1 (r2 = r0 + r1)
+            216, 0x12, 3,   // setLtU: rd=3, ra=2, rb=1 (r3 = r2 < r1)
+            10, 0,          // ecalli 0
+        ];
+        let mk_bitmask = || vec![1u8, 0, 0, 1, 0, 0, 1, 0];
+        let mut registers = [0u64; 13];
+        registers[0] = u64::MAX;  // r0 = MAX
+        registers[1] = 1;         // r1 = 1
+
+        let mut pvm = RecompiledPvm::new(&code, mk_bitmask(), vec![], registers, 10000, Some(test_layout()))
+            .expect("compilation should succeed");
+        let exit = pvm.run();
+        assert_eq!(exit, ExitReason::HostCall(0));
+        assert_eq!(pvm.registers()[2], 0); // MAX + 1 = 0 (overflow)
+        assert_eq!(pvm.registers()[3], 1); // carry = 1 (overflow detected)
+
+        // Test non-overflow case: 5 + 3 = 8, no overflow
+        let mut registers2 = [0u64; 13];
+        registers2[0] = 5;
+        registers2[1] = 3;
+        let mut pvm2 = RecompiledPvm::new(&code, mk_bitmask(), vec![], registers2, 10000, Some(test_layout()))
+            .expect("compilation should succeed");
+        let exit2 = pvm2.run();
+        assert_eq!(exit2, ExitReason::HostCall(0));
+        assert_eq!(pvm2.registers()[2], 8); // 5 + 3 = 8
+        assert_eq!(pvm2.registers()[3], 0); // carry = 0 (no overflow)
+    }
+
+    #[test]
     #[ignore] // Requires /tmp/test_code_blob.bin — used for manual debugging only
     fn test_compare_interpreter_recompiler() {
         // Load the test code blob
