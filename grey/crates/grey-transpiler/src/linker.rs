@@ -85,6 +85,9 @@ pub fn link_elf(elf_data: &[u8]) -> Result<Vec<u8>, TranspileError> {
     }
     ctx.apply_fixups();
 
+    // Peephole: fuse load_imm + ALU pairs into immediate ALU forms.
+    crate::peephole_fuse_load_imm_alu(&mut ctx.code, &mut ctx.bitmask, &ctx.jump_table);
+
     // Post-pass: ensure all PVM branch targets are basic block starts (ϖ).
     // Insert fallthrough (opcode 1) before any branch target that isn't
     // preceded by a terminator. This is done on the final PVM code after
@@ -145,6 +148,7 @@ pub fn link_elf_service(elf_data: &[u8]) -> Result<Vec<u8>, TranspileError> {
         translate_section_linked(&mut ctx, data, *vaddr, &elf)?;
     }
     ctx.apply_fixups();
+    crate::peephole_fuse_load_imm_alu(&mut ctx.code, &mut ctx.bitmask, &ctx.jump_table);
     crate::ensure_branch_targets_are_block_starts(
         &mut ctx.code,
         &mut ctx.bitmask,
