@@ -13,12 +13,12 @@ pub fn run(
     comment_author: &str,
     _comment_body: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Guard against already-merged PRs
+    // Guard against non-open PRs
     let state_json = github::pr_view(pr, "state")?;
     let state = state_json["state"].as_str().unwrap_or("");
-    if state == "MERGED" {
-        github::pr_comment(pr, "**JAR Bot:** PR is already merged — ignoring `/review`.")?;
-        return Ok(());
+    if state != "OPEN" {
+        github::pr_comment(pr, &format!("**JAR Bot:** PR is not open (state: {state}) — ignoring `/review`."))?;
+        return Err(format!("PR #{pr} is not open (state: {state})").into());
     }
 
     let repo_root = git::repo_root()?;

@@ -10,12 +10,11 @@ use crate::types::{MergeReadiness, SelectTargetsOutput};
 
 /// Run the merge workflow for a PR.
 pub fn run(pr: u64, founder_override: bool) -> Result<(), Box<dyn std::error::Error>> {
-    // --- Step 0: Guard against already-merged PRs ---
+    // --- Step 0: Guard against non-open PRs ---
     let state_json = github::pr_view(pr, "state")?;
     let state = state_json["state"].as_str().unwrap_or("");
-    if state == "MERGED" {
-        eprintln!("PR #{pr} is already merged — skipping.");
-        return Ok(());
+    if state != "OPEN" {
+        return Err(format!("PR #{pr} is not open (state: {state})").into());
     }
 
     let repo_root = git::repo_root()?;
