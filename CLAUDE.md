@@ -12,4 +12,4 @@
 - Commit early, commit often. Small logical changes per commit.
 - Don't "work around" an issue. Always fix the root cause.
 - Strict interfaces: require all fields, fail early, be loud about failures. Never silently default missing input — if a field is expected, error when it's absent. Fix callers, not callees.
-- Run `cargo fmt --all` before submitting a PR. CI enforces this via `cargo fmt --all --check`.
+- Run `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D warnings` before submitting a PR. CI enforces both.
