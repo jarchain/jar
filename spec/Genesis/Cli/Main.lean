@@ -27,7 +27,9 @@ def runEvaluate (_ : Parsed) : IO UInt32 := evaluateMain
 def runCheckMerge (_ : Parsed) : IO UInt32 := checkMergeMain
 def runFinalize (_ : Parsed) : IO UInt32 := finalizeMain
 def runValidate (_ : Parsed) : IO UInt32 := validateMain
-def runRanking (_ : Parsed) : IO UInt32 := rankingMain
+def runRanking (p : Parsed) : IO UInt32 :=
+  let fv := if p.hasFlag "force-variant" then some (p.flag! "force-variant" |>.as! String) else none
+  rankingMainWith fv
 
 def selectTargetsCmd := `[Cli|
   "select-targets" VIA runSelectTargets;
@@ -57,6 +59,9 @@ def validateCmd := `[Cli|
 def rankingCmd := `[Cli|
   ranking VIA runRanking;
   "Compute global quality ranking. Input: {signedCommits, indices}"
+
+  FLAGS:
+    "force-variant" : String; "Override variant for all commits (v1, v2, v3)."
 ]
 
 def genesis := `[Cli|
