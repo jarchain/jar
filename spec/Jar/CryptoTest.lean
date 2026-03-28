@@ -9,7 +9,7 @@ def bytesToHex (ba : ByteArray) : String :=
     acc.push (nibbleToHex (b >>> 4)) |>.push (nibbleToHex (b &&& 0x0F))
 
 open Jar.Crypto in
-def main : IO Unit := do
+def cryptoTestMain : IO Unit := do
   -- Blake2b of empty input
   let h := blake2b (ByteArray.mk #[])
   IO.println s!"blake2b(\"\") = {bytesToHex h.data}"

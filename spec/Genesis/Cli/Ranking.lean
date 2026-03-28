@@ -15,7 +15,7 @@ import Genesis.Cli.Common
 open Lean (Json ToJson toJson fromJson? FromJson)
 open Genesis.Cli
 
-def main : IO UInt32 := runJsonPipe fun j => do
+def rankingMain : IO UInt32 := runJsonPipe fun j => do
   let signedCommits ← IO.ofExcept (j.getObjValAs? (List SignedCommit) "signedCommits")
   let indices ← IO.ofExcept (j.getObjValAs? (List CommitIndex) "indices")
   -- Build per-commit contexts (variant + weight function)

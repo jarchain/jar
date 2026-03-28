@@ -56,7 +56,7 @@ jobs:
 
       - name: Build tools
         run: |
-          cd spec && lake build genesis_select_targets
+          cd spec && lake build genesis
           cargo build -p jar-genesis
 
       - name: Select targets and post comment

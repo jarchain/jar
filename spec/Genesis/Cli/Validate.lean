@@ -24,7 +24,7 @@ def lookupRanking (pastIndices : List CommitIndex) (rankings : Lean.Json)
   | some lastIdx =>
     (rankings.getObjValAs? (List CommitId) (toString lastIdx.commitHash)).toOption
 
-def main : IO UInt32 := runJsonPipe fun j => do
+def validateMain : IO UInt32 := runJsonPipe fun j => do
   let indices ← IO.ofExcept (j.getObjValAs? (List CommitIndex) "indices")
   let signedCommits ← IO.ofExcept (j.getObjValAs? (List SignedCommit) "signedCommits")
   let rankingsJson := j.getObjVal? "rankings" |>.toOption |>.getD (Lean.Json.mkObj [])

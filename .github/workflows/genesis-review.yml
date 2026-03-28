@@ -53,7 +53,7 @@ jobs:
 
       - name: Build tools
         run: |
-          cd spec && lake build genesis_check_merge genesis_select_targets
+          cd spec && lake build genesis
           cargo build -p jar-genesis
 
       - name: Process review

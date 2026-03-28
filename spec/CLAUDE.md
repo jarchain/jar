@@ -22,12 +22,12 @@ fuzz/                 Differential fuzzing (Rust)
 ```bash
 cd crypto-ffi && cargo build --release   # Rust crypto library
 lake build                                # Lean (default: Jar library)
-make test                                 # All 15 test binaries
+make test                                 # All tests (unified jartest binary)
 ```
 
 Genesis tools build independently (no Rust needed):
 ```bash
-lake build genesis_select_targets genesis_evaluate genesis_check_merge genesis_finalize genesis_validate
+lake build genesis
 ```
 
 ## Jar Module — Protocol Spec
@@ -134,7 +134,7 @@ Genesis bot identity: `JAR Bot <legal@bitarray.dev>`.
   1. Collect ALL /review comments from PR (last per author)
   2. Collect meta-reviews (👍/👎 reactions on review comments)
   3. Expand short hashes → full SHAs using comparison targets
-  4. Tally weighted merge votes via genesis_check_merge
+  4. Tally weighted merge votes via genesis check-merge
   5. If quorum (>50% weight): trigger genesis-merge.yml
 
 genesis-merge.yml:
@@ -142,7 +142,7 @@ genesis-merge.yml:
   2. Fetch PR created_at (immutable anchor for comparison targets)
   3. Compute comparison targets (filtered by epoch < prCreatedAt)
   4. Collect reviews + meta-reviews with hash expansion
-  5. Build SignedCommit JSON, evaluate via genesis_evaluate
+  5. Build SignedCommit JSON, evaluate via genesis evaluate
   6. Wait for CI: gh pr checks --watch --fail-fast
   7. Merge: gh pr merge --merge (synchronous, no --auto)
   8. Confirm: check state == MERGED
@@ -176,7 +176,7 @@ genesis-merge.yml:
 
 **Cache out of sync**: run `cargo run -p jar-genesis -- replay --mode verify-cache` to compare the `genesis-state` cache against a full rebuild from git trailers. If mismatched, rebuild:
 ```bash
-lake build genesis_evaluate genesis_validate
+lake build genesis
 cargo run -p jar-genesis -- replay --mode rebuild > /tmp/cache.json
 # Then push to genesis-state branch
 ```
@@ -189,9 +189,9 @@ cargo run -p jar-genesis -- replay --mode verify-cache  # cache matches rebuild
 
 **Check current weights**:
 ```bash
-lake build genesis_finalize
+lake build genesis
 CACHE=$(git show origin/genesis-state:genesis.json)
-echo "{\"indices\":${CACHE}}" | .lake/build/bin/genesis_finalize
+echo "{\"indices\":${CACHE}}" | .lake/build/bin/genesis finalize
 ```
 
 ## PR Description Flags

@@ -3,7 +3,7 @@ import Jar.Variant
 
 open Jar Jar.Test.BlockTest
 
-def testVariants : Array JamConfig := #[JamVariant.gp072_tiny.toJamConfig]
+private def testVariants : Array JamConfig := #[JamVariant.gp072_tiny.toJamConfig]
 
 /-- Traces where each block has full keyvals (independent per-block tests). -/
 def independentTraces : Array String := #["safrole", "fallback", "storage_light", "storage", "preimages_light", "preimages"]
@@ -11,7 +11,7 @@ def independentTraces : Array String := #["safrole", "fallback", "storage_light"
 /-- Traces where only the first block has keyvals (sequential state threading). -/
 def sequentialTraces : Array String := #["conformance_no_forks", "conformance_forks"]
 
-def main (args : List String) : IO UInt32 := do
+def blockTestMain (args : List String) : IO UInt32 := do
   let mut exitCode : UInt32 := 0
   match args with
   | ["dump", d] =>

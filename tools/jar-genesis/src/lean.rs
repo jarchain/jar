@@ -17,13 +17,14 @@ pub enum LeanError {
     Json(#[from] serde_json::Error),
 }
 
-/// Invoke a Lean genesis CLI tool by piping JSON to stdin and reading JSON from stdout.
+/// Invoke a genesis CLI subcommand by piping JSON to stdin and reading JSON from stdout.
+/// Maps tool names like "genesis_select_targets" to "genesis select-targets".
 pub fn invoke<I: Serialize, O: DeserializeOwned>(
     tool: &str,
     input: &I,
     spec_dir: &Path,
 ) -> Result<O, LeanError> {
-    let bin_path = spec_dir.join(".lake/build/bin").join(tool);
+    let bin_path = spec_dir.join(".lake/build/bin/genesis");
     if !bin_path.exists() {
         return Err(LeanError::NotFound {
             tool: tool.to_string(),
@@ -31,8 +32,17 @@ pub fn invoke<I: Serialize, O: DeserializeOwned>(
         });
     }
 
+    // Map legacy tool names to subcommands:
+    // "genesis_select_targets" -> "select-targets"
+    // "genesis_evaluate" -> "evaluate"
+    let subcommand = tool
+        .strip_prefix("genesis_")
+        .unwrap_or(tool)
+        .replace('_', "-");
+
     let input_json = serde_json::to_string(input)?;
     let output = Command::new(&bin_path)
+        .arg(&subcommand)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

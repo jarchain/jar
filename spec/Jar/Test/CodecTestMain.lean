@@ -3,12 +3,12 @@ import Jar.Variant
 
 open Jar Jar.Test.CodecTest
 
-def testVariants : Array JamConfig := #[
+private def testVariants : Array JamConfig := #[
   JamVariant.gp072_tiny.toJamConfig,
   JamVariant.gp072_full.toJamConfig
 ]
 
-def main (args : List String) : IO UInt32 := do
+def codecTestMain (args : List String) : IO UInt32 := do
   let dir := match args with
     | [d] => d
     | _ => "tests/vectors/codec"

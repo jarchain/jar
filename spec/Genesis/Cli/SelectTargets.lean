@@ -14,7 +14,7 @@ import Genesis.Cli.Common
 open Lean (Json ToJson toJson fromJson? FromJson)
 open Genesis.Cli
 
-def main : IO UInt32 := runJsonPipe fun j => do
+def selectTargetsMain : IO UInt32 := runJsonPipe fun j => do
   let prId ← IO.ofExcept (j.getObjValAs? Nat "prId")
   let prCreatedAt ← IO.ofExcept (j.getObjValAs? Nat "prCreatedAt")
   let indices ← IO.ofExcept (j.getObjValAs? (List CommitIndex) "indices")

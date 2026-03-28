@@ -3,9 +3,9 @@ import Jar.Variant
 
 open Jar Jar.Test.DisputesJson
 
-def testVariants : Array JamConfig := #[JamVariant.gp072_tiny.toJamConfig, JamVariant.gp072_full.toJamConfig, JamVariant.jar080_tiny.toJamConfig]
+private def testVariants : Array JamConfig := #[JamVariant.gp072_tiny.toJamConfig, JamVariant.gp072_full.toJamConfig, JamVariant.jar080_tiny.toJamConfig]
 
-def main (args : List String) : IO UInt32 := do
+def disputesJsonMain (args : List String) : IO UInt32 := do
   let dir := match args with
     | [d] => d
     | _ => "tests/vectors/disputes"

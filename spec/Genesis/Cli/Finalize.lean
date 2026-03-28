@@ -14,7 +14,7 @@ import Genesis.Cli.Common
 open Lean (Json ToJson toJson fromJson? FromJson)
 open Genesis.Cli
 
-def main : IO UInt32 := runJsonPipe fun j => do
+def finalizeMain : IO UInt32 := runJsonPipe fun j => do
   let indices ← IO.ofExcept (j.getObjValAs? (List CommitIndex) "indices")
   let weights := finalWeights indices
   let weightsJson := weights.map fun (id, weight) =>

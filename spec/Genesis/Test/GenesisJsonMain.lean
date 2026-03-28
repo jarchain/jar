@@ -2,7 +2,7 @@ import Genesis.Test.GenesisJson
 
 open Genesis.Test.GenesisJson
 
-def main (args : List String) : IO UInt32 := do
+def genesisJsonMain (args : List String) : IO UInt32 := do
   let (bless, dir) := match args with
     | ["--bless", d] => (true, d)
     | ["--bless"] => (true, "tests/vectors/genesis")

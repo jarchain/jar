@@ -5,6 +5,7 @@ package jar where
   version := v!"0.1.0"
 
 require verso from git "https://github.com/leanprover/verso" @ "v4.27.0"
+require Cli from git "https://github.com/leanprover/lean4-cli" @ "v4.27.0"
 
 -- Compile crypto-ffi/bridge.c into a static library.
 -- The Rust static library (libjar_crypto_ffi.a) must be pre-built via:
@@ -42,94 +43,8 @@ lean_exe jarbook where
     "-lpthread", "-ldl", "-lm"
   ]
 
-lean_exe cryptotest where
-  root := `Jar.CryptoTest
-  moreLinkArgs := #[
-    "-L", "crypto-ffi/target/release",
-    "-ljar_crypto_ffi",
-    "-lpthread", "-ldl", "-lm"
-  ]
-
-lean_exe safrolejsontest where
-  root := `Jar.Test.SafroleJsonMain
-  moreLinkArgs := #[
-    "-L", "crypto-ffi/target/release",
-    "-ljar_crypto_ffi",
-    "-lpthread", "-ldl", "-lm"
-  ]
-
-lean_exe historyjsontest where
-  root := `Jar.Test.HistoryJsonMain
-  moreLinkArgs := #[
-    "-L", "crypto-ffi/target/release",
-    "-ljar_crypto_ffi",
-    "-lpthread", "-ldl", "-lm"
-  ]
-
-lean_exe statisticsjsontest where
-  root := `Jar.Test.StatisticsJsonMain
-
-lean_exe authorizationsjsontest where
-  root := `Jar.Test.AuthorizationsJsonMain
-
-lean_exe disputesjsontest where
-  root := `Jar.Test.DisputesJsonMain
-  moreLinkArgs := #[
-    "-L", "crypto-ffi/target/release",
-    "-ljar_crypto_ffi",
-    "-lpthread", "-ldl", "-lm"
-  ]
-
-lean_exe preimagesjsontest where
-  root := `Jar.Test.PreimagesJsonMain
-  moreLinkArgs := #[
-    "-L", "crypto-ffi/target/release",
-    "-ljar_crypto_ffi",
-    "-lpthread", "-ldl", "-lm"
-  ]
-
-lean_exe assurancesjsontest where
-  root := `Jar.Test.AssurancesJsonMain
-  moreLinkArgs := #[
-    "-L", "crypto-ffi/target/release",
-    "-ljar_crypto_ffi",
-    "-lpthread", "-ldl", "-lm"
-  ]
-
-lean_exe reportsjsontest where
-  root := `Jar.Test.ReportsJsonMain
-  moreLinkArgs := #[
-    "-L", "crypto-ffi/target/release",
-    "-ljar_crypto_ffi",
-    "-lpthread", "-ldl", "-lm"
-  ]
-
-lean_exe accumulatejsontest where
-  root := `Jar.Test.AccumulateJsonMain
-  moreLinkArgs := #[
-    "-L", "crypto-ffi/target/release",
-    "-ljar_crypto_ffi",
-    "-lpthread", "-ldl", "-lm"
-  ]
-
-lean_exe propertytest where
-  root := `Jar.Test.PropertyMain
-  moreLinkArgs := #[
-    "-L", "crypto-ffi/target/release",
-    "-ljar_crypto_ffi",
-    "-lpthread", "-ldl", "-lm"
-  ]
-
-lean_exe trietest where
-  root := `Jar.Test.TrieTestMain
-  moreLinkArgs := #[
-    "-L", "crypto-ffi/target/release",
-    "-ljar_crypto_ffi",
-    "-lpthread", "-ldl", "-lm"
-  ]
-
-lean_exe shuffletest where
-  root := `Jar.Test.ShuffleTestMain
+lean_exe jartest where
+  root := `Jar.Test.Main
   moreLinkArgs := #[
     "-L", "crypto-ffi/target/release",
     "-ljar_crypto_ffi",
@@ -144,30 +59,6 @@ lean_exe jarstf where
     "-lpthread", "-ldl", "-lm"
   ]
 
-lean_exe codectest where
-  root := `Jar.Test.CodecTestMain
-  moreLinkArgs := #[
-    "-L", "crypto-ffi/target/release",
-    "-ljar_crypto_ffi",
-    "-lpthread", "-ldl", "-lm"
-  ]
-
-lean_exe blocktest where
-  root := `Jar.Test.BlockTestMain
-  moreLinkArgs := #[
-    "-L", "crypto-ffi/target/release",
-    "-ljar_crypto_ffi",
-    "-lpthread", "-ldl", "-lm"
-  ]
-
-lean_exe erasuretest where
-  root := `Jar.Test.ErasureTestMain
-  moreLinkArgs := #[
-    "-L", "crypto-ffi/target/release",
-    "-ljar_crypto_ffi",
-    "-lpthread", "-ldl", "-lm"
-  ]
-
 -- ============================================================================
 -- Genesis — Proof-of-Intelligence distribution protocol
 -- No crypto-ffi dependency — builds without Rust.
@@ -176,23 +67,5 @@ lean_exe erasuretest where
 lean_lib Genesis where
   roots := #[`Genesis]
 
-lean_exe genesis_select_targets where
-  root := `Genesis.Cli.SelectTargets
-
-lean_exe genesis_evaluate where
-  root := `Genesis.Cli.Evaluate
-
-lean_exe genesis_check_merge where
-  root := `Genesis.Cli.CheckMerge
-
-lean_exe genesis_finalize where
-  root := `Genesis.Cli.Finalize
-
-lean_exe genesis_validate where
-  root := `Genesis.Cli.Validate
-
-lean_exe genesis_ranking where
-  root := `Genesis.Cli.Ranking
-
-lean_exe genesistest where
-  root := `Genesis.Test.GenesisJsonMain
+lean_exe genesis where
+  root := `Genesis.Cli.Main

@@ -69,15 +69,15 @@ jobs:
 
       - name: Build tools
         run: |
-          cd spec && lake build genesis_select_targets genesis_evaluate genesis_check_merge genesis_finalize genesis_validate genesis_ranking
+          cd spec && lake build genesis
           cargo build -p jar-genesis
 
       - name: Smoke test CLI tools
         working-directory: spec
         run: |
-          echo '{"prId":1,"prCreatedAt":9999999999,"indices":[],"ranking":[],"variances":[]}' | .lake/build/bin/genesis_select_targets | jq -e '.targets == []'
-          echo '{"indices":[]}' | .lake/build/bin/genesis_finalize | jq -e '.weights[0].id == "sorpaas"'
-          echo '{"reviews":[],"metaReviews":[],"indices":[]}' | .lake/build/bin/genesis_check_merge | jq -e '.ready == false'
+          echo '{"prId":1,"prCreatedAt":9999999999,"indices":[],"ranking":[],"variances":[]}' | .lake/build/bin/genesis select-targets | jq -e '.targets == []'
+          echo '{"indices":[]}' | .lake/build/bin/genesis finalize | jq -e '.weights[0].id == "sorpaas"'
+          echo '{"reviews":[],"metaReviews":[],"indices":[]}' | .lake/build/bin/genesis check-merge | jq -e '.ready == false'
 
       - name: Verify genesis history
         run: cargo run -p jar-genesis -- replay --mode verify

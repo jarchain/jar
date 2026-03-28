@@ -10,7 +10,7 @@ import Genesis.Cli.Common
 open Lean (Json ToJson toJson fromJson? FromJson)
 open Genesis.Cli
 
-def main : IO UInt32 := runJsonPipe fun j => do
+def checkMergeMain : IO UInt32 := runJsonPipe fun j => do
   let reviews ← IO.ofExcept (j.getObjValAs? (List EmbeddedReview) "reviews")
   let metaReviews ← IO.ofExcept (j.getObjValAs? (List MetaReview) "metaReviews")
   let indices ← IO.ofExcept (j.getObjValAs? (List CommitIndex) "indices")
