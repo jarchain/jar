@@ -29,6 +29,8 @@ jobs:
 
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+        env:
+          SKIP_GUEST_BUILD: 1
 
   test:
     name: Tests
