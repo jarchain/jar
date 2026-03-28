@@ -48,7 +48,8 @@ pub struct DecodedInst {
     pub next_idx: u32,
     /// Pre-resolved instruction index for the branch/jump target (u32::MAX = invalid).
     pub target_idx: u32,
-    /// Gas cost to charge at basic-block entry (0 for non-BB-start instructions).
+    /// Gas cost to charge at gas-block entry (0 for non-gas-block-start instructions).
+    /// Gas blocks are {PC=0} ∪ {post-terminator PCs} — branch targets are NOT gas block starts.
     pub bb_gas_cost: u64,
 }
 
@@ -73,10 +74,12 @@ pub struct Pvm {
     pub heap_base: u32,
     /// Current heap top pointer for sbrk (heap_base + total_allocated).
     pub heap_top: u32,
-    /// Set of basic block start indices (ϖ).
+    /// Set of valid branch/jump landing targets (post-terminator PCs + static branch targets).
+    /// Used for branch validation, not for gas block boundaries.
     pub(crate) basic_block_starts: Vec<bool>,
-    /// Gas cost for each basic block (indexed by block start PC).
-    /// Only entries at basic_block_starts[i]==true are meaningful.
+    /// Gas cost for each gas block (indexed by block start PC).
+    /// Only entries at gas block starts are meaningful. Gas blocks are
+    /// {PC=0} ∪ {post-terminator PCs}, NOT branch targets.
     pub block_gas_costs: Vec<u64>,
     /// JAR v0.8.0: true when the next instruction should be charged block gas.
     /// Set at initialization and after every terminator instruction.
@@ -102,9 +105,10 @@ impl Pvm {
         gas: Gas,
     ) -> Self {
         let basic_block_starts = compute_basic_block_starts(&code, &bitmask);
-        let block_gas_costs = compute_block_gas_costs(&code, &bitmask, &basic_block_starts);
+        let gas_block_starts = compute_gas_block_starts(&code, &bitmask);
+        let block_gas_costs = compute_block_gas_costs(&code, &bitmask, &gas_block_starts);
         let (decoded_insts, pc_to_idx) =
-            predecode_instructions(&code, &bitmask, &basic_block_starts, &block_gas_costs);
+            predecode_instructions(&code, &bitmask, &basic_block_starts, &gas_block_starts, &block_gas_costs);
         Self {
             gas,
             registers,
@@ -288,9 +292,9 @@ impl Pvm {
 
     /// Execute a single instruction step Ψ₁ (eq A.6-A.9).
     ///
-    /// Gas is charged per basic block: the entire block's cost is deducted
-    /// when entering the block (at a basic block start). This matches the
-    /// reference polkavm implementation and enables JIT compilation.
+    /// Gas is charged per gas block: the entire block's cost is deducted
+    /// when entering the block. Gas block starts are {PC=0} ∪ {post-terminator PCs};
+    /// branch targets are NOT gas block starts (they are validation-only).
     ///
     /// Returns the exit reason if the machine should stop, or None to continue.
     pub fn step(&mut self) -> Option<ExitReason> {
@@ -313,9 +317,10 @@ impl Pvm {
             }
         };
 
-        // Per-basic-block gas metering (JAR v0.8.0).
-        // Gas is charged at every block entry: initial entry, after terminators,
-        // and at branch/jump targets. Matches Lean runBlockGas behavior.
+        // Per-gas-block metering (JAR v0.8.0).
+        // Gas is charged at gas block entries: initial entry (PC=0) and after
+        // terminators. Branch/jump targets are NOT gas block starts per spec
+        // (Lean Interpreter.lean:130, GP PR #508).
         if self.need_gas_charge {
             let block_cost = self.block_gas_costs[pc];
             if self.gas < block_cost {
@@ -1475,7 +1480,7 @@ impl Pvm {
             // Copy the decoded instruction (avoids borrow conflict with &mut self)
             let inst = *unsafe { self.decoded_insts.get_unchecked(idx as usize) };
 
-            // Per-basic-block gas charging (JAR v0.8.0)
+            // Per-gas-block charging (JAR v0.8.0): only at PC=0 and post-terminator starts
             if inst.bb_gas_cost > 0 {
                 if self.gas < inst.bb_gas_cost {
                     self.pc = inst.pc;
@@ -2133,6 +2138,56 @@ pub fn compute_basic_block_starts(code: &[u8], bitmask: &[u8]) -> Vec<bool> {
     compute_bb_starts_inner(code, bitmask).0
 }
 
+/// Compute gas block starts per the JAM spec: {PC=0} ∪ {post-terminator PCs}.
+///
+/// Unlike `compute_basic_block_starts`, this does NOT include branch targets.
+/// Gas blocks are defined solely by terminator boundaries (Lean `Interpreter.lean:130`,
+/// GP PR #508). This aligns the interpreter with the recompiler (PR #154).
+pub fn compute_gas_block_starts(code: &[u8], bitmask: &[u8]) -> Vec<bool> {
+    let len = code.len();
+    if len == 0 {
+        return vec![];
+    }
+
+    let mut starts = vec![false; len];
+
+    // Index 0 is always a gas block start if it's a valid instruction
+    if !bitmask.is_empty() && bitmask[0] == 1 {
+        if Opcode::from_byte(code[0]).is_some() {
+            starts[0] = true;
+        }
+    }
+
+    let mut i = 0;
+    while i < len {
+        if i >= bitmask.len() || bitmask[i] != 1 { i += 1; continue; }
+        let Some(op) = Opcode::from_byte(code[i]) else { i += 1; continue; };
+
+        let skip = {
+            let mut s = 0;
+            for j in 0..25 {
+                let idx = i + 1 + j;
+                let bit = if idx < bitmask.len() { bitmask[idx] } else { 1 };
+                if bit == 1 { s = j; break; }
+            }
+            s
+        };
+
+        if op.is_terminator() {
+            let next = i + 1 + skip;
+            if next < len && next < bitmask.len() && bitmask[next] == 1 {
+                starts[next] = true;
+            }
+        }
+
+        // No branch target marking — gas blocks are terminator-only.
+
+        i += 1 + skip;
+    }
+
+    starts
+}
+
 fn compute_bb_starts_inner(code: &[u8], bitmask: &[u8]) -> (Vec<bool>, Vec<u8>) {
     let len = code.len();
     if len == 0 {
@@ -2310,6 +2365,7 @@ fn predecode_instructions(
     code: &[u8],
     bitmask: &[u8],
     basic_block_starts: &[bool],
+    gas_block_starts: &[bool],
     block_gas_costs: &[u64],
 ) -> (Vec<DecodedInst>, Vec<u32>) {
     let len = code.len();
@@ -2335,7 +2391,7 @@ fn predecode_instructions(
                 let next_pc = (pc + 1 + skip) as u32;
                 let category = opcode.category();
                 let args = args::decode_args(code, pc, skip, category);
-                let bb_gas_cost = if pc < basic_block_starts.len() && basic_block_starts[pc] {
+                let bb_gas_cost = if pc < gas_block_starts.len() && gas_block_starts[pc] {
                     block_gas_costs[pc]
                 } else {
                     0
@@ -2613,5 +2669,137 @@ mod tests {
         let mut vm = Pvm::new(code, bitmask, vec![], regs, Vec::new(), 100);
         vm.step();
         assert_eq!(vm.registers[0], 0xEFCDAB8967452301);
+    }
+
+    // ========================================================================
+    // Issue #155 regression tests: gas block starts vs branch target validation
+    // ========================================================================
+    //
+    // These tests verify that gas block boundaries and branch-target validation
+    // are correctly separated per the JAM spec. Gas blocks are defined as
+    // {PC=0} ∪ {post-terminator PCs}. Branch targets are valid landing sites
+    // but must NOT affect gas block boundaries.
+
+    /// Build a program with a branch target that is NOT post-terminator.
+    ///
+    /// Layout (bitmask all-1s, so skip=0 for each byte):
+    ///   PC 0: Fallthrough (1)   — terminator, so PC 1 is a gas block start
+    ///   PC 1: Fallthrough (1)   — terminator, so PC 2 is a gas block start
+    ///   PC 2: Fallthrough (1)   — terminator, so PC 3 is a gas block start
+    ///   PC 3: MoveReg (100)     — NOT a terminator
+    ///   PC 4: Jump (40)         — terminator, offset = 0 bytes (skip=0)
+    ///                             target = PC 4 + 0 = PC 4 (self-loop, but
+    ///                             compute_bb_starts_inner reads code[i+1..i+5])
+    ///
+    /// For a cleaner branch target, use explicit bitmask to give Jump a 4-byte
+    /// offset field pointing at a non-post-terminator PC.
+    fn branch_target_mid_block_program() -> (Vec<u8>, Vec<u8>) {
+        // Layout:
+        //   PC 0: Fallthrough (1)  — terminator
+        //   PC 1: MoveReg (100)    — NOT terminator, bitmask [1,0]
+        //   PC 3: MoveReg (100)    — NOT terminator, bitmask [1,0]
+        //   PC 5: Jump (40)        — terminator, offset = 4 bytes LE
+        //                            bitmask [1,0,0,0,0]
+        //                            offset = -2 as i32 → target = 5 + (-2) = 3
+        //   PC 10: Trap (0)        — catches fallthrough
+        //
+        // Gas block starts (spec-correct): PC 0, 1 (post-Fallthrough), 10 (post-Jump)
+        // Branch targets (validation):     PC 3 (Jump target)
+        // basic_block_starts (old):        PC 0, 1, 3, 10
+        // gas_block_starts (new):          PC 0, 1, 10
+        let code = vec![
+            1,          // PC 0: Fallthrough
+            100, 0x10,  // PC 1: MoveReg rD=0, rA=1 (2 bytes)
+            100, 0x10,  // PC 3: MoveReg rD=0, rA=1 (2 bytes)
+            // PC 5: Jump, offset = -2 as i32 LE = [0xFE, 0xFF, 0xFF, 0xFF]
+            40, 0xFE, 0xFF, 0xFF, 0xFF,
+            0,          // PC 10: Trap
+        ];
+        let bitmask = vec![
+            1,    // PC 0: Fallthrough
+            1, 0, // PC 1-2: MoveReg (skip=1)
+            1, 0, // PC 3-4: MoveReg (skip=1)
+            1, 0, 0, 0, 0, // PC 5-9: Jump (skip=4)
+            1,    // PC 10: Trap
+        ];
+        (code, bitmask)
+    }
+
+    #[test]
+    fn test_gas_block_starts_exclude_branch_targets() {
+        let (code, bitmask) = branch_target_mid_block_program();
+        let bb_starts = compute_basic_block_starts(&code, &bitmask);
+        let gas_starts = compute_gas_block_starts(&code, &bitmask);
+
+        // basic_block_starts includes branch targets
+        assert!(bb_starts[0],  "PC 0 should be a basic block start");
+        assert!(bb_starts[1],  "PC 1 should be a basic block start (post-Fallthrough)");
+        assert!(bb_starts[3],  "PC 3 should be a basic block start (branch target)");
+        assert!(bb_starts[10], "PC 10 should be a basic block start (post-Jump)");
+
+        // gas_block_starts does NOT include branch targets
+        assert!(gas_starts[0],  "PC 0 should be a gas block start");
+        assert!(gas_starts[1],  "PC 1 should be a gas block start (post-Fallthrough)");
+        assert!(!gas_starts[3], "PC 3 should NOT be a gas block start (branch target only)");
+        assert!(gas_starts[10], "PC 10 should be a gas block start (post-Jump)");
+    }
+
+    #[test]
+    fn test_block_gas_costs_only_at_gas_block_starts() {
+        let (code, bitmask) = branch_target_mid_block_program();
+        let gas_starts = compute_gas_block_starts(&code, &bitmask);
+        let costs = compute_block_gas_costs(&code, &bitmask, &gas_starts);
+
+        // Gas costs should be nonzero only at gas block starts
+        assert!(costs[0] > 0,  "PC 0 (gas block start) should have nonzero cost");
+        assert!(costs[1] > 0,  "PC 1 (gas block start) should have nonzero cost");
+        assert_eq!(costs[3], 0, "PC 3 (branch target, NOT gas start) should have zero cost");
+        assert!(costs[10] > 0, "PC 10 (gas block start) should have nonzero cost");
+    }
+
+    #[test]
+    fn test_step_and_run_same_gas_on_linear_program() {
+        // Verify that step() and run() consume the same gas on a simple
+        // linear program. This is a generic parity check between the two
+        // execution paths (step uses need_gas_charge + block_gas_costs,
+        // run uses predecoded bb_gas_cost).
+        // Layout:
+        //   PC 0: Fallthrough (1)  — terminator
+        //   PC 1: MoveReg (100)    — NOT terminator
+        //   PC 3: Trap (0)
+        let code = vec![1, 100, 0x10, 0];
+        let bitmask = vec![1, 1, 0, 1];
+
+        // Run via step()
+        let mut vm_step = Pvm::new(code.clone(), bitmask.clone(), vec![], [0; 13], Vec::new(), 1000);
+        let initial_gas = vm_step.gas;
+        loop {
+            if vm_step.step().is_some() { break; }
+        }
+        let gas_used_step = initial_gas - vm_step.gas;
+
+        // Run via run()
+        let mut vm_run = Pvm::new(code, bitmask, vec![], [0; 13], Vec::new(), 1000);
+        let (_, gas_used_run) = vm_run.run();
+
+        assert_eq!(gas_used_step, gas_used_run,
+            "step() and run() must consume the same gas");
+    }
+
+    #[test]
+    fn test_branch_target_accepted_even_if_not_gas_start() {
+        // A branch target that is NOT a gas block start must still be accepted
+        // as a valid landing site for branch validation.
+        let (code, bitmask) = branch_target_mid_block_program();
+
+        // PC 3 is a branch target but NOT a gas start.
+        // Verify is_basic_block_start accepts it (branch validation).
+        let vm = Pvm::new(code, bitmask, vec![], [0; 13], Vec::new(), 1000);
+        assert!(vm.is_basic_block_start(3),
+            "branch target at PC 3 must be a valid basic block start for validation");
+
+        // But the gas cost at PC 3 should be zero (it's not a gas block start).
+        assert_eq!(vm.block_gas_costs[3], 0,
+            "PC 3 should not carry gas cost (not a gas block start)");
     }
 }
