@@ -135,7 +135,7 @@ fn compute_core_statistics(
         let bundle_len = report.package_spec.bundle_length as u64;
         let exports = report.package_spec.exports_count as u64;
         // D(c) = bundle_length + W_G * ceil(exports_count * 65 / 64)
-        let segments_bytes = segment_size * ceiling_div(exports * 65, 64);
+        let segments_bytes = segment_size * (exports * 65).div_ceil(64);
         core_stats[c].da_load += bundle_len + segments_bytes;
     }
 
@@ -198,12 +198,4 @@ fn compute_service_statistics(
     }
 
     stats.service_stats = svc_stats;
-}
-
-/// Integer ceiling division.
-fn ceiling_div(a: u64, b: u64) -> u64 {
-    if b == 0 {
-        return 0;
-    }
-    (a + b - 1) / b
 }
