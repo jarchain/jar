@@ -837,8 +837,9 @@ impl TranslationContext {
                     self.emit_data(pvm_rd | (pvm_rs1 << 4));
                     return Ok(());
                 }
-                if funct7 == 0x30 {
-                    // Zbb rori
+                if funct7 == 0x30 || funct7 == 0x31 {
+                    // Zbb RORI: funct6=0x18 (bits 31:26).
+                    // funct7=0x30 when shamt<32, funct7=0x31 when shamt>=32 (bit 25 set).
                     let shamt = imm & if self.is_64bit { 0x3F } else { 0x1F };
                     self.emit_inst(if self.is_64bit { 158 } else { 160 });
                     self.emit_data(pvm_rd | (pvm_rs1 << 4));

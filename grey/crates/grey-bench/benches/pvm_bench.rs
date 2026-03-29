@@ -144,9 +144,11 @@ fn validate(name: &str, grey_blob: &[u8], pvm_blob: &[u8]) {
     eprintln!(
         "{name}: grey result={gi_result} gas={gi_gas}, polkavm result={pvm_result} gas={pvm_gas}"
     );
+    // Compare lower 32 bits only: RISC-V ABI sign-extends u32 returns to 64 bits
+    // on rv64, but polkavm may zero-extend. Both produce the same 32-bit result.
     assert_eq!(
-        gi_result, pvm_result,
-        "{name}: grey/polkavm result mismatch"
+        gi_result as u32, pvm_result as u32,
+        "{name}: grey/polkavm result mismatch (grey=0x{gi_result:X}, polkavm=0x{pvm_result:X})"
     );
     // Gas values differ: JAVM uses pipeline gas (JAR v0.8.0),
     // polkavm uses per-instruction gas (GP v0.7.2).
@@ -247,14 +249,11 @@ fn bench_sieve(c: &mut Criterion) {
 }
 
 fn bench_blake2b(c: &mut Criterion) {
-    // NOTE: grey and polkavm produce different blake2b results (transpiler bug).
-    // Skip cross-VM validation; interpreter/recompiler consistency is tested separately.
-    bench_standard_no_validate(c, "blake2b", grey_blake2b_blob(), polkavm_blake2b_blob());
+    bench_standard(c, "blake2b", grey_blake2b_blob(), polkavm_blake2b_blob());
 }
 
 fn bench_keccak(c: &mut Criterion) {
-    // NOTE: grey and polkavm produce different keccak results (transpiler bug).
-    bench_standard_no_validate(c, "keccak", grey_keccak_blob(), polkavm_keccak_blob());
+    bench_standard(c, "keccak", grey_keccak_blob(), polkavm_keccak_blob());
 }
 
 fn bench_ecrecover(c: &mut Criterion) {
