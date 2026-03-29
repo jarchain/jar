@@ -108,21 +108,28 @@ Do NOT ask the user. Submit the review automatically, but apply these safety che
 
    **IMPORTANT: Only run benchmarks AFTER completing step 2b (reading the diff for safety). Never run PR code before reviewing it.**
 
-   a. Run baseline benchmark on current master:
+   a. **Always pull master before baseline.** Stale baselines cause false regressions.
+   ```bash
+   cd /workspaces/jar-review && git checkout master && git pull origin master
+   ```
+
+   b. Run baseline benchmark on current master:
    ```bash
    cd grey && git stash && POLKAVM_ALLOW_EXPERIMENTAL=1 cargo bench -p grey-bench --features javm/signals 2>&1 | grep -E 'Benchmarking |time:   \[' | sed '/Benchmarking/{s/Benchmarking //;s/: .*//;h;d}; /time:/{G;s/\n/ /;s/^ */}' > /tmp/bench_baseline.txt
    ```
 
-   b. Apply PR changes and re-run:
+   c. Apply PR changes and re-run:
    ```bash
    gh pr checkout <PR_NUMBER> --force
    POLKAVM_ALLOW_EXPERIMENTAL=1 cargo bench -p grey-bench --features javm/signals 2>&1 | grep -E 'Benchmarking |time:   \[' | sed '/Benchmarking/{s/Benchmarking //;s/: .*//;h;d}; /time:/{G;s/\n/ /;s/^ */}' > /tmp/bench_pr.txt
    git checkout master
    ```
 
-   c. Compare results. A benchmark is a **regression** if it is >5% slower than baseline. If any grey benchmark regresses, verdict MUST be `notMerge` with the regression data included in the review comment.
+   d. Compare results. A benchmark is a **regression** if it is >5% slower than baseline.
 
-   d. Return to master when done: `git checkout master && git stash pop`
+   e. **If a regression is detected but you cannot explain it from the diff** (i.e., the changed code should not affect the regressing benchmark), re-run the full benchmark cycle (baseline + PR) a second time. If the second run still reproduces the regression, verdict `notMerge` with the regression data — even unexplained regressions should wait for human review.
+
+   f. Return to master when done: `git checkout master && git stash pop`
 
 4. **Be conservative on verdict.** Only verdict `merge` if:
    - The change is clearly correct and well-scoped
