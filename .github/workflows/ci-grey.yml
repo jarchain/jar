@@ -52,6 +52,11 @@ jobs:
         env:
           GREY_PVM: recompiler
 
+      - name: Workspace tests (recompiler + signals)
+        run: cargo test --workspace --features javm/signals
+        env:
+          GREY_PVM: recompiler
+
   harness:
     name: Integration harness
     runs-on: ubuntu-latest
