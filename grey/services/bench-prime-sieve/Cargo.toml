@@ -1,0 +1,18 @@
+[package]
+name = "bench-prime-sieve"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "bench_prime_sieve"
+path = "src/main.rs"
+crate-type = ["cdylib"]
+
+[target.'cfg(target_env = "polkavm")'.dependencies]
+polkavm-derive = "0.32.0"
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = true
+panic = "abort"

@@ -521,6 +521,16 @@ pub fn polkavm_ecrecover_blob() -> &'static [u8] {
     POLKAVM_ECRECOVER_BLOB
 }
 
+/// Grey PVM blob for prime sieve (pre-built and transpiled at compile time).
+pub fn grey_sieve_blob() -> &'static [u8] {
+    GREY_SIEVE_BLOB
+}
+
+/// PolkaVM blob for prime sieve (pre-built and linked at compile time).
+pub fn polkavm_sieve_blob() -> &'static [u8] {
+    POLKAVM_SIEVE_BLOB
+}
+
 /// Grey PVM service blob for sample-service (refine at PC=0, accumulate at PC=5).
 pub fn sample_service_blob() -> &'static [u8] {
     SAMPLE_SERVICE_BLOB
@@ -602,9 +612,8 @@ mod tests_sort {
         }
     }
 
-    #[test]
-    fn test_grey_ecrecover_recompiler() {
-        let blob = grey_ecrecover_blob();
+    /// Run blob on both interpreter and recompiler, assert a0 and gas match.
+    fn assert_interp_recomp_match(blob: &[u8], expected_a0: u64, name: &str) {
         let gas = 100_000_000_000u64;
 
         // Run interpreter
@@ -612,9 +621,11 @@ mod tests_sort {
         loop {
             match interp.run().0 {
                 javm::ExitReason::Halt => break,
-                javm::ExitReason::Panic => panic!("interpreter panicked at PC={}", interp.pc),
+                javm::ExitReason::Panic => {
+                    panic!("{name}: interpreter panicked at PC={}", interp.pc)
+                }
                 javm::ExitReason::HostCall(_) => continue,
-                other => panic!("interpreter: unexpected exit: {:?}", other),
+                other => panic!("{name}: interpreter unexpected exit: {other:?}"),
             }
         }
         let interp_gas = gas - interp.gas;
@@ -625,24 +636,34 @@ mod tests_sort {
         loop {
             match recomp.run() {
                 javm::ExitReason::Halt => break,
-                javm::ExitReason::Panic => panic!("recompiler panicked"),
+                javm::ExitReason::Panic => panic!("{name}: recompiler panicked"),
                 javm::ExitReason::HostCall(_) => continue,
-                other => panic!("recompiler: unexpected exit: {:?}", other),
+                other => panic!("{name}: recompiler unexpected exit: {other:?}"),
             }
         }
         let recomp_gas = gas - recomp.gas();
         let recomp_a0 = recomp.registers()[7];
 
-        assert_eq!(interp_a0, 1, "interpreter ecrecover should return 1");
-        assert_eq!(recomp_a0, 1, "recompiler ecrecover should return 1");
+        assert_eq!(interp_a0, expected_a0, "{name}: interpreter a0 mismatch");
+        assert_eq!(recomp_a0, expected_a0, "{name}: recompiler a0 mismatch");
         assert!(
             interp_gas > 100_000,
-            "should use >100K gas, got {interp_gas}"
+            "{name}: should use >100K gas, got {interp_gas}"
         );
         assert_eq!(
             interp_gas, recomp_gas,
-            "gas mismatch: interpreter={interp_gas} recompiler={recomp_gas}"
+            "{name}: gas mismatch: interpreter={interp_gas} recompiler={recomp_gas}"
         );
+    }
+
+    #[test]
+    fn test_grey_ecrecover_recompiler() {
+        assert_interp_recomp_match(grey_ecrecover_blob(), 1, "ecrecover");
+    }
+
+    #[test]
+    fn test_grey_prime_sieve_recompiler() {
+        assert_interp_recomp_match(grey_sieve_blob(), 9592, "prime_sieve");
     }
 
     #[test]

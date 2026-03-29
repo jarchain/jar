@@ -1,9 +1,10 @@
 //! PVM benchmark: grey interpreter/recompiler vs polkavm interpreter/compiler.
 //!
-//! Four workloads:
+//! Five workloads:
 //!   - fib: compute-intensive iterative Fibonacci (1M iterations)
 //!   - hostcall: host-call-heavy (100K ecalli invocations)
 //!   - sort: insertion sort of 1K u32 elements (compute + memory interleaved)
+//!   - sieve: Sieve of Eratosthenes up to 100K (memory + branching)
 //!   - ecrecover: secp256k1 ECDSA public key recovery (crypto-heavy)
 //!
 //! ## Benchmark fairness
@@ -266,6 +267,42 @@ fn bench_sort(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_sieve(c: &mut Criterion) {
+    let grey_blob = grey_sieve_blob().to_vec();
+    let pvm_blob = polkavm_sieve_blob().to_vec();
+
+    validate("sieve", &grey_blob, &pvm_blob);
+
+    let (_, pvm_interp_mod) = try_make_polkavm_module(&pvm_blob, BackendKind::Interpreter)
+        .expect("polkavm interpreter should always work");
+    let pvm_compiler = try_make_polkavm_module(&pvm_blob, BackendKind::Compiler);
+
+    let mut group = c.benchmark_group("sieve");
+
+    group.bench_function("grey-interpreter", |b| {
+        b.iter(|| run_grey_interpreter(&grey_blob))
+    });
+
+    group.bench_function("grey-recompiler", |b| {
+        b.iter(|| run_grey_recompiler(&grey_blob))
+    });
+
+    group.bench_function("polkavm-interpreter", |b| {
+        b.iter(|| run_polkavm_module(&pvm_interp_mod))
+    });
+
+    if let Some((ref engine, ref pvm_mod)) = pvm_compiler {
+        group.bench_function("polkavm-compiler-exec", |b| {
+            b.iter(|| run_polkavm_module(pvm_mod))
+        });
+        group.bench_function("polkavm-compiler-full", |b| {
+            b.iter(|| run_polkavm_compile_and_run(&pvm_blob, engine))
+        });
+    }
+
+    group.finish();
+}
+
 fn bench_ecrecover(c: &mut Criterion) {
     let grey_blob = grey_ecrecover_blob();
     let pvm_blob = polkavm_ecrecover_blob();
@@ -454,6 +491,7 @@ criterion_group!(
     bench_fib,
     bench_hostcall,
     bench_sort,
+    bench_sieve,
     bench_ecrecover
 );
 criterion_main!(benches);
