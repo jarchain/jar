@@ -621,33 +621,13 @@ impl TranslationContext {
                     }
                 }
             }
-            // Case 2: Value register was loaded with constant → store_imm_ind (existing).
-            if rs2 == load_rd && rs1 != load_rd {
-                let store_val = load_val as i32;
-                let pvm_rs1 = self.require_reg(rs1)?;
-                let pvm_opcode = match funct3 {
-                    0 => 70, // store_imm_ind_u8
-                    1 => 71, // store_imm_ind_u16
-                    2 => 72, // store_imm_ind_u32
-                    3 => 73, // store_imm_ind_u64
-                    _ => 0,  // can't fuse
-                };
-                if pvm_opcode != 0 {
-                    self.code.truncate(undo_pos);
-                    self.bitmask.truncate(undo_pos);
-                    let (lx, offset_bytes) = encode_var_imm(imm);
-                    let (_ly, value_bytes) = encode_var_imm(store_val);
-                    self.emit_inst(pvm_opcode);
-                    self.emit_data(pvm_rs1 | (lx << 4));
-                    for b in &offset_bytes {
-                        self.emit_data(*b);
-                    }
-                    for b in &value_bytes {
-                        self.emit_data(*b);
-                    }
-                    return Ok(());
-                }
-            }
+            // Case 2: Value register was loaded with constant → store_imm_ind.
+            // NOTE: We intentionally do NOT undo the load_imm here because
+            // the register may still be needed after the store (e.g., as a
+            // function argument). The load_imm was already emitted, so the
+            // register holds the correct value. Just emit a normal store.
+            // The load_imm + store costs two instructions instead of one
+            // fused store_imm_ind, but is always correct.
         }
         // Couldn't fuse — load_imm was already emitted, just clear tracking
 
@@ -1720,6 +1700,19 @@ impl TranslationContext {
         self.jump_table.push(0); // placeholder
         self.return_fixups.push((jt_idx, rv_ret_addr));
         let jt_addr = ((jt_idx + 1) * 2) as i64;
+        // Debug: write all call sites to a temp file
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/transpiler_calls.log")
+        {
+            use std::io::Write;
+            let _ = writeln!(
+                f,
+                "jt_idx={jt_idx} rv_ret=0x{rv_ret_addr:X} target=0x{target:X} pvm_pc={}",
+                self.code.len()
+            );
+        }
         self.emit_load_imm_jump(rd, jt_addr, target)
     }
 
