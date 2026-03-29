@@ -21,7 +21,7 @@ members = [
     "grey/crates/build-pvm",
     "grey/harness",
     "tools/jar-genesis",
-    "grey/services/javm-builtins",
+    "grey/crates/javm-builtins",
     "grey/services/bench-blake2b",
     "grey/services/bench-ecrecover",
     "grey/services/bench-ed25519",

@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["lib", "cdylib"]
 
 [dependencies]
-javm-builtins = { path = "../javm-builtins" }
+javm-builtins = { path = "../../crates/javm-builtins" }
 
 [target.'cfg(target_env = "polkavm")'.dependencies]
 polkavm-derive = "0.32.0"

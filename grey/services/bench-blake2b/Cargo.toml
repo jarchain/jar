@@ -8,7 +8,7 @@ crate-type = ["lib", "cdylib"]
 
 [dependencies]
 blake2 = { version = "0.10", default-features = false }
-javm-builtins = { path = "../javm-builtins" }
+javm-builtins = { path = "../../crates/javm-builtins" }
 
 [target.'cfg(target_env = "polkavm")'.dependencies]
 polkavm-derive = "0.32.0"

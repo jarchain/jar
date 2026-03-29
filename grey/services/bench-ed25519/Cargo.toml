@@ -8,7 +8,7 @@ crate-type = ["lib", "cdylib"]
 
 [dependencies]
 ed25519-compact = { version = "2", default-features = false }
-javm-builtins = { path = "../javm-builtins" }
+javm-builtins = { path = "../../crates/javm-builtins" }
 
 [target.'cfg(target_env = "polkavm")'.dependencies]
 polkavm-derive = "0.32.0"
