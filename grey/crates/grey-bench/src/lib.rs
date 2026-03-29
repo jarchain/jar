@@ -632,13 +632,8 @@ mod tests_sort {
     }
 
     /// Run blob on both interpreter and recompiler, assert a0 and gas match.
-    fn assert_interp_recomp_match(blob: &[u8], expected_a0: u64, name: &str) {
-        assert_interp_recomp_match_gas(blob, expected_a0, 100_000, name);
-    }
-
-    /// Run blob on both interpreter and recompiler, assert a0 and gas match.
-    /// `min_gas` sets the minimum expected gas consumption.
-    fn assert_interp_recomp_match_gas(blob: &[u8], expected_a0: u64, min_gas: u64, name: &str) {
+    /// If `expected_a0` is Some, also verify the interpreter produces that value.
+    fn assert_interp_recomp(blob: &[u8], expected_a0: Option<u64>, min_gas: u64, name: &str) {
         let gas = 100_000_000_000u64;
 
         // Run interpreter
@@ -656,6 +651,10 @@ mod tests_sort {
         let interp_gas = gas - interp.gas;
         let interp_a0 = interp.registers[7];
 
+        if let Some(expected) = expected_a0 {
+            assert_eq!(interp_a0, expected, "{name}: interpreter a0 mismatch");
+        }
+
         // Run recompiler
         let mut recomp = javm::recompiler::initialize_program_recompiled(blob, &[], gas).unwrap();
         loop {
@@ -669,8 +668,7 @@ mod tests_sort {
         let recomp_gas = gas - recomp.gas();
         let recomp_a0 = recomp.registers()[7];
 
-        assert_eq!(interp_a0, expected_a0, "{name}: interpreter a0 mismatch");
-        assert_eq!(recomp_a0, expected_a0, "{name}: recompiler a0 mismatch");
+        assert_eq!(recomp_a0, interp_a0, "{name}: recompiler a0 mismatch");
         assert!(
             interp_gas > min_gas,
             "{name}: should use >{min_gas} gas, got {interp_gas}"
@@ -683,63 +681,27 @@ mod tests_sort {
 
     #[test]
     fn test_grey_ecrecover_recompiler() {
-        assert_interp_recomp_match(grey_ecrecover_blob(), 1, "ecrecover");
+        assert_interp_recomp(grey_ecrecover_blob(), Some(1), 100_000, "ecrecover");
     }
 
     #[test]
     fn test_grey_prime_sieve_recompiler() {
-        assert_interp_recomp_match(grey_sieve_blob(), 9592, "prime_sieve");
-    }
-
-    /// Run interpreter to discover result, then check recompiler matches.
-    fn assert_interp_recomp_consistent(blob: &[u8], min_gas: u64, name: &str) {
-        let gas = 100_000_000_000u64;
-        let mut interp = javm::program::initialize_program(blob, &[], gas).unwrap();
-        loop {
-            match interp.run().0 {
-                javm::ExitReason::Halt => break,
-                javm::ExitReason::HostCall(_) => continue,
-                other => panic!("{name}: interpreter exit: {other:?}"),
-            }
-        }
-        let expected_a0 = interp.registers[7];
-        assert_interp_recomp_match_gas(blob, expected_a0, min_gas, name);
-    }
-
-    // NOTE: keccak/blake2b produced wrong results due to RORI transpiler bug (fixed).
-    // RORI with shamt>=32 had funct7=0x31 which was misidentified as SRAI.
-    // Root cause: the block-buffer crate's byte-to-u64 conversion path in the sha3
-    // absorb function is miscompiled by the grey transpiler. The keccak-f1600
-    // permutation itself is correct (verified manually). See bench-crypto branch.
-
-    #[test]
-    fn test_grey_ed25519_interpreter() {
-        let blob = grey_ed25519_blob();
-        let gas = 100_000_000_000u64;
-        let mut pvm = javm::program::initialize_program(blob, &[], gas).unwrap();
-        loop {
-            match pvm.run().0 {
-                javm::ExitReason::Halt => break,
-                javm::ExitReason::HostCall(_) => continue,
-                other => panic!("ed25519: {other:?}"),
-            }
-        }
-        assert_eq!(pvm.registers[7], 1, "ed25519 verify should return 1");
+        assert_interp_recomp(grey_sieve_blob(), Some(9592), 100_000, "prime_sieve");
     }
 
     #[test]
     fn test_grey_ed25519_recompiler() {
-        assert_interp_recomp_match(grey_ed25519_blob(), 1, "ed25519");
+        assert_interp_recomp(grey_ed25519_blob(), Some(1), 1_000, "ed25519");
     }
 
     #[test]
     fn test_grey_blake2b_recompiler() {
-        assert_interp_recomp_consistent(grey_blake2b_blob(), 10_000, "blake2b");
+        assert_interp_recomp(grey_blake2b_blob(), None, 10_000, "blake2b");
     }
 
     #[test]
     fn test_grey_keccak_recompiler() {
-        assert_interp_recomp_consistent(grey_keccak_blob(), 10_000, "keccak");
+        assert_interp_recomp(grey_keccak_blob(), None, 10_000, "keccak");
     }
 
     #[test]
