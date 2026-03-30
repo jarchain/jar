@@ -60,6 +60,8 @@ const CHUNKS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("chunks");
 // State checksums: block_hash (32 bytes) -> blake2b_256 hash of the encoded state blob (32 bytes)
 const STATE_CHECKSUMS: TableDefinition<&[u8; 32], &[u8; 32]> =
     TableDefinition::new("state_checksums");
+// GRANDPA votes: key = round(8) + type(1) + validator(2) = 11 bytes -> value = hash(32) + slot(4) + sig(64) = 100 bytes
+const GRANDPA_VOTES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("grandpa_votes");
 
 const META_SCHEMA_VERSION: &str = "schema_version";
 const META_HEAD_HASH: &str = "head_hash";
@@ -86,6 +88,9 @@ pub struct ServiceMetadata {
 /// State key-value pairs: 31-byte key → variable-length value.
 type StateKvs = Vec<([u8; 31], Vec<u8>)>;
 
+/// A persisted GRANDPA vote: (vote_type, validator_index, block_hash, block_slot, signature).
+pub type PersistedVote = (u8, u16, Hash, u32, [u8; 64]);
+
 /// Persistent store backed by redb.
 pub struct Store {
     db: Database,
@@ -109,6 +114,7 @@ impl Store {
             let mut meta = txn.open_table(META)?;
             let _ = txn.open_table(CHUNKS)?;
             let _ = txn.open_table(STATE_CHECKSUMS)?;
+            let _ = txn.open_table(GRANDPA_VOTES)?;
 
             // Check or initialize schema version.
             // Read first, drop the guard, then write if needed.
@@ -631,6 +637,109 @@ impl Store {
         txn.commit()?;
         Ok(count)
     }
+
+    // ── GRANDPA vote persistence ────────────────────────────────────────
+
+    /// Persist a GRANDPA vote (prevote or precommit).
+    /// `vote_type`: 0x01 = prevote, 0x02 = precommit.
+    pub fn put_grandpa_vote(
+        &self,
+        round: u64,
+        vote_type: u8,
+        validator_index: u16,
+        block_hash: &Hash,
+        block_slot: u32,
+        signature: &[u8; 64],
+    ) -> Result<(), StoreError> {
+        let mut key = [0u8; 11];
+        key[0..8].copy_from_slice(&round.to_le_bytes());
+        key[8] = vote_type;
+        key[9..11].copy_from_slice(&validator_index.to_le_bytes());
+
+        let mut value = [0u8; 100];
+        value[0..32].copy_from_slice(&block_hash.0);
+        value[32..36].copy_from_slice(&block_slot.to_le_bytes());
+        value[36..100].copy_from_slice(signature);
+
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(GRANDPA_VOTES)?;
+            table.insert(key.as_slice(), value.as_slice())?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Load all GRANDPA votes for a given round.
+    pub fn get_grandpa_votes_for_round(
+        &self,
+        round: u64,
+    ) -> Result<Vec<PersistedVote>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(GRANDPA_VOTES)?;
+
+        // Range scan: all keys starting with this round's 8-byte LE prefix
+        let prefix_start = round.to_le_bytes();
+        let mut range_end = [0u8; 11];
+        range_end[0..8].copy_from_slice(&(round + 1).to_le_bytes());
+
+        let mut votes = Vec::new();
+        let range = table.range(prefix_start.as_slice()..range_end.as_slice())?;
+        for entry in range {
+            let entry = entry?;
+            let key = entry.0.value();
+            let val = entry.1.value();
+            if key.len() < 11 || val.len() < 100 {
+                continue;
+            }
+            let vote_type = key[8];
+            let validator_index = u16::from_le_bytes([key[9], key[10]]);
+            let mut block_hash = [0u8; 32];
+            block_hash.copy_from_slice(&val[0..32]);
+            let block_slot = u32::from_le_bytes([val[32], val[33], val[34], val[35]]);
+            let mut signature = [0u8; 64];
+            signature.copy_from_slice(&val[36..100]);
+            votes.push((
+                vote_type,
+                validator_index,
+                Hash(block_hash),
+                block_slot,
+                signature,
+            ));
+        }
+        Ok(votes)
+    }
+
+    /// Remove all GRANDPA votes for rounds ≤ `up_to_round`.
+    pub fn prune_grandpa_votes(&self, up_to_round: u64) -> Result<u32, StoreError> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(GRANDPA_VOTES)?;
+
+        let mut to_delete: Vec<Vec<u8>> = Vec::new();
+        let range_end = (up_to_round + 1).to_le_bytes();
+        let range = table.range(..range_end.as_slice())?;
+        for entry in range {
+            let entry = entry?;
+            to_delete.push(entry.0.value().to_vec());
+        }
+        drop(table);
+        drop(txn);
+
+        if to_delete.is_empty() {
+            return Ok(0);
+        }
+
+        let count = to_delete.len() as u32;
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(GRANDPA_VOTES)?;
+            for key in &to_delete {
+                table.remove(key.as_slice())?;
+            }
+        }
+        txn.commit()?;
+        Ok(count)
+    }
 }
 
 // ── Encoding helpers ────────────────────────────────────────────────────
@@ -1107,5 +1216,50 @@ mod tests {
 
         // Prune with 0 should be no-op
         assert_eq!(store.prune_before_slot(0).unwrap(), 0);
+    }
+
+    #[test]
+    fn test_grandpa_vote_persistence() {
+        let (store, _dir) = temp_store();
+        let block_hash = Hash([42u8; 32]);
+        let sig = [7u8; 64];
+
+        // Store some votes
+        store
+            .put_grandpa_vote(1, 0x01, 0, &block_hash, 10, &sig)
+            .unwrap(); // round 1 prevote v0
+        store
+            .put_grandpa_vote(1, 0x01, 1, &block_hash, 10, &sig)
+            .unwrap(); // round 1 prevote v1
+        store
+            .put_grandpa_vote(1, 0x02, 0, &block_hash, 10, &sig)
+            .unwrap(); // round 1 precommit v0
+        store
+            .put_grandpa_vote(2, 0x01, 0, &block_hash, 11, &sig)
+            .unwrap(); // round 2 prevote v0
+
+        // Load round 1 votes
+        let votes = store.get_grandpa_votes_for_round(1).unwrap();
+        assert_eq!(votes.len(), 3);
+
+        // Load round 2 votes
+        let votes = store.get_grandpa_votes_for_round(2).unwrap();
+        assert_eq!(votes.len(), 1);
+        assert_eq!(votes[0].0, 0x01); // prevote
+        assert_eq!(votes[0].1, 0); // validator 0
+        assert_eq!(votes[0].2, block_hash);
+        assert_eq!(votes[0].3, 11); // slot
+
+        // Prune round 1
+        let pruned = store.prune_grandpa_votes(1).unwrap();
+        assert_eq!(pruned, 3);
+
+        // Round 1 should be empty now
+        let votes = store.get_grandpa_votes_for_round(1).unwrap();
+        assert!(votes.is_empty());
+
+        // Round 2 should still have its vote
+        let votes = store.get_grandpa_votes_for_round(2).unwrap();
+        assert_eq!(votes.len(), 1);
     }
 }
