@@ -77,6 +77,10 @@ struct Cli {
     #[arg(long)]
     info: bool,
 
+    /// Export the chain spec to a JSON file and exit.
+    #[arg(long, value_name = "PATH")]
+    export_chain_spec: Option<String>,
+
     /// Verify integrity of all stored state data and exit.
     /// Checks blake2b checksums for every stored state entry.
     #[arg(long)]
@@ -313,6 +317,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     if cli.info {
         chainspec::print_genesis_info(&config);
+        return Ok(());
+    }
+
+    if let Some(ref path) = cli.export_chain_spec {
+        let (genesis_state, _) = grey_consensus::genesis::create_genesis(&config);
+        let spec = chainspec::ChainSpec::from_genesis(&config, &genesis_state);
+        spec.save(std::path::Path::new(path))
+            .map_err(|e| format!("failed to export chain spec: {e}"))?;
+        println!("Chain spec exported to {}", path);
         return Ok(());
     }
 

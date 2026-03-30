@@ -35,7 +35,6 @@ pub struct ChainSpecConfig {
 
 impl ChainSpec {
     /// Create a chain spec from a Config and genesis state.
-    #[allow(dead_code)] // Used by tests; will be used by --export-chain-spec
     pub fn from_genesis(config: &Config, _genesis_state: &State) -> Self {
         // Compute genesis hash from the config blob
         let config_blob = config.encode_config_blob();
@@ -59,7 +58,6 @@ impl ChainSpec {
     }
 
     /// Save chain spec to a JSON file.
-    #[allow(dead_code)] // Used by tests; will be used by --export-chain-spec
     pub fn save(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let json = serde_json::to_string_pretty(self)?;
         std::fs::write(path, json)?;
