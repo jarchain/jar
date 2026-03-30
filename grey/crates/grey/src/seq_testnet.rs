@@ -51,6 +51,7 @@ impl SeqNode {
 pub async fn run_seq_testnet(
     rpc_port: u16,
     rpc_cors: bool,
+    max_blocks: Option<u32>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config = Config::tiny();
     let (mut genesis_state, secrets) = create_genesis(&config);
@@ -105,6 +106,15 @@ pub async fn run_seq_testnet(
     loop {
         if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
             tracing::info!("Shutting down sequential testnet");
+            break;
+        }
+        if let Some(max) = max_blocks
+            && blocks_produced >= max
+        {
+            tracing::info!(
+                "Reached {} blocks, stopping sequential testnet",
+                blocks_produced
+            );
             break;
         }
         // Check for RPC commands (non-blocking)

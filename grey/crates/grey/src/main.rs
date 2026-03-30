@@ -115,6 +115,11 @@ struct Cli {
     #[arg(long)]
     seq_testnet: bool,
 
+    /// Number of blocks to produce in sequential testnet mode (default: from config).
+    /// Use with --seq-testnet for extended stability testing.
+    #[arg(long)]
+    seq_testnet_blocks: Option<u32>,
+
     /// Database path for persistent storage
     #[arg(long, default_value = "./grey-db")]
     db_path: String,
@@ -307,7 +312,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Deterministic sequential testnet
     if cli.seq_testnet {
         tracing::info!("Running deterministic sequential testnet");
-        return seq_testnet::run_seq_testnet(cli.rpc_port, cli.rpc_cors).await;
+        return seq_testnet::run_seq_testnet(cli.rpc_port, cli.rpc_cors, cli.seq_testnet_blocks)
+            .await;
     }
 
     // Networked testnet mode
