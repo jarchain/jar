@@ -72,6 +72,13 @@ pub struct GrandpaState {
     pub total_validators: u16,
     /// Detected equivocations: validators who voted for conflicting blocks.
     pub equivocations: BTreeSet<ValidatorIndex>,
+    /// Archive of prevotes from unfinalized rounds: (round, validator) → block_hash.
+    /// Used to detect equivocation for votes received after round advancement.
+    prevote_archive: BTreeMap<(u64, ValidatorIndex), Hash>,
+    /// Archive of precommits from unfinalized rounds: (round, validator) → block_hash.
+    precommit_archive: BTreeMap<(u64, ValidatorIndex), Hash>,
+    /// Round at which the archive was last pruned (finalized round).
+    archive_pruned_round: u64,
 }
 
 impl GrandpaState {
@@ -88,6 +95,9 @@ impl GrandpaState {
             precommitted: false,
             total_validators,
             equivocations: BTreeSet::new(),
+            prevote_archive: BTreeMap::new(),
+            precommit_archive: BTreeMap::new(),
+            archive_pruned_round: 0,
         }
     }
 
@@ -130,6 +140,8 @@ impl GrandpaState {
         );
 
         self.prevoted = true;
+        self.prevote_archive
+            .insert((self.round, validator_index), vote.block_hash);
         self.prevotes.insert(validator_index, vote.clone());
 
         Some(VoteMessage {
@@ -140,11 +152,27 @@ impl GrandpaState {
 
     /// Add a received prevote. Returns true if the threshold was just reached.
     pub fn add_prevote(&mut self, vote: Vote) -> bool {
+        // Check cross-round equivocation via archive (catches votes from past rounds)
+        let archive_key = (vote.round, vote.validator_index);
+        if let Some(&archived_hash) = self.prevote_archive.get(&archive_key) {
+            if archived_hash != vote.block_hash {
+                self.equivocations.insert(vote.validator_index);
+                tracing::warn!(
+                    "GRANDPA cross-round equivocation: validator {} prevoted for conflicting blocks in round {}",
+                    vote.validator_index,
+                    vote.round
+                );
+            }
+            return false; // Already archived a prevote from this validator for this round
+        }
+
         if vote.round != self.round {
+            // Archive the vote even though it's for a different round
+            self.prevote_archive.insert(archive_key, vote.block_hash);
             return false;
         }
 
-        // Check for equivocation
+        // Check for equivocation within current round
         if let Some(existing) = self.prevotes.get(&vote.validator_index) {
             if existing.block_hash != vote.block_hash {
                 self.equivocations.insert(vote.validator_index);
@@ -157,6 +185,8 @@ impl GrandpaState {
             return false; // Already have a prevote from this validator
         }
 
+        // Archive and add to current round
+        self.prevote_archive.insert(archive_key, vote.block_hash);
         self.prevotes.insert(vote.validator_index, vote);
         self.prevote_count() == self.threshold()
     }
@@ -191,6 +221,8 @@ impl GrandpaState {
         );
 
         self.precommitted = true;
+        self.precommit_archive
+            .insert((self.round, validator_index), vote.block_hash);
         self.precommits.insert(validator_index, vote.clone());
 
         Some(VoteMessage {
@@ -206,11 +238,27 @@ impl GrandpaState {
     /// violate this relationship — in GRANDPA, a validator must not precommit to
     /// a block that is not on the chain selected by prevotes.
     pub fn add_precommit(&mut self, vote: Vote) -> Option<(Hash, Timeslot)> {
+        // Check cross-round equivocation via archive
+        let archive_key = (vote.round, vote.validator_index);
+        if let Some(&archived_hash) = self.precommit_archive.get(&archive_key) {
+            if archived_hash != vote.block_hash {
+                self.equivocations.insert(vote.validator_index);
+                tracing::warn!(
+                    "GRANDPA cross-round equivocation: validator {} precommitted for conflicting blocks in round {}",
+                    vote.validator_index,
+                    vote.round
+                );
+            }
+            return None; // Already archived
+        }
+
         if vote.round != self.round {
+            // Archive the vote even though it's for a different round
+            self.precommit_archive.insert(archive_key, vote.block_hash);
             return None;
         }
 
-        // Check for equivocation
+        // Check for equivocation within current round
         if let Some(existing) = self.precommits.get(&vote.validator_index) {
             if existing.block_hash != vote.block_hash {
                 self.equivocations.insert(vote.validator_index);
@@ -238,6 +286,8 @@ impl GrandpaState {
             return None;
         }
 
+        // Archive and add to current round
+        self.precommit_archive.insert(archive_key, vote.block_hash);
         self.precommits.insert(vote.validator_index, vote);
 
         // Check if we've reached finality
@@ -288,11 +338,25 @@ impl GrandpaState {
             if *count >= self.threshold() && *slot > self.finalized_slot {
                 self.finalized_hash = *hash;
                 self.finalized_slot = *slot;
+                // Prune vote archives for finalized rounds to bound memory growth.
+                self.prune_archive(self.round.saturating_sub(1));
                 return Some((*hash, *slot));
             }
         }
 
         None
+    }
+
+    /// Prune vote archives for rounds ≤ `up_to_round`.
+    fn prune_archive(&mut self, up_to_round: u64) {
+        if up_to_round <= self.archive_pruned_round {
+            return;
+        }
+        self.prevote_archive
+            .retain(|&(round, _), _| round > up_to_round);
+        self.precommit_archive
+            .retain(|&(round, _), _| round > up_to_round);
+        self.archive_pruned_round = up_to_round;
     }
 
     /// Advance to the next round.
@@ -584,6 +648,36 @@ mod tests {
         grandpa.add_prevote(vote2);
 
         assert!(grandpa.equivocations.contains(&0));
+    }
+
+    #[test]
+    fn test_cross_round_equivocation_detection() {
+        let config = Config::tiny();
+        let (_, secrets) = grey_consensus::genesis::create_genesis(&config);
+
+        let mut grandpa = GrandpaState::new(config.validators_count);
+        let hash1 = Hash([1u8; 32]);
+        let hash2 = Hash([2u8; 32]);
+
+        // Validator 0 prevotes for hash1 in round 1
+        let vote1 = sign_vote(&hash1, 5, 1, 0, &secrets[0], VoteType::Prevote);
+        grandpa.add_prevote(vote1);
+        assert!(!grandpa.equivocations.contains(&0));
+
+        // Advance to round 2 — clears current prevotes but archive remains
+        grandpa.advance_round();
+        assert_eq!(grandpa.round, 2);
+        assert!(grandpa.prevotes.is_empty());
+
+        // Receive a conflicting prevote for round 1 from validator 0 (late arrival)
+        let vote2 = sign_vote(&hash2, 5, 1, 0, &secrets[0], VoteType::Prevote);
+        grandpa.add_prevote(vote2);
+
+        // Cross-round equivocation should be detected
+        assert!(
+            grandpa.equivocations.contains(&0),
+            "should detect cross-round equivocation for validator 0"
+        );
     }
 
     #[test]
