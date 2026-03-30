@@ -1672,6 +1672,7 @@ dependencies = [
  "grey-crypto",
  "grey-merkle",
  "grey-types",
+ "hex",
  "redb",
  "serde_json",
  "tempfile",
