@@ -222,6 +222,20 @@ impl Store {
         Ok(table.len()?)
     }
 
+    /// Count the number of stored DA chunks.
+    pub fn chunk_count(&self) -> Result<u64, StoreError> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(CHUNKS)?;
+        Ok(table.len()?)
+    }
+
+    /// Count the number of stored GRANDPA votes.
+    pub fn vote_count(&self) -> Result<u64, StoreError> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(GRANDPA_VOTES)?;
+        Ok(table.len()?)
+    }
+
     // ── State ───────────────────────────────────────────────────────────
 
     /// Store chain state for a given block hash.
