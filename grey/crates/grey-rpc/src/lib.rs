@@ -587,6 +587,46 @@ where
         if is_get && path == "/health" {
             let body = serde_json::json!({"status": "ok"}).to_string();
             Box::pin(async move { Ok(json_response(200, body)) })
+        } else if is_get && path == "/metrics" {
+            let state = self.state.clone();
+            Box::pin(async move {
+                let status = state.status.read().await;
+                let head_slot = status.head_slot;
+                let finalized_slot = status.finalized_slot;
+                let blocks_authored = status.blocks_authored;
+                let blocks_imported = status.blocks_imported;
+                let validator_index = status.validator_index;
+                drop(status);
+
+                let stored_blocks = state.store.block_count().unwrap_or(0);
+
+                let body = format!(
+                    "# HELP grey_block_height Current head slot.\n\
+                     # TYPE grey_block_height gauge\n\
+                     grey_block_height {head_slot}\n\
+                     # HELP grey_finalized_height Last finalized slot.\n\
+                     # TYPE grey_finalized_height gauge\n\
+                     grey_finalized_height {finalized_slot}\n\
+                     # HELP grey_blocks_produced_total Blocks authored by this node.\n\
+                     # TYPE grey_blocks_produced_total counter\n\
+                     grey_blocks_produced_total {blocks_authored}\n\
+                     # HELP grey_blocks_imported_total Blocks received and imported.\n\
+                     # TYPE grey_blocks_imported_total counter\n\
+                     grey_blocks_imported_total {blocks_imported}\n\
+                     # HELP grey_stored_blocks Number of blocks in the database.\n\
+                     # TYPE grey_stored_blocks gauge\n\
+                     grey_stored_blocks {stored_blocks}\n\
+                     # HELP grey_validator_index Validator index of this node.\n\
+                     # TYPE grey_validator_index gauge\n\
+                     grey_validator_index {validator_index}\n"
+                );
+
+                Ok(http::Response::builder()
+                    .status(200)
+                    .header("content-type", "text/plain; version=0.0.4; charset=utf-8")
+                    .body(HttpBody::from(body))
+                    .unwrap())
+            })
         } else if is_get && path == "/ready" {
             let state = self.state.clone();
             Box::pin(async move {
@@ -1234,5 +1274,31 @@ mod tests {
 
         assert_eq!(successes, 100, "all 100 concurrent requests should succeed");
         assert_eq!(failures, 0);
+    }
+
+    #[tokio::test]
+    async fn test_metrics_endpoint() {
+        let (url, state, _rx, store, _dir) = setup().await;
+        {
+            let mut status = state.status.write().await;
+            status.head_slot = 50;
+            status.finalized_slot = 45;
+            status.blocks_authored = 10;
+            status.blocks_imported = 40;
+        }
+
+        // Store a block so stored_blocks > 0
+        let block = test_block(1);
+        store.put_block(&block).unwrap();
+
+        let (status, body) = http_get(&format!("{}/metrics", url)).await;
+        assert_eq!(status, 200);
+        assert!(body.contains("grey_block_height 50"));
+        assert!(body.contains("grey_finalized_height 45"));
+        assert!(body.contains("grey_blocks_produced_total 10"));
+        assert!(body.contains("grey_blocks_imported_total 40"));
+        assert!(body.contains("grey_stored_blocks 1"));
+        assert!(body.contains("# TYPE grey_block_height gauge"));
+        assert!(body.contains("# TYPE grey_blocks_produced_total counter"));
     }
 }

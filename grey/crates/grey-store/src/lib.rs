@@ -12,7 +12,7 @@ use grey_types::Hash;
 use grey_types::config::Config;
 use grey_types::header::Block;
 use grey_types::state::State;
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use redb::{Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition};
 use std::path::Path;
 
 /// Current schema version. Bump this when table layouts change.
@@ -206,6 +206,13 @@ impl Store {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(BLOCKS)?;
         Ok(table.get(&hash.0)?.is_some())
+    }
+
+    /// Count the number of stored blocks.
+    pub fn block_count(&self) -> Result<u64, StoreError> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(BLOCKS)?;
+        Ok(table.len()?)
     }
 
     // ── State ───────────────────────────────────────────────────────────
