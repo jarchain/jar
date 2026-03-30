@@ -29,6 +29,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// exhaustion from peers sending blocks far ahead of our current state.
 const MAX_PENDING_BLOCKS: usize = 100;
 
+/// Encode a finality vote message and broadcast it to the network.
+fn broadcast_vote(
+    net_commands: &tokio::sync::mpsc::Sender<NetworkCommand>,
+    msg: &finality::VoteMessage,
+) {
+    let data = finality::encode_vote_message(msg);
+    let _ = net_commands.try_send(NetworkCommand::BroadcastFinalityVote { data });
+}
+
 /// Node configuration.
 pub struct NodeConfig {
     /// Validator index in the genesis set.
@@ -656,10 +665,7 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                                     config.validator_index,
                                     my_secrets,
                                 ) {
-                                    let vote_data = finality::encode_vote_message(&prevote_msg);
-                                    let _ = net_commands.try_send(NetworkCommand::BroadcastFinalityVote {
-                                        data: vote_data,
-                                    });
+                                    broadcast_vote(&net_commands, &prevote_msg);
                                 }
 
                                 // Try to precommit if prevote threshold reached
@@ -667,10 +673,7 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                                     config.validator_index,
                                     my_secrets,
                                 ) {
-                                    let vote_data = finality::encode_vote_message(&precommit_msg);
-                                    let _ = net_commands.try_send(NetworkCommand::BroadcastFinalityVote {
-                                        data: vote_data,
-                                    });
+                                    broadcast_vote(&net_commands, &precommit_msg);
                                 }
                             }
                             Err(e) => {
@@ -893,19 +896,13 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                                         config.validator_index,
                                         my_secrets,
                                     ) {
-                                        let vote_data = finality::encode_vote_message(&prevote_msg);
-                                        let _ = net_commands.try_send(NetworkCommand::BroadcastFinalityVote {
-                                            data: vote_data,
-                                        });
+                                        broadcast_vote(&net_commands, &prevote_msg);
                                     }
                                     if let Some(precommit_msg) = grandpa.create_precommit(
                                         config.validator_index,
                                         my_secrets,
                                     ) {
-                                        let vote_data = finality::encode_vote_message(&precommit_msg);
-                                        let _ = net_commands.try_send(NetworkCommand::BroadcastFinalityVote {
-                                            data: vote_data,
-                                        });
+                                        broadcast_vote(&net_commands, &precommit_msg);
                                     }
                                 }
                                 Err(e) => {
@@ -961,10 +958,7 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                                                 config.validator_index,
                                                 my_secrets,
                                             ) {
-                                                let vote_data = finality::encode_vote_message(&precommit_msg);
-                                                let _ = net_commands.try_send(NetworkCommand::BroadcastFinalityVote {
-                                                    data: vote_data,
-                                                });
+                                                broadcast_vote(&net_commands, &precommit_msg);
                                             }
                                         }
                                     }
