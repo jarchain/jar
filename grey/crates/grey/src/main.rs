@@ -5,7 +5,6 @@
 
 #[allow(dead_code)]
 mod audit;
-#[allow(dead_code)]
 mod chainspec;
 #[allow(dead_code)]
 mod finality;
@@ -54,6 +53,14 @@ struct Cli {
     /// Use tiny test config (V=6, C=2, E=12)
     #[arg(long, default_value_t = true)]
     tiny: bool,
+
+    /// Built-in chain preset: "tiny" (V=6, C=2) or "full" (V=1023, C=341)
+    #[arg(long, value_name = "PRESET")]
+    chain: Option<String>,
+
+    /// Path to a JSON chain spec file (overrides --tiny and --chain)
+    #[arg(long, value_name = "PATH")]
+    chain_spec: Option<String>,
 
     /// Genesis time override (Unix timestamp, 0 = use current time)
     #[arg(long, default_value_t = 0)]
@@ -139,7 +146,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     };
 
-    let config = if cli.tiny {
+    // Resolve protocol config: --chain-spec > --chain > --tiny
+    let config = if let Some(ref path) = cli.chain_spec {
+        let spec = chainspec::ChainSpec::load(std::path::Path::new(path))
+            .map_err(|e| format!("failed to load chain spec from {}: {}", path, e))?;
+        tracing::info!(
+            "Loaded chain spec '{}' from {} (V={}, C={}, E={})",
+            spec.name,
+            path,
+            spec.config.validators_count,
+            spec.config.core_count,
+            spec.config.epoch_length,
+        );
+        spec.to_config()
+    } else if let Some(ref preset) = cli.chain {
+        match preset.as_str() {
+            "tiny" => Config::tiny(),
+            "full" => Config::full(),
+            other => {
+                return Err(format!(
+                    "unknown chain preset: {:?} (expected \"tiny\" or \"full\")",
+                    other
+                )
+                .into());
+            }
+        }
+    } else if cli.tiny {
         Config::tiny()
     } else {
         Config::full()
@@ -208,19 +240,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     if cli.info {
-        println!("Grey — JAM Blockchain Node");
-        println!("Protocol: JAM (Join-Accumulate Machine)");
-        println!("Specification: Gray Paper v0.7.2");
-        println!();
-        println!("Configuration:");
-        println!("  Validators: {}", config.validators_count);
-        println!("  Cores: {}", config.core_count);
-        println!("  Epoch length: {} slots", config.epoch_length);
-        println!("  Slot period: 6s");
-        println!();
-
-        let genesis_hash = grey_crypto::blake2b_256(b"jam");
-        println!("Genesis seed hash: {genesis_hash}");
+        chainspec::print_genesis_info(&config);
         return Ok(());
     }
 
