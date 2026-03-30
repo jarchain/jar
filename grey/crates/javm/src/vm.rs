@@ -157,6 +157,7 @@ impl Pvm {
     pub fn read_u8(&self, addr: u32) -> Option<u8> {
         let a = addr as usize;
         if a < self.flat_mem.len() {
+            // SAFETY: a < flat_mem.len() is checked above.
             Some(unsafe { *self.flat_mem.get_unchecked(a) })
         } else {
             None
@@ -167,6 +168,8 @@ impl Pvm {
     fn read_u16_le(&self, addr: u32) -> Option<u16> {
         let a = addr as usize;
         if a + 2 <= self.flat_mem.len() {
+            // SAFETY: a + 2 <= flat_mem.len() ensures the pointer is within bounds.
+            // read_unaligned handles unaligned addresses on x86.
             Some(unsafe { self.flat_mem.as_ptr().add(a).cast::<u16>().read_unaligned() })
         } else {
             None
@@ -177,6 +180,7 @@ impl Pvm {
     fn read_u32_le(&self, addr: u32) -> Option<u32> {
         let a = addr as usize;
         if a + 4 <= self.flat_mem.len() {
+            // SAFETY: a + 4 <= flat_mem.len() ensures the pointer is within bounds.
             Some(unsafe { self.flat_mem.as_ptr().add(a).cast::<u32>().read_unaligned() })
         } else {
             None
@@ -187,6 +191,7 @@ impl Pvm {
     fn read_u64_le(&self, addr: u32) -> Option<u64> {
         let a = addr as usize;
         if a + 8 <= self.flat_mem.len() {
+            // SAFETY: a + 8 <= flat_mem.len() ensures the pointer is within bounds.
             Some(unsafe { self.flat_mem.as_ptr().add(a).cast::<u64>().read_unaligned() })
         } else {
             None
@@ -197,6 +202,7 @@ impl Pvm {
     pub fn write_u8(&mut self, addr: u32, val: u8) -> bool {
         let a = addr as usize;
         if a < self.flat_mem.len() {
+            // SAFETY: a < flat_mem.len() is checked above.
             unsafe {
                 *self.flat_mem.get_unchecked_mut(a) = val;
             }
@@ -210,6 +216,7 @@ impl Pvm {
     fn write_u16_le(&mut self, addr: u32, val: u16) -> bool {
         let a = addr as usize;
         if a + 2 <= self.flat_mem.len() {
+            // SAFETY: a + 2 <= flat_mem.len() ensures the pointer is within bounds.
             unsafe {
                 self.flat_mem
                     .as_mut_ptr()
@@ -227,6 +234,7 @@ impl Pvm {
     fn write_u32_le(&mut self, addr: u32, val: u32) -> bool {
         let a = addr as usize;
         if a + 4 <= self.flat_mem.len() {
+            // SAFETY: a + 4 <= flat_mem.len() ensures the pointer is within bounds.
             unsafe {
                 self.flat_mem
                     .as_mut_ptr()
@@ -244,6 +252,7 @@ impl Pvm {
     fn write_u64_le(&mut self, addr: u32, val: u64) -> bool {
         let a = addr as usize;
         if a + 8 <= self.flat_mem.len() {
+            // SAFETY: a + 8 <= flat_mem.len() ensures the pointer is within bounds.
             unsafe {
                 self.flat_mem
                     .as_mut_ptr()
@@ -1656,6 +1665,8 @@ impl Pvm {
 
         loop {
             // Copy the decoded instruction (avoids borrow conflict with &mut self)
+            // SAFETY: idx is maintained within 0..decoded_insts.len() by the decoder
+            // and incremented only via validated next_pc / jump targets.
             let inst = *unsafe { self.decoded_insts.get_unchecked(idx as usize) };
 
             // Per-gas-block charging (JAR v0.8.0): only at PC=0 and post-terminator starts
@@ -2691,6 +2702,7 @@ pub fn skip_for_bitmask(bitmask: &[u8], pc: usize) -> usize {
     // Fast path: if we have at least 8 bytes, use a u64 scan.
     // Most instructions are 1-6 bytes, so the first word usually suffices.
     if start + 8 <= bm_len {
+        // SAFETY: start + 8 <= bm_len ensures the 8-byte read is within the slice.
         let word = unsafe { std::ptr::read_unaligned(bitmask.as_ptr().add(start) as *const u64) };
         // Each byte is 0 or 1. A byte with value 1 means "instruction start".
         // We want the position of the first non-zero byte.

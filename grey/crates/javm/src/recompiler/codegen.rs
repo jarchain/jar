@@ -256,6 +256,8 @@ impl Compiler {
 
     fn is_basic_block_start(&self, idx: u32) -> bool {
         let i = idx as usize;
+        // SAFETY: bitmask_ptr points to the start of a valid &[u8] slice of length
+        // bitmask_len, and i < bitmask_len is checked before the dereference.
         i < self.bitmask_len && unsafe { *self.bitmask_ptr.add(i) } == 1
     }
 

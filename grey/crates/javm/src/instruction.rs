@@ -389,6 +389,8 @@ static OPCODE_COMBINED: [u8; 256] = {
 pub fn decode_opcode_fast(b: u8) -> Option<(Opcode, InstructionCategory)> {
     let entry = OPCODE_COMBINED[b as usize];
     if entry & 0x80 != 0 {
+        // SAFETY: b is a valid Opcode discriminant — OPCODE_COMBINED[b] has bit 7 set
+        // only for bytes that correspond to defined Opcode variants.
         let opcode = unsafe { core::mem::transmute::<u8, Opcode>(b) };
         let category = CATEGORY_LUT[b as usize];
         Some((opcode, category))
