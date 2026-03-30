@@ -12,6 +12,26 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: cargo audit
+        # Ignored advisories:
+        #   RUSTSEC-2025-0009: ring 0.16.x AES panic — transitive dep via
+        #     libp2p-tls -> rcgen -> ring. No upgrade path until libp2p
+        #     updates to ring 0.17+.
+        #   RUSTSEC-2025-0010: ring 0.16.x unmaintained — same root cause.
+        run: >
+          cargo audit
+          --ignore RUSTSEC-2025-0009
+          --ignore RUSTSEC-2025-0010
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
