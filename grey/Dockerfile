@@ -1,0 +1,53 @@
+# Grey — JAM blockchain node
+# Multi-stage Docker build: Rust builder + minimal Debian runtime.
+#
+# Build:  docker build -t grey grey/
+# Run:    docker run -p 9000:9000 -p 9933:9933 -v grey-data:/data grey
+# Info:   docker run grey --info
+
+# ── Builder stage ────────────────────────────────────────────────────────
+FROM rust:1.94-bookworm AS builder
+
+WORKDIR /build
+
+# Copy workspace manifests first for dependency caching
+COPY ../Cargo.toml ../Cargo.lock ./
+COPY ../grey/ ./grey/
+COPY ../tools/ ./tools/
+COPY ../spec/crypto-ffi/ ./spec/crypto-ffi/
+
+# Build the grey binary in release mode
+RUN cargo build --release --locked -p grey \
+    && strip target/release/grey
+
+# ── Runtime stage ────────────────────────────────────────────────────────
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN useradd --create-home --shell /bin/bash grey
+
+# Copy binary from builder
+COPY --from=builder /build/target/release/grey /usr/local/bin/grey
+
+# Data and config volumes
+RUN mkdir -p /data /config && chown grey:grey /data /config
+VOLUME ["/data", "/config"]
+
+# Switch to non-root
+USER grey
+WORKDIR /home/grey
+
+# Ports: P2P, RPC, Metrics
+EXPOSE 9000 9933 9615
+
+# Health check via RPC /health endpoint
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:9933/health || exit 1
+
+# Default: run grey with data in /data, listening on all interfaces
+ENTRYPOINT ["grey"]
+CMD ["--listen-addr", "0.0.0.0", "--db-path", "/data", "--rpc-port", "9933", "--rpc-cors"]
