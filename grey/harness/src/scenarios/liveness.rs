@@ -37,12 +37,14 @@ pub async fn run(client: &RpcClient) -> ScenarioResult {
             pass: true,
             duration: start.elapsed(),
             error: None,
+            latencies: vec![],
         },
         Err(e) => ScenarioResult {
             name: "liveness",
             pass: false,
             duration: start.elapsed(),
             error: Some(e),
+            latencies: vec![],
         },
     }
 }

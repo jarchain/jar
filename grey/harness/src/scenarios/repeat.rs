@@ -26,6 +26,7 @@ pub async fn run(client: &RpcClient) -> ScenarioResult {
                 pass: false,
                 duration: start.elapsed(),
                 error: Some(e.to_string()),
+                latencies: vec![],
             };
         }
     }
@@ -34,5 +35,6 @@ pub async fn run(client: &RpcClient) -> ScenarioResult {
         pass: true,
         duration: start.elapsed(),
         error: None,
+        latencies: vec![],
     }
 }

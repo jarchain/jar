@@ -134,7 +134,9 @@ async fn main() {
         };
         let dur = result.duration.as_secs();
         if result.pass {
-            println!("  PASS ({dur}s)\n");
+            println!("  PASS ({dur}s)");
+            result.print_latency_summary();
+            println!();
         } else {
             println!(
                 "  FAIL: {} ({dur}s)\n",

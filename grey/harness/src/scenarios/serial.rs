@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use crate::poll::submit_and_verify_pixel;
 use crate::rpc::RpcClient;
-use crate::scenarios::ScenarioResult;
+use crate::scenarios::{LatencySample, ScenarioResult};
 
 const SERVICE_ID: u32 = 2000;
 const TIMEOUT: Duration = Duration::from_secs(120);
@@ -19,20 +19,29 @@ const PIXELS: [(u8, u8, u8, u8, u8); 5] = [
 
 pub async fn run(client: &RpcClient) -> ScenarioResult {
     let start = Instant::now();
+    let mut latencies = Vec::new();
+
     for (x, y, r, g, b) in PIXELS {
+        let op_start = Instant::now();
         if let Err(e) = submit_and_verify_pixel(client, SERVICE_ID, x, y, r, g, b, TIMEOUT).await {
             return ScenarioResult {
                 name: "serial",
                 pass: false,
                 duration: start.elapsed(),
                 error: Some(e.to_string()),
+                latencies,
             };
         }
+        latencies.push(LatencySample {
+            label: format!("pixel({x},{y})"),
+            duration: op_start.elapsed(),
+        });
     }
     ScenarioResult {
         name: "serial",
         pass: true,
         duration: start.elapsed(),
         error: None,
+        latencies,
     }
 }

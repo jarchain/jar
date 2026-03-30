@@ -20,6 +20,7 @@ async fn assert_rejected(
             pass: false,
             duration: start.elapsed(),
             error: Some(format!("{} should have been rejected", description)),
+            latencies: vec![],
         });
     }
     None
@@ -57,6 +58,7 @@ pub async fn run(client: &RpcClient) -> ScenarioResult {
             pass: false,
             duration: start.elapsed(),
             error: Some(format!("node unhealthy after invalid submissions: {}", e)),
+            latencies: vec![],
         };
     }
 
@@ -65,5 +67,6 @@ pub async fn run(client: &RpcClient) -> ScenarioResult {
         pass: true,
         duration: start.elapsed(),
         error: None,
+        latencies: vec![],
     }
 }
