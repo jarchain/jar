@@ -663,4 +663,38 @@ mod tests {
             assert!(table.get(&block_hash.0).unwrap().is_none());
         }
     }
+
+    #[test]
+    fn test_get_accumulation_root() {
+        let (store, _dir) = temp_store();
+        let config = Config::tiny();
+        let (genesis_state, _) = grey_consensus::genesis::create_genesis(&config);
+        let block_hash = Hash([99u8; 32]);
+
+        store
+            .put_state(&block_hash, &genesis_state, &config)
+            .unwrap();
+
+        // Genesis state has recent_blocks with headers. The genesis block's
+        // header_hash should be findable, and its accumulation_root should be
+        // the zero hash (genesis has no accumulation history).
+        if let Some(first_header) = genesis_state.recent_blocks.headers.first() {
+            let result = store
+                .get_accumulation_root(&block_hash, &first_header.header_hash)
+                .unwrap();
+            assert!(result.is_some(), "should find the genesis header");
+            assert_eq!(
+                result.unwrap().0,
+                first_header.accumulation_root.0,
+                "accumulation_root should match"
+            );
+        }
+
+        // Looking up a non-existent anchor should return None.
+        let fake_anchor = Hash([0xFF; 32]);
+        let result = store
+            .get_accumulation_root(&block_hash, &fake_anchor)
+            .unwrap();
+        assert!(result.is_none(), "non-existent anchor should return None");
+    }
 }
