@@ -2,6 +2,15 @@
 //!
 //! Emits native x86-64 machine code with label-based jump resolution.
 //! All jumps use 32-bit relative offsets (no short-jump optimization).
+//!
+//! # Safety model
+//!
+//! The assembler writes to a raw `*mut u8` buffer (`self.buf`) for performance.
+//! The key invariant: `self.buf` points to a valid allocation of at least
+//! `self.capacity` bytes (either a Vec's backing store or an mmap region).
+//! All emission functions have `debug_assert!(self.write_pos + N <= self.capacity)`
+//! guards. Callers must ensure capacity via `ensure_capacity()` before emitting.
+//! Vec length is synced via `set_len(write_pos)` only at finalization boundaries.
 
 /// Instruction buffer: accumulates x86 bytes in a u128 register, then flushes
 /// with a single bulk write. Avoids per-byte memory stores.
@@ -206,6 +215,8 @@ impl Assembler {
     /// mmap region during compilation. After finalize_mmap(), the buffer is
     /// mprotected to PROT_READ|PROT_EXEC — no copy needed.
     pub fn with_mmap(code_capacity: usize, label_capacity: usize) -> Result<Self, String> {
+        // SAFETY: mmap with MAP_ANONYMOUS|MAP_PRIVATE creates a fresh private mapping.
+        // Returns MAP_FAILED on error, checked below.
         let ptr = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
@@ -244,6 +255,10 @@ impl Assembler {
     fn grow(&mut self, additional: usize) {
         match &mut self.code_buf {
             CodeBuf::Vec(code) => {
+                // SAFETY: write_pos <= code.capacity() (maintained by emission guards).
+                // We set_len to the actual written bytes before reserve() so it
+                // copies existing data, then reset to 0 since we track length via
+                // write_pos (not Vec::len).
                 unsafe {
                     code.set_len(self.write_pos);
                 }
@@ -257,6 +272,8 @@ impl Assembler {
             CodeBuf::Mmap { ptr, capacity } => {
                 // For mmap buffers, mremap to a larger size
                 let new_cap = (*capacity + additional).next_power_of_two();
+                // SAFETY: ptr/capacity are valid from a previous mmap. mremap may move
+                // the mapping; the returned pointer replaces the old one.
                 let new_ptr = unsafe {
                     libc::mremap(
                         *ptr as *mut libc::c_void,
@@ -323,6 +340,7 @@ impl Assembler {
     /// Patch an i32 value at a previously recorded offset.
     pub fn patch_i32(&mut self, offset: usize, value: i32) {
         debug_assert!(offset + 4 <= self.write_pos);
+        // SAFETY: offset + 4 <= write_pos <= capacity, so buf.add(offset) is in bounds.
         unsafe {
             std::ptr::copy_nonoverlapping(value.to_le_bytes().as_ptr(), self.buf.add(offset), 4);
         }
@@ -331,6 +349,8 @@ impl Assembler {
     // === Raw byte emission ===
     // All emission writes directly to the buffer via raw pointer,
     // bypassing Vec::push's capacity check and len update.
+    // SAFETY for all emit* functions: write_pos + N <= capacity is guarded by
+    // debug_assert. Callers ensure capacity via ensure_capacity() before sequences.
 
     #[inline(always)]
     fn emit(&mut self, b: u8) {
@@ -1609,6 +1629,7 @@ impl Assembler {
     /// Sync Vec length with the write cursor. Call before accessing `self.code` directly.
     pub fn sync_len(&mut self) {
         if let CodeBuf::Vec(code) = &mut self.code_buf {
+            // SAFETY: write_pos <= code.capacity() (maintained by emission guards).
             unsafe {
                 code.set_len(self.write_pos);
             }
@@ -1624,6 +1645,7 @@ impl Assembler {
             let target = stored - 1; // stored as offset+1
             let rel = (target as i64) - (fixup.offset as i64 + 4);
             let rel32 = rel as i32;
+            // SAFETY: fixup.offset + 4 <= write_pos (fixup was recorded during emission).
             unsafe {
                 std::ptr::copy_nonoverlapping(
                     rel32.to_le_bytes().as_ptr(),
@@ -1639,6 +1661,7 @@ impl Assembler {
         self.resolve_fixups();
         match &mut self.code_buf {
             CodeBuf::Vec(code) => {
+                // SAFETY: write_pos <= code.capacity().
                 unsafe {
                     code.set_len(self.write_pos);
                 }
@@ -1647,6 +1670,8 @@ impl Assembler {
             CodeBuf::Mmap { ptr, capacity } => {
                 // Copy from mmap to Vec (fallback path)
                 let mut v = Vec::with_capacity(self.write_pos);
+                // SAFETY: ptr is valid for write_pos bytes (written during compilation).
+                // munmap frees the original mapping after the copy.
                 unsafe {
                     std::ptr::copy_nonoverlapping(*ptr, v.as_mut_ptr(), self.write_pos);
                     v.set_len(self.write_pos);
@@ -1669,6 +1694,9 @@ impl Assembler {
                 let code_len = self.write_pos;
                 let p = *ptr;
                 let cap = *capacity;
+                // SAFETY: mprotect transitions the buffer from RW to RX (W^X).
+                // On failure, munmap cleans up. Ownership transfers to the caller
+                // by nulling ptr/capacity (prevents double-free in Drop).
                 unsafe {
                     if libc::mprotect(
                         p as *mut libc::c_void,
@@ -1697,6 +1725,7 @@ impl Assembler {
         self.sync_len();
         match &self.code_buf {
             CodeBuf::Vec(v) => v.as_slice(),
+            // SAFETY: ptr is valid for write_pos bytes (the mmap region).
             CodeBuf::Mmap { ptr, .. } => unsafe {
                 std::slice::from_raw_parts(*ptr, self.write_pos)
             },
@@ -1710,6 +1739,8 @@ impl Drop for Assembler {
             && !ptr.is_null()
             && capacity > 0
         {
+            // SAFETY: ptr/capacity are from a valid mmap that wasn't transferred
+            // to the caller (finalize_executable nulls ptr on ownership transfer).
             unsafe {
                 libc::munmap(ptr as *mut libc::c_void, capacity);
             }
