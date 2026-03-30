@@ -436,12 +436,61 @@ async fn run_network_loop(
 ) {
     let mut peers = PeerTracker::new();
 
-    // Helper: try_send an event, warn and drop on full (never block the network loop).
+    // Priority-aware event sending. Under backpressure (>80% full), only
+    // critical and high priority messages are accepted; lower priorities are
+    // dropped to preserve liveness for finality and block propagation.
+    //
+    // Priority levels (from issue #178):
+    //   Critical: finality votes (protocol liveness depends on these)
+    //   High:     blocks, chunk/block requests (chain progress)
+    //   Normal:   assurances, announcements (availability, audit)
+    //   Low:      guarantees, tickets (can be re-requested)
+    const BACKPRESSURE_THRESHOLD: usize = EVENT_CHANNEL_CAPACITY / 5; // 20% remaining
+
     macro_rules! send_event {
-        ($event:expr) => {
+        ($event:expr, critical) => {
+            // Critical: always attempt to send
             if let Err(mpsc::error::TrySendError::Full(_)) = event_tx.try_send($event) {
                 tracing::warn!(
-                    "Validator {} network event channel full, dropping message",
+                    "Validator {} event channel full, dropping CRITICAL message",
+                    validator_index,
+                );
+            }
+        };
+        ($event:expr, high) => {
+            if let Err(mpsc::error::TrySendError::Full(_)) = event_tx.try_send($event) {
+                tracing::warn!(
+                    "Validator {} event channel full, dropping high-priority message",
+                    validator_index,
+                );
+            }
+        };
+        ($event:expr, normal) => {
+            if event_tx.capacity() < BACKPRESSURE_THRESHOLD {
+                tracing::debug!(
+                    "Validator {} event channel congested ({}/{}), dropping normal-priority message",
+                    validator_index,
+                    EVENT_CHANNEL_CAPACITY - event_tx.capacity(),
+                    EVENT_CHANNEL_CAPACITY,
+                );
+            } else if let Err(mpsc::error::TrySendError::Full(_)) = event_tx.try_send($event) {
+                tracing::warn!(
+                    "Validator {} event channel full, dropping normal-priority message",
+                    validator_index,
+                );
+            }
+        };
+        ($event:expr, low) => {
+            if event_tx.capacity() < BACKPRESSURE_THRESHOLD {
+                tracing::debug!(
+                    "Validator {} event channel congested ({}/{}), dropping low-priority message",
+                    validator_index,
+                    EVENT_CHANNEL_CAPACITY - event_tx.capacity(),
+                    EVENT_CHANNEL_CAPACITY,
+                );
+            } else if let Err(mpsc::error::TrySendError::Full(_)) = event_tx.try_send($event) {
+                tracing::warn!(
+                    "Validator {} event channel full, dropping low-priority message",
                     validator_index,
                 );
             }
@@ -469,32 +518,32 @@ async fn run_network_loop(
                             send_event!(NetworkEvent::BlockReceived {
                                 data: message.data,
                                 source: propagation_source,
-                            });
+                            }, high);
                         } else if topic == FINALITY_TOPIC {
                             send_event!(NetworkEvent::FinalityVote {
                                 data: message.data,
                                 source: propagation_source,
-                            });
+                            }, critical);
                         } else if topic == GUARANTEES_TOPIC {
                             send_event!(NetworkEvent::GuaranteeReceived {
                                 data: message.data,
                                 source: propagation_source,
-                            });
+                            }, low);
                         } else if topic == ASSURANCES_TOPIC {
                             send_event!(NetworkEvent::AssuranceReceived {
                                 data: message.data,
                                 source: propagation_source,
-                            });
+                            }, normal);
                         } else if topic == ANNOUNCEMENTS_TOPIC {
                             send_event!(NetworkEvent::AnnouncementReceived {
                                 data: message.data,
                                 source: propagation_source,
-                            });
+                            }, normal);
                         } else if topic == TICKETS_TOPIC {
                             send_event!(NetworkEvent::TicketReceived {
                                 data: message.data,
                                 source: propagation_source,
-                            });
+                            }, low);
                         }
                     }
                     // Handle request-response events
@@ -517,7 +566,7 @@ async fn run_network_loop(
                                                 report_hash,
                                                 chunk_index,
                                                 response_tx: tx,
-                                            });
+                                            }, high);
                                             // Wait briefly for the node to respond
                                             rx.await.ok().flatten().unwrap_or_default()
                                         }
@@ -530,7 +579,7 @@ async fn run_network_loop(
                                             send_event!(NetworkEvent::BlockRequest {
                                                 block_hash,
                                                 response_tx: tx,
-                                            });
+                                            }, high);
                                             rx.await.ok().flatten().unwrap_or_default()
                                         }
                                         _ => {
@@ -579,7 +628,7 @@ async fn run_network_loop(
                         send_event!(NetworkEvent::PeerIdentified {
                             peer_id,
                             validator_index: vi,
-                        });
+                        }, high);
                         tracing::info!(
                             "Validator {} identified peer {} (validator={:?}), total_peers={}",
                             validator_index,
