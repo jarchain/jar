@@ -944,6 +944,17 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                                                 }
                                             }
 
+                                            // Expire old DA chunks (TTL = 2 * epoch_length)
+                                            let chunk_ttl = 2 * protocol.epoch_length;
+                                            match store.prune_expired_chunks(fin_slot, chunk_ttl) {
+                                                Ok(0) => {}
+                                                Ok(n) => tracing::debug!(
+                                                    "Expired chunks for {} reports (TTL={})",
+                                                    n, chunk_ttl
+                                                ),
+                                                Err(e) => tracing::warn!("Chunk expiration failed: {}", e),
+                                            }
+
                                             // Advance to next round
                                             if grandpa.should_advance_round() {
                                                 grandpa.advance_round();
