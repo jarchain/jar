@@ -304,20 +304,23 @@ impl GrandpaState {
         self.prevote_count() >= self.threshold()
     }
 
-    /// GHOST rule: find the block with the most prevotes.
-    /// In our simplified version, we pick the block with the most votes
-    /// at the highest slot.
-    fn prevote_ghost(&self) -> Option<(Hash, Timeslot)> {
-        let mut vote_counts: BTreeMap<Hash, (usize, Timeslot)> = BTreeMap::new();
-        for vote in self.prevotes.values() {
-            let entry = vote_counts
+    /// Aggregate votes by block hash, returning (count, slot) per block.
+    fn count_votes(votes: &BTreeMap<ValidatorIndex, Vote>) -> BTreeMap<Hash, (usize, Timeslot)> {
+        let mut counts: BTreeMap<Hash, (usize, Timeslot)> = BTreeMap::new();
+        for vote in votes.values() {
+            let entry = counts
                 .entry(vote.block_hash)
                 .or_insert((0, vote.block_slot));
             entry.0 += 1;
         }
+        counts
+    }
 
-        // Find the block with the most votes (tie-break by highest slot)
-        vote_counts
+    /// GHOST rule: find the block with the most prevotes.
+    /// In our simplified version, we pick the block with the most votes
+    /// at the highest slot.
+    fn prevote_ghost(&self) -> Option<(Hash, Timeslot)> {
+        Self::count_votes(&self.prevotes)
             .into_iter()
             .filter(|(_, (count, _))| *count >= self.threshold())
             .max_by_key(|(_, (count, slot))| (*count, *slot))
@@ -326,15 +329,7 @@ impl GrandpaState {
 
     /// Check if precommits have reached supermajority on any block.
     fn check_finality(&mut self) -> Option<(Hash, Timeslot)> {
-        let mut vote_counts: BTreeMap<Hash, (usize, Timeslot)> = BTreeMap::new();
-        for vote in self.precommits.values() {
-            let entry = vote_counts
-                .entry(vote.block_hash)
-                .or_insert((0, vote.block_slot));
-            entry.0 += 1;
-        }
-
-        for (hash, (count, slot)) in &vote_counts {
+        for (hash, (count, slot)) in &Self::count_votes(&self.precommits) {
             if *count >= self.threshold() && *slot > self.finalized_slot {
                 self.finalized_hash = *hash;
                 self.finalized_slot = *slot;
@@ -371,15 +366,10 @@ impl GrandpaState {
     /// Check if the current round should advance (both prevote and precommit
     /// supermajorities reached, or timeout).
     pub fn should_advance_round(&self) -> bool {
-        // Advance if we've finalized something in this round
-
-        {
-            let mut vote_counts: BTreeMap<Hash, usize> = BTreeMap::new();
-            for vote in self.precommits.values() {
-                *vote_counts.entry(vote.block_hash).or_insert(0) += 1;
-            }
-            vote_counts.values().any(|&c| c >= self.threshold())
-        }
+        // Advance if precommits have reached supermajority on any block
+        Self::count_votes(&self.precommits)
+            .values()
+            .any(|&(count, _)| count >= self.threshold())
     }
 }
 
