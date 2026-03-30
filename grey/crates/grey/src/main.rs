@@ -175,6 +175,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         {
             cli.peers = peers.clone();
         }
+        // Apply log level from config file if CLI flag not set
+        if cli.log_level.is_none() {
+            cli.log_level = cfg.logging.level;
+        }
     }
 
     // Build EnvFilter: CLI arg > config file > RUST_LOG env var > "info"
