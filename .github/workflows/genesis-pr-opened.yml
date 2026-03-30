@@ -5,13 +5,10 @@ on:
     types: [opened]
     branches: [master]
 
-concurrency:
-  group: genesis
-  cancel-in-progress: false
-
 jobs:
   select-targets:
     runs-on: ubuntu-latest
+    environment: genesis
     permissions:
       pull-requests: write
     steps:

@@ -13,13 +13,10 @@ on:
         type: boolean
         default: false
 
-concurrency:
-  group: genesis
-  cancel-in-progress: false
-
 jobs:
   merge:
     runs-on: ubuntu-latest
+    environment: genesis
     permissions:
       actions: write
       contents: write
