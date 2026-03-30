@@ -100,6 +100,11 @@ struct Cli {
     #[arg(long, default_value = "./grey-db")]
     db_path: String,
 
+    /// Number of blocks to retain after finalization (0 = archive mode, no pruning).
+    /// After each finalization, blocks older than finalized_slot - pruning_depth are removed.
+    #[arg(long, default_value_t = 0)]
+    pruning_depth: u32,
+
     /// JSON-RPC server port (0 to disable)
     #[arg(long, default_value_t = 9933)]
     rpc_port: u16,
@@ -351,6 +356,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         rpc_port: cli.rpc_port,
         rpc_cors: cli.rpc_cors,
         genesis_state: None,
+        pruning_depth: cli.pruning_depth,
     })
     .await
 }

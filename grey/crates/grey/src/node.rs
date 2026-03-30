@@ -53,6 +53,8 @@ pub struct NodeConfig {
     /// Optional pre-configured genesis state (with services installed, etc.).
     /// If None, the default genesis from create_genesis is used.
     pub genesis_state: Option<State>,
+    /// Number of blocks to keep after finalization (0 = archive mode, no pruning).
+    pub pruning_depth: u32,
 }
 
 // FinalityTracker replaced by GrandpaState (see finality.rs)
@@ -909,6 +911,19 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                                                 hex::encode(&fin_hash.0[..8])
                                             );
                                             let _ = store.set_finalized(&fin_hash, fin_slot);
+
+                                            // Prune old blocks/state if pruning is enabled
+                                            if config.pruning_depth > 0 && fin_slot > config.pruning_depth {
+                                                let keep_after = fin_slot - config.pruning_depth;
+                                                match store.prune_before_slot(keep_after) {
+                                                    Ok(0) => {}
+                                                    Ok(n) => tracing::debug!(
+                                                        "Pruned {} blocks (keeping slots >= {})",
+                                                        n, keep_after
+                                                    ),
+                                                    Err(e) => tracing::warn!("Pruning failed: {}", e),
+                                                }
+                                            }
 
                                             // Advance to next round
                                             if grandpa.should_advance_round() {
