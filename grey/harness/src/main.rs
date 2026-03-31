@@ -37,6 +37,10 @@ struct Cli {
     /// If not specified, all scenarios run in order.
     #[arg(long, value_name = "NAME")]
     scenario: Option<String>,
+
+    /// Output results as JSON (for CI consumption).
+    #[arg(long)]
+    json: bool,
 }
 
 #[tokio::main]
@@ -158,7 +162,45 @@ async fn main() {
     // Summary.
     let passed = results.iter().filter(|r| r.pass).count();
     let total_dur: u64 = results.iter().map(|r| r.duration.as_secs()).sum();
-    println!("=== {passed}/{} passed ({total_dur}s) ===", results.len());
+
+    if cli.json {
+        let json_results: Vec<serde_json::Value> = results
+            .iter()
+            .map(|r| {
+                let mut obj = serde_json::json!({
+                    "name": r.name,
+                    "pass": r.pass,
+                    "duration_ms": r.duration.as_millis() as u64,
+                });
+                if let Some(ref err) = r.error {
+                    obj["error"] = serde_json::Value::String(err.clone());
+                }
+                if !r.latencies.is_empty() {
+                    let latencies: Vec<serde_json::Value> = r
+                        .latencies
+                        .iter()
+                        .map(|l| {
+                            serde_json::json!({
+                                "label": l.label,
+                                "duration_ms": l.duration.as_millis() as u64,
+                            })
+                        })
+                        .collect();
+                    obj["latencies"] = serde_json::Value::Array(latencies);
+                }
+                obj
+            })
+            .collect();
+        let output = serde_json::json!({
+            "passed": passed,
+            "total": results.len(),
+            "duration_ms": results.iter().map(|r| r.duration.as_millis() as u64).sum::<u64>(),
+            "scenarios": json_results,
+        });
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    } else {
+        println!("=== {passed}/{} passed ({total_dur}s) ===", results.len());
+    }
 
     // Kill testnet.
     if let Some(mut t) = _testnet {
