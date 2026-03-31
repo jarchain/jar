@@ -129,4 +129,13 @@ impl RpcClient {
         self.call("jam_submitWorkPackage", serde_json::json!([data_hex]))
             .await
     }
+
+    /// Fetch the raw Prometheus metrics from the /metrics HTTP endpoint.
+    /// The endpoint is on the same host/port as the RPC server.
+    pub async fn get_metrics(&self) -> Result<String, RpcError> {
+        let url = self.endpoint.replace("http://", "");
+        let metrics_url = format!("http://{}/metrics", url.trim_end_matches('/'));
+        let resp = self.http.get(&metrics_url).send().await?;
+        Ok(resp.text().await?)
+    }
 }

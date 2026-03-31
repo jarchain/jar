@@ -106,7 +106,14 @@ async fn main() {
 
     // Run scenarios sequentially.
     let mut results = Vec::new();
-    let all_scenarios = ["serial", "repeat", "liveness", "invalid_wp", "recovery"];
+    let all_scenarios = [
+        "serial",
+        "repeat",
+        "liveness",
+        "invalid_wp",
+        "recovery",
+        "metrics",
+    ];
 
     // Filter to a single scenario if --scenario is specified.
     let scenario_list: Vec<&str> = if let Some(ref name) = cli.scenario {
@@ -131,6 +138,7 @@ async fn main() {
             "liveness" => scenarios::liveness::run(&client).await,
             "invalid_wp" => scenarios::invalid_wp::run(&client).await,
             "recovery" => scenarios::recovery::run(&client).await,
+            "metrics" => scenarios::metrics::run(&client).await,
             _ => unreachable!(),
         };
         let dur = result.duration.as_secs();
