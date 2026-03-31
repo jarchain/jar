@@ -103,7 +103,7 @@ impl RefineContext for SimpleRefineContext {
 /// Arguments: authorization ++ work_package_encoding
 /// Returns: (auth_output, gas_used) on success
 pub fn invoke_is_authorized(
-    config: &Config,
+    _config: &Config,
     code_blob: &[u8],
     authorization: &[u8],
     work_package_encoding: &[u8],
@@ -146,8 +146,13 @@ pub fn invoke_is_authorized(
                 )));
             }
             ExitReason::HostCall(id) => {
-                // Ψ_I has limited host calls: only gas(0) and info(5)
-                handle_readonly_host_call(id, &mut pvm, config);
+                if !handle_is_authorized_host_call(id, &mut pvm) {
+                    if pvm.gas() == 0 {
+                        return Err(RefineError::AuthorizationFailed("out of gas".into()));
+                    } else {
+                        return Err(RefineError::AuthorizationFailed("page fault".into()));
+                    }
+                }
             }
         }
     }
@@ -169,6 +174,7 @@ pub fn invoke_refine(
     code_blob: &[u8],
     item: &WorkItem,
     export_offset: u16,
+    import_data: &[Vec<u8>],
 ) -> RefineResult {
     let mut pvm = match PvmInstance::initialize(code_blob, &item.payload, item.gas_limit) {
         Some(p) => p,
@@ -231,9 +237,21 @@ pub fn invoke_refine(
                 return error_refine_result(item, WorkResult::Panic, gas_used);
             }
             ExitReason::HostCall(id) => {
-                // Ψ_R host calls: gas(0), fetch(1), historical_lookup(2),
-                // export(3), machine(4), peek(5), poke(6), pages(7), invoke(8), expunge(9)
-                handle_refine_host_call(id, &mut pvm, &mut exported_segments, export_offset);
+                let mut ctx = RefineHostContext {
+                    item,
+                    exported_segments: &mut exported_segments,
+                    export_offset,
+                    import_data,
+                };
+                if !handle_refine_host_call(id, &mut pvm, &mut ctx) {
+                    // Host call signaled OOG or page fault
+                    if pvm.gas() == 0 {
+                        return error_refine_result(item, WorkResult::OutOfGas, initial_gas);
+                    } else {
+                        let gas_used = initial_gas - pvm.gas();
+                        return error_refine_result(item, WorkResult::Panic, gas_used);
+                    }
+                }
             }
         }
     }
@@ -275,7 +293,11 @@ pub fn process_work_package(
             .get_code(&item.code_hash)
             .ok_or(RefineError::CodeNotFound(item.code_hash))?;
 
-        let refine_result = invoke_refine(config, &item_code, item, export_offset);
+        // Resolve import segment data (if available via context)
+        // TODO: resolve import segments from availability store
+        let import_data: Vec<Vec<u8>> = Vec::new();
+
+        let refine_result = invoke_refine(config, &item_code, item, export_offset, &import_data);
         export_offset += refine_result.exported_segments.len() as u16;
         all_exported_segments.extend(refine_result.exported_segments);
         results.push(refine_result.digest);
@@ -321,55 +343,214 @@ pub fn process_work_package(
     Ok(report)
 }
 
-/// Handle read-only host calls available in Ψ_I and Ψ_R.
-fn handle_readonly_host_call(id: u32, pvm: &mut PvmInstance, _config: &Config) {
+/// Handle host calls available in Ψ_I (is-authorized).
+/// Only gas(0) and grow_heap(1) are available.
+fn handle_is_authorized_host_call(id: u32, pvm: &mut PvmInstance) -> bool {
+    let host_gas_cost: u64 = 10;
+    if pvm.gas() < host_gas_cost {
+        pvm.set_gas(0);
+        return false;
+    }
+    pvm.set_gas(pvm.gas() - host_gas_cost);
+
     match id {
         0 => {
-            // gas(): return remaining gas
             pvm.set_reg(7, pvm.gas());
+            true
         }
+        1 => refine_grow_heap(pvm),
         _ => {
-            // Unsupported host call in read-only context → return WHAT (GP catch-all)
-            tracing::warn!(id, "unsupported host call in is-authorized context");
+            tracing::trace!(id, "unsupported host call in is-authorized context");
             pvm.set_reg(7, HOST_WHAT);
+            true
         }
     }
 }
 
+/// Context for refine host calls — provides access to work item data.
+struct RefineHostContext<'a> {
+    item: &'a WorkItem,
+    exported_segments: &'a mut Vec<Vec<u8>>,
+    export_offset: u16,
+    /// Resolved import segment data (populated by caller if available).
+    import_data: &'a [Vec<u8>],
+}
+
 /// Handle host calls available during refinement (Ψ_R).
+///
+/// JAR v0.8.0 numbering: 0=gas, 1=grow_heap, 2=fetch, 3=(reserved),
+/// 4=export, 5=machine, 6..=10=(reserved for peek/poke/pages/invoke/expunge).
+///
+/// Returns false if the PVM should stop (OOG or page fault).
 fn handle_refine_host_call(
     id: u32,
     pvm: &mut PvmInstance,
-    exported_segments: &mut Vec<Vec<u8>>,
-    export_offset: u16,
-) {
-    // JAR v0.8.0 hostcall numbering: 0=gas, 1=grow_heap, 2+=shifted
+    ctx: &mut RefineHostContext<'_>,
+) -> bool {
+    // Host-call gas cost: all host calls cost g=10 (charged upfront).
+    let host_gas_cost: u64 = 10;
+    if pvm.gas() < host_gas_cost {
+        pvm.set_gas(0);
+        return false;
+    }
+    pvm.set_gas(pvm.gas() - host_gas_cost);
+
     match id {
         0 => {
-            // gas(): return remaining gas
+            // gas(): return remaining gas in φ[7].
             pvm.set_reg(7, pvm.gas());
+            true
+        }
+        1 => {
+            // grow_heap(): expand writable memory pages.
+            // φ[7] = desired page count. Returns previous page count.
+            refine_grow_heap(pvm)
+        }
+        2 => {
+            // fetch(): read work-item context data (GP §14, Ω_Y for refine).
+            // φ[7]=buf_ptr, φ[8]=offset, φ[9]=max_len, φ[10]=mode
+            refine_fetch(pvm, ctx)
         }
         4 => {
-            // export (id=4 in v0.8.0): read a WG-byte segment from memory and append to exports
-            let ptr = pvm.reg(7) as u32;
-            let segment_size = grey_types::constants::SEGMENT_SIZE;
-            match pvm.try_read_bytes(ptr, segment_size) {
-                Some(data) => {
-                    let index = export_offset as u64 + exported_segments.len() as u64;
-                    exported_segments.push(data);
-                    pvm.set_reg(7, index);
-                }
-                None => {
-                    pvm.set_reg(7, HOST_OOB);
-                }
-            }
+            // export(): append a WG-byte segment to exports.
+            // φ[7] = pointer to segment data in memory.
+            // Returns: φ[7] = global export index, or HOST_OOB.
+            refine_export(pvm, ctx)
+        }
+        5 => {
+            // machine(): return machine/service info.
+            // φ[7]=mode. Mode 0 = service_id, mode 1 = code_hash.
+            refine_machine(pvm, ctx)
         }
         _ => {
-            // Unsupported host call in refine context → return WHAT (GP catch-all)
-            tracing::warn!(id, "unsupported host call in refine context");
+            // Unimplemented: historical_lookup(3), peek(6), poke(7),
+            // pages(8), invoke(9), expunge(10).
+            tracing::trace!(id, "unimplemented refine host call");
+            pvm.set_reg(7, HOST_WHAT);
+            true
+        }
+    }
+}
+
+/// grow_heap for refine context (identical to accumulate grow_heap).
+fn refine_grow_heap(pvm: &mut PvmInstance) -> bool {
+    let desired = pvm.reg(7);
+    let ps = javm::PVM_PAGE_SIZE;
+    let current_pages = (pvm.heap_top() as u64).div_ceil(ps as u64);
+    if desired <= current_pages || desired > (1u64 << 32) / ps as u64 {
+        pvm.set_reg(7, current_pages);
+        return true;
+    }
+    let new_pages = desired - current_pages;
+    let extra_gas = new_pages * 10;
+    if pvm.gas() < extra_gas {
+        pvm.set_gas(0);
+        return false;
+    }
+    pvm.set_gas(pvm.gas() - extra_gas);
+    let old_top = pvm.heap_top();
+    let new_top = (desired as u32) * ps;
+    pvm.map_pages_rw(old_top / ps, desired as u32);
+    pvm.set_heap_top(new_top);
+    pvm.set_reg(7, current_pages);
+    true
+}
+
+/// fetch for refine context (GP §14, Ω_Y adapted for refinement).
+///
+/// Available modes in refine context:
+///   0 = protocol configuration blob
+///   2 = work item payload (y)
+///   3 = import segment at index φ[11]
+///   4 = extrinsic data at index φ[11]
+/// Other modes return NONE (u64::MAX).
+fn refine_fetch(pvm: &mut PvmInstance, ctx: &RefineHostContext<'_>) -> bool {
+    let buf_ptr = pvm.reg(7) as u32;
+    let offset = pvm.reg(8);
+    let max_len = pvm.reg(9);
+    let mode = pvm.reg(10);
+    let sub1 = pvm.reg(11) as usize;
+
+    let data: Option<&[u8]> = match mode {
+        2 => {
+            // Payload (y)
+            Some(&ctx.item.payload)
+        }
+        3 => {
+            // Import segment data at index φ[11]
+            ctx.import_data.get(sub1).map(|v| v.as_slice())
+        }
+        4 => {
+            // Extrinsic: return the hash at index φ[11]
+            ctx.item
+                .extrinsics
+                .get(sub1)
+                .map(|(hash, _)| hash.0.as_slice())
+        }
+        _ => None,
+    };
+
+    let data = match data {
+        Some(d) => d,
+        None => {
+            pvm.set_reg(7, u64::MAX); // NONE
+            return true;
+        }
+    };
+
+    let data_len = data.len() as u64;
+    let f = offset.min(data_len);
+    let l = max_len.min(data_len - f);
+
+    if l > 0 {
+        let src = &data[f as usize..(f + l) as usize];
+        if pvm.try_write_bytes(buf_ptr, src).is_none() {
+            return false; // page fault → PANIC
+        }
+    }
+
+    pvm.set_reg(7, data_len);
+    true
+}
+
+/// export for refine context: append a WG-byte segment to exports.
+fn refine_export(pvm: &mut PvmInstance, ctx: &mut RefineHostContext<'_>) -> bool {
+    let ptr = pvm.reg(7) as u32;
+    let segment_size = grey_types::constants::SEGMENT_SIZE;
+    match pvm.try_read_bytes(ptr, segment_size) {
+        Some(data) => {
+            let index = ctx.export_offset as u64 + ctx.exported_segments.len() as u64;
+            ctx.exported_segments.push(data);
+            pvm.set_reg(7, index);
+        }
+        None => {
+            pvm.set_reg(7, HOST_OOB);
+        }
+    }
+    true
+}
+
+/// machine for refine context: return machine/service info.
+fn refine_machine(pvm: &mut PvmInstance, ctx: &RefineHostContext<'_>) -> bool {
+    let mode = pvm.reg(7);
+    match mode {
+        0 => {
+            // Service ID
+            pvm.set_reg(7, ctx.item.service_id as u64);
+        }
+        1 => {
+            // Code hash: write to buffer at φ[8], return 32
+            let buf_ptr = pvm.reg(8) as u32;
+            if pvm.try_write_bytes(buf_ptr, &ctx.item.code_hash.0).is_none() {
+                return false;
+            }
+            pvm.set_reg(7, 32);
+        }
+        _ => {
             pvm.set_reg(7, HOST_WHAT);
         }
     }
+    true
 }
 
 /// Simple work-package encoding for hashing and authorization.
