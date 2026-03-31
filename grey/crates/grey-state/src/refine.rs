@@ -793,13 +793,12 @@ fn refine_invoke(pvm: &mut PvmInstance, ctx: &mut RefineHostContext<'_>, depth: 
 
             // Write output to caller's memory (truncated to max_len)
             let write_len = output.len().min(output_max_len as usize);
-            if write_len > 0 {
-                if pvm
+            if write_len > 0
+                && pvm
                     .try_write_bytes(output_ptr, &output[..write_len])
                     .is_none()
-                {
-                    return false; // page fault in caller
-                }
+            {
+                return false; // page fault in caller
             }
             pvm.set_reg(7, output.len() as u64);
             true
