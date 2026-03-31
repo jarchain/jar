@@ -41,6 +41,10 @@ struct Cli {
     /// Output results as JSON (for CI consumption).
     #[arg(long)]
     json: bool,
+
+    /// Enable detailed per-operation timing output.
+    #[arg(long)]
+    perf: bool,
 }
 
 #[tokio::main]
@@ -149,6 +153,16 @@ async fn main() {
         if result.pass {
             println!("  PASS ({dur}s)");
             result.print_latency_summary();
+            if cli.perf && !result.latencies.is_empty() {
+                println!("  Per-operation timing:");
+                for sample in &result.latencies {
+                    println!(
+                        "    {:30} {:>8.1}ms",
+                        sample.label,
+                        sample.duration.as_secs_f64() * 1000.0,
+                    );
+                }
+            }
             println!();
         } else {
             println!(
@@ -200,6 +214,27 @@ async fn main() {
         println!("{}", serde_json::to_string_pretty(&output).unwrap());
     } else {
         println!("=== {passed}/{} passed ({total_dur}s) ===", results.len());
+        if cli.perf {
+            // Aggregate all latency samples across scenarios
+            let mut all_latencies: Vec<f64> = results
+                .iter()
+                .flat_map(|r| {
+                    r.latencies
+                        .iter()
+                        .map(|l| l.duration.as_secs_f64() * 1000.0)
+                })
+                .collect();
+            if !all_latencies.is_empty() {
+                all_latencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let count = all_latencies.len();
+                let p50 = all_latencies[count / 2];
+                let p90 = all_latencies[count * 9 / 10];
+                let p99 = all_latencies[count * 99 / 100];
+                println!();
+                println!("Aggregate latency ({count} operations):");
+                println!("  p50={p50:.1}ms  p90={p90:.1}ms  p99={p99:.1}ms");
+            }
+        }
     }
 
     // Kill testnet.
