@@ -214,4 +214,125 @@ format = "json"
         let config: ConfigFile = toml::from_str(toml_str).unwrap();
         assert!(config.validate().is_ok());
     }
+
+    #[test]
+    fn test_load_from_file_all_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grey.toml");
+        std::fs::write(
+            &path,
+            r#"
+[node]
+validator_index = 5
+listen_addr = "0.0.0.0"
+port = 9001
+tiny = false
+chain = "full"
+genesis_time = 1700000000
+db_path = "/data/grey"
+
+[rpc]
+port = 9944
+host = "0.0.0.0"
+cors = true
+rate_limit = 500
+
+[storage]
+db_path = "/data/grey-db"
+pruning_depth = 256
+
+[network]
+boot_peers = ["/ip4/10.0.0.1/tcp/9000", "/ip4/10.0.0.2/tcp/9000"]
+
+[logging]
+format = "json"
+level = "grey_network=debug,info"
+"#,
+        )
+        .unwrap();
+
+        let config = ConfigFile::load(&path).unwrap();
+
+        // Node section
+        assert_eq!(config.node.validator_index, Some(5));
+        assert_eq!(config.node.listen_addr.as_deref(), Some("0.0.0.0"));
+        assert_eq!(config.node.port, Some(9001));
+        assert_eq!(config.node.tiny, Some(false));
+        assert_eq!(config.node.chain.as_deref(), Some("full"));
+        assert_eq!(config.node.genesis_time, Some(1700000000));
+        assert_eq!(config.node.db_path.as_deref(), Some("/data/grey"));
+
+        // RPC section
+        assert_eq!(config.rpc.port, Some(9944));
+        assert_eq!(config.rpc.host.as_deref(), Some("0.0.0.0"));
+        assert_eq!(config.rpc.cors, Some(true));
+        assert_eq!(config.rpc.rate_limit, Some(500));
+
+        // Storage section
+        assert_eq!(config.storage.db_path.as_deref(), Some("/data/grey-db"));
+        assert_eq!(config.storage.pruning_depth, Some(256));
+
+        // Network section
+        let peers = config.network.boot_peers.unwrap();
+        assert_eq!(peers.len(), 2);
+        assert!(peers[0].contains("10.0.0.1"));
+
+        // Logging section
+        assert_eq!(config.logging.format.as_deref(), Some("json"));
+        assert_eq!(
+            config.logging.level.as_deref(),
+            Some("grey_network=debug,info")
+        );
+    }
+
+    #[test]
+    fn test_load_nonexistent_file() {
+        let result = ConfigFile::load(Path::new("/tmp/does-not-exist-grey.toml"));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("failed to read"),
+            "expected read error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_load_invalid_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.toml");
+        std::fs::write(&path, "this is not [valid toml = {\n").unwrap();
+
+        let result = ConfigFile::load(&path);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("failed to parse"),
+            "expected parse error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_load_validates_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("invalid.toml");
+        std::fs::write(
+            &path,
+            r#"
+[node]
+chain = "nonexistent"
+"#,
+        )
+        .unwrap();
+
+        let result = ConfigFile::load(&path);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("invalid chain preset"),
+            "expected validation error, got: {}",
+            err
+        );
+    }
 }
