@@ -71,9 +71,95 @@ private def encodeRefineArgs (payload : ByteArray) (imports : Array ByteArray) :
     ++ imports.foldl (init := ByteArray.empty) fun acc seg =>
       acc ++ Codec.encodeLengthPrefixed seg
 
+/-- Refine host call context: tracks exported segments during refinement. -/
+structure RefineContext where
+  /-- Work item payload (accessible via fetch mode 2). -/
+  payload : ByteArray
+  /-- Resolved import segment data (accessible via fetch mode 3). -/
+  imports : Array ByteArray
+  /-- Exported segments accumulated during refinement. -/
+  exports : Array ByteArray
+  /-- Export offset for global segment indexing. -/
+  exportOffset : Nat
+  deriving Inhabited
+
+/-- Handle a refine host call. GP §14 host calls:
+    0=gas, 1=grow_heap, 2=fetch, 3=historical_lookup, 4=export,
+    5=machine, 6=peek, 7=poke, 8=pages.
+    Returns (result, updated context) where result.exitReason = .hostCall _
+    means "continue execution" (the handler wrote return values into registers). -/
+private def handleRefineHostCall
+    (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers) (mem : PVM.Memory)
+    (ctx : RefineContext) : PVM.InvocationResult × RefineContext :=
+  -- Host call gas cost: g=10
+  let hostGasCost : Gas := 10
+  if gas < hostGasCost then
+    -- Out of gas
+    ({ exitReason := .outOfGas, exitValue := 0, gas := 0,
+       registers := regs, memory := mem }, ctx)
+  else
+    let gas' := gas - hostGasCost
+    let regs' := regs -- will be modified per host call
+    match callId with
+    | 0 =>
+      -- gas(): return remaining gas in φ[7]
+      let regs' := regs.set! 7 gas'
+      ({ exitReason := .hostCall 0, exitValue := 0,
+         gas := Int64.ofUInt64 gas', registers := regs', memory := mem }, ctx)
+    | 2 =>
+      -- fetch(): read work-item context data
+      -- φ[7]=buf_ptr, φ[8]=offset, φ[9]=max_len, φ[10]=mode
+      let mode := if 10 < regs.size then regs[10]! else 0
+      let data := match mode with
+        | 2 => some ctx.payload -- payload
+        | 3 => -- import segment at index φ[11]
+          let idx := if 11 < regs.size then (regs[11]!).toNat else 0
+          if h : idx < ctx.imports.size then some ctx.imports[idx] else none
+        | _ => none
+      match data with
+      | none =>
+        let regs' := regs.set! 7 (UInt64.ofNat (2^64 - 1)) -- NONE
+        ({ exitReason := .hostCall 0, exitValue := 0,
+           gas := Int64.ofUInt64 gas', registers := regs', memory := mem }, ctx)
+      | some d =>
+        let offset := if 8 < regs.size then regs[8]!.toNat else 0
+        let maxLen := if 9 < regs.size then regs[9]!.toNat else 0
+        let bufPtr := if 7 < regs.size then regs[7]! else 0
+        let f := min offset d.size
+        let l := min maxLen (d.size - f)
+        let slice := d.extract f (f + l)
+        let mem' := match PVM.writeByteArray mem bufPtr slice with
+          | .ok m => m
+          | _ => mem -- page fault: silently ignore (will be caught by PVM)
+        let regs' := regs.set! 7 (UInt64.ofNat d.size)
+        ({ exitReason := .hostCall 0, exitValue := 0,
+           gas := Int64.ofUInt64 gas', registers := regs', memory := mem' }, ctx)
+    | 4 =>
+      -- export(): append a segment to exports
+      -- φ[7] = pointer to segment data
+      let ptr := if 7 < regs.size then regs[7]! else 0
+      -- W_G = segment size (W_P × W_E, typically 6 × 684 = 4104)
+      let segmentSize := JamConfig.config.W_P * 684
+      match PVM.readByteArray mem ptr segmentSize with
+      | .ok segData =>
+        let idx := ctx.exportOffset + ctx.exports.size
+        let ctx' := { ctx with exports := ctx.exports.push segData }
+        let regs' := regs.set! 7 (UInt64.ofNat idx)
+        ({ exitReason := .hostCall 0, exitValue := 0,
+           gas := Int64.ofUInt64 gas', registers := regs', memory := mem }, ctx')
+      | _ =>
+        let regs' := regs.set! 7 (UInt64.ofNat (2^64 - 3)) -- OOB
+        ({ exitReason := .hostCall 0, exitValue := 0,
+           gas := Int64.ofUInt64 gas', registers := regs', memory := mem }, ctx)
+    | _ =>
+      -- Unimplemented: return WHAT (2^64 - 2)
+      let regs' := regs.set! 7 (UInt64.ofNat (2^64 - 2))
+      ({ exitReason := .hostCall 0, exitValue := 0,
+         gas := Int64.ofUInt64 gas', registers := regs', memory := mem }, ctx)
+
 /-- Ψ_R : Refine invocation. GP §14.
-    Executes a work-item's refinement code in the PVM without host calls.
-    Returns (result, gas_used). -/
+    Executes a work-item's refinement code in the PVM with host call dispatch.
+    Returns (result, gas_used, exported_segments). -/
 def refine
     (serviceCode : ByteArray)
     (payload : ByteArray)
@@ -83,13 +169,22 @@ def refine
   match PVM.initProgram serviceCode args with
   | none => (.err .panic, 0)
   | some (prog, regs, mem) =>
-    let result := PVM.runProgram prog 0 regs mem (Int64.ofUInt64 gasLimit)
+    let ctx : RefineContext := {
+      payload := payload, imports := imports,
+      exports := #[], exportOffset := 0 }
+    let runFn := match JamConfig.gasModel with
+      | .perInstruction => PVM.run
+      | .basicBlockFull => PVM.runBlockGas
+      | .basicBlockSinglePass => PVM.runBlockGasSinglePass
+    let (result, _ctx') := PVM.runWithHostCalls RefineContext
+      prog 0 regs mem (Int64.ofUInt64 gasLimit)
+      handleRefineHostCall ctx runFn
     let gasUsed := gasLimit - result.gas.toUInt64
     match result.exitReason with
     | .halt =>
-      -- Output is in memory starting at address in reg[10], length reg[11]
-      let outAddr := if 10 < result.registers.size then result.registers[10]! else 0
-      let outLen := if 11 < result.registers.size then result.registers[11]! else 0
+      -- Output is in memory starting at address in reg[7], length reg[8]
+      let outAddr := if 7 < result.registers.size then result.registers[7]! else 0
+      let outLen := if 8 < result.registers.size then result.registers[8]! else 0
       match PVM.readByteArray result.memory outAddr outLen.toNat with
       | .ok output => (.ok output, gasUsed)
       | _ => (.ok ByteArray.empty, gasUsed)
