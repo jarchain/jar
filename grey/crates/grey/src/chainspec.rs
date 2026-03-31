@@ -16,6 +16,9 @@ pub struct ChainSpec {
     pub protocol_version: String,
     /// Genesis state hash (Blake2b-256 of serialized genesis state).
     pub genesis_hash: String,
+    /// Bootstrap peer multiaddresses for initial peer discovery.
+    #[serde(default)]
+    pub boot_peers: Vec<String>,
     /// Protocol configuration parameters.
     pub config: ChainSpecConfig,
 }
@@ -36,6 +39,15 @@ pub struct ChainSpecConfig {
 impl ChainSpec {
     /// Create a chain spec from a Config and genesis state.
     pub fn from_genesis(config: &Config, _genesis_state: &State) -> Self {
+        Self::from_genesis_with_peers(config, _genesis_state, Vec::new())
+    }
+
+    /// Create a chain spec with explicit boot peer addresses.
+    pub fn from_genesis_with_peers(
+        config: &Config,
+        _genesis_state: &State,
+        boot_peers: Vec<String>,
+    ) -> Self {
         // Compute genesis hash from the config blob
         let config_blob = config.encode_config_blob();
         let genesis_hash = grey_crypto::blake2b_256(&config_blob);
@@ -44,6 +56,7 @@ impl ChainSpec {
             name: "Grey JAM".to_string(),
             protocol_version: "0.7.2".to_string(),
             genesis_hash: hex::encode(genesis_hash.0),
+            boot_peers,
             config: ChainSpecConfig {
                 validators_count: config.validators_count,
                 core_count: config.core_count,
@@ -132,12 +145,56 @@ mod tests {
         assert_eq!(spec.config.validators_count, 6);
         assert_eq!(spec.config.core_count, 2);
         assert_eq!(spec.config.epoch_length, 12);
+        assert!(spec.boot_peers.is_empty());
 
         // Roundtrip through JSON
         let json = serde_json::to_string(&spec).unwrap();
         let spec2: ChainSpec = serde_json::from_str(&json).unwrap();
         assert_eq!(spec2.genesis_hash, spec.genesis_hash);
         assert_eq!(spec2.config.validators_count, spec.config.validators_count);
+    }
+
+    #[test]
+    fn test_chain_spec_with_boot_peers() {
+        let config = Config::tiny();
+        let (state, _) = grey_consensus::genesis::create_genesis(&config);
+        let peers = vec![
+            "/ip4/127.0.0.1/tcp/9000".to_string(),
+            "/ip4/192.168.1.1/tcp/9000".to_string(),
+        ];
+
+        let spec = ChainSpec::from_genesis_with_peers(&config, &state, peers.clone());
+        assert_eq!(spec.boot_peers, peers);
+
+        // Roundtrip through JSON
+        let json = serde_json::to_string(&spec).unwrap();
+        let spec2: ChainSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(spec2.boot_peers, peers);
+    }
+
+    #[test]
+    fn test_chain_spec_missing_boot_peers_defaults_empty() {
+        // Simulate loading a chain spec without boot_peers field
+        let json = r#"{
+            "name": "Grey JAM",
+            "protocol_version": "0.7.2",
+            "genesis_hash": "abcd",
+            "config": {
+                "validators_count": 6,
+                "core_count": 2,
+                "epoch_length": 12,
+                "max_tickets_per_block": 16,
+                "tickets_per_validator": 2,
+                "recent_history_size": 8,
+                "auth_pool_size": 8,
+                "auth_queue_size": 80
+            }
+        }"#;
+        let spec: ChainSpec = serde_json::from_str(json).unwrap();
+        assert!(
+            spec.boot_peers.is_empty(),
+            "missing boot_peers should default to empty"
+        );
     }
 
     #[test]

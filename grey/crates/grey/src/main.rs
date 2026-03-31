@@ -290,13 +290,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let spec = chainspec::ChainSpec::load(std::path::Path::new(path))
             .map_err(|e| format!("failed to load chain spec from {}: {}", path, e))?;
         tracing::info!(
-            "Loaded chain spec '{}' from {} (V={}, C={}, E={})",
+            "Loaded chain spec '{}' from {} (V={}, C={}, E={}, boot_peers={})",
             spec.name,
             path,
             spec.config.validators_count,
             spec.config.core_count,
             spec.config.epoch_length,
+            spec.boot_peers.len(),
         );
+        // Use boot peers from chain spec if no CLI peers were provided
+        if cli.peers.is_empty() && !spec.boot_peers.is_empty() {
+            cli.peers = spec.boot_peers.clone();
+            tracing::info!("Loaded {} boot peers from chain spec", cli.peers.len());
+        }
         spec.to_config()
     } else if let Some(ref preset) = cli.chain {
         match preset.as_str() {
@@ -386,7 +392,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     if let Some(ref path) = cli.export_chain_spec {
         let (genesis_state, _) = grey_consensus::genesis::create_genesis(&config);
-        let spec = chainspec::ChainSpec::from_genesis(&config, &genesis_state);
+        let peer_strings: Vec<String> = cli.peers.clone();
+        let spec = if peer_strings.is_empty() {
+            chainspec::ChainSpec::from_genesis(&config, &genesis_state)
+        } else {
+            chainspec::ChainSpec::from_genesis_with_peers(&config, &genesis_state, peer_strings)
+        };
         spec.save(std::path::Path::new(path))
             .map_err(|e| format!("failed to export chain spec: {e}"))?;
         println!("Chain spec exported to {}", path);
