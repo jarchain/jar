@@ -83,6 +83,7 @@ pub async fn run_seq_testnet(
 
     let mut current_slot: Timeslot = 0;
     let mut blocks_produced: u32 = 0;
+    let mut transition_times: Vec<u64> = Vec::new(); // microseconds per transition
     let finality_depth: u32 = 3;
 
     // Pending work packages from RPC submissions
@@ -214,9 +215,12 @@ pub async fn run_seq_testnet(
                     vec![],
                 );
 
-                // Apply to author's state
+                // Apply to author's state (timed)
+                let transition_start = std::time::Instant::now();
                 match grey_state::transition::apply_with_config(&node.state, &block, &config, &[]) {
                     Ok((new_state, _)) => {
+                        let transition_us = transition_start.elapsed().as_micros() as u64;
+                        transition_times.push(transition_us);
                         let header_hash = compute_header_hash(&block.header);
 
                         // Update store for RPC (order matters: block+state first, then head)
@@ -259,6 +263,24 @@ pub async fn run_seq_testnet(
                             tracing::info!(
                                 "Slot {slot}: block #{blocks_produced} by v{author_idx}, hash=0x{}, rss={rss_mb:.1}MB",
                                 hex::encode(&header_hash.0[..8])
+                            );
+                        }
+
+                        // Transition timing report every 100 blocks
+                        if blocks_produced.is_multiple_of(100) && !transition_times.is_empty() {
+                            let count = transition_times.len();
+                            let sum: u64 = transition_times.iter().sum();
+                            let avg = sum / count as u64;
+                            let min = *transition_times.iter().min().unwrap();
+                            let max = *transition_times.iter().max().unwrap();
+                            let mut sorted = transition_times.clone();
+                            sorted.sort();
+                            let p50 = sorted[count / 2];
+                            let p99 = sorted[count * 99 / 100];
+                            tracing::info!(
+                                "Transition timing @ block #{blocks_produced}: \
+                                 avg={avg}µs, min={min}µs, max={max}µs, p50={p50}µs, p99={p99}µs \
+                                 ({count} samples)"
                             );
                         }
 
