@@ -219,6 +219,10 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
     // Bounded to avoid unbounded growth; old entries are evicted when full.
     let mut seen_block_hashes: std::collections::HashSet<Hash> =
         std::collections::HashSet::with_capacity(256);
+    // Recently-seen work report hashes: skip re-processing guarantees for
+    // work reports we already handled. Bounded to 256 entries.
+    let mut seen_report_hashes: std::collections::HashSet<Hash> =
+        std::collections::HashSet::with_capacity(256);
 
     tracing::info!(
         "Validator {} node started, genesis_time={}",
@@ -1121,6 +1125,27 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                         }
                     }
                     NetworkEvent::GuaranteeReceived { data, source } => {
+                        // Extract work report hash (first 32 bytes) for dedup
+                        if data.len() >= 32 {
+                            let mut rh = [0u8; 32];
+                            rh.copy_from_slice(&data[..32]);
+                            let report_hash = Hash(rh);
+                            if seen_report_hashes.contains(&report_hash) {
+                                tracing::trace!(
+                                    "Validator {} skipping duplicate work report {}",
+                                    config.validator_index,
+                                    hex::encode(&rh[..4])
+                                );
+                                continue;
+                            }
+                            // Evict oldest if at capacity
+                            if seen_report_hashes.len() >= 256
+                                && let Some(&old) = seen_report_hashes.iter().next()
+                            {
+                                seen_report_hashes.remove(&old);
+                            }
+                            seen_report_hashes.insert(report_hash);
+                        }
                         tracing::info!(
                             "Validator {} received guarantee from {}",
                             config.validator_index,
