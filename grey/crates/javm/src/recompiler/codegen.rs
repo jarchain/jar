@@ -498,21 +498,34 @@ impl Compiler {
                 pending_gas = Some((stub_label, pc as u32, patch_offset));
             }
 
-            // Feed gas simulator via lookup table (single array access + mask
-            // computation). Uses pre-extracted register bytes to avoid re-reading
-            // code[pc+1] and code[pc+2].
-            let fc = crate::gas_cost::fast_cost_lut_regs(
-                opcode as u8,
-                &decoded_args,
-                pc,
-                code,
-                bitmask,
-                raw_ra,
-                raw_rb,
-                reg_byte2 & 0x0F,
-            );
-            let is_terminator = fc.is_terminator;
-            gas_sim.feed(&fc);
+            let is_terminator = {
+                // Fast path: feed gas simulator directly from register bytes,
+                // skipping FastCost struct construction and bitmask iteration.
+                let (term, needs_full) = crate::gas_cost::feed_gas_direct(
+                    opcode as u8,
+                    raw_ra,
+                    raw_rb,
+                    reg_byte2 & 0x0F,
+                    &mut gas_sim,
+                );
+                if needs_full {
+                    // Slow path for branches/overlap/move: use full FastCost
+                    let fc = crate::gas_cost::fast_cost_lut_regs(
+                        opcode as u8,
+                        &decoded_args,
+                        pc,
+                        code,
+                        bitmask,
+                        raw_ra,
+                        raw_rb,
+                        reg_byte2 & 0x0F,
+                    );
+                    gas_sim.feed(&fc);
+                    fc.is_terminator
+                } else {
+                    term
+                }
+            };
 
             // Peephole fusions
             let fused = match opcode {

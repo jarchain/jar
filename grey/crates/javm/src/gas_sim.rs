@@ -33,6 +33,32 @@ impl GasSimulator {
         }
     }
 
+    /// Fast path: feed an instruction using direct register indices instead of
+    /// bitmasks. Avoids the shift+OR bitmask construction and trailing_zeros
+    /// extraction loop. For typical 2-source, 1-dest instructions.
+    /// `src1`/`src2` are source register indices (0..12, or 0xFF for "none").
+    /// `dst` is destination register index (0..12, or 0xFF for "none").
+    #[inline(always)]
+    pub fn feed_direct(&mut self, cycles: u8, decode_slots: u8, src1: u8, src2: u8, dst: u8) {
+        self.decode_used += decode_slots;
+        if self.decode_used > 4 {
+            self.cycle += 1;
+            self.decode_used = decode_slots;
+        }
+        let mut start = self.cycle;
+        if src1 < 13 {
+            start = start.max(self.reg_done[src1 as usize]);
+        }
+        if src2 < 13 {
+            start = start.max(self.reg_done[src2 as usize]);
+        }
+        let done = start + cycles as u32;
+        if dst < 13 {
+            self.reg_done[dst as usize] = done;
+        }
+        self.max_done = self.max_done.max(done);
+    }
+
     /// Process one instruction. O(1).
     #[inline]
     pub fn feed(&mut self, cost: &FastCost) {

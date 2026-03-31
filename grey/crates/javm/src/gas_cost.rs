@@ -2460,6 +2460,46 @@ static GAS_COST_LUT: [GasCostEntry; 256] = {
     t
 };
 
+/// Feed the gas simulator directly from raw register bytes, skipping FastCost
+/// construction. Returns (is_terminator, is_branch_or_special) — the caller
+/// uses is_branch_or_special to fall back to the full path for rare cases.
+#[inline(always)]
+pub fn feed_gas_direct(
+    opcode_byte: u8,
+    ra: u8,
+    rb: u8,
+    rd: u8,
+    gas_sim: &mut crate::gas_sim::GasSimulator,
+) -> (bool, bool) {
+    let entry = &GAS_COST_LUT[opcode_byte as usize];
+    let flags = entry.flags;
+
+    // Fast path: non-branch, non-overlap, non-move (~90% of instructions).
+    if flags & (F_BRANCH | F_BRANCH2 | F_OVERLAP | F_MOVE | F_SHIFT_OVERLAP) == 0 {
+        // Map src_pat to register indices (0xFF = "no source")
+        let (src1, src2) = match entry.src_pat {
+            0 => (0xFF, 0xFF),
+            1 => (ra.min(12), 0xFF),
+            2 => (rb.min(12), 0xFF),
+            3 => (ra.min(12), rb.min(12)),
+            4 => (rb.min(12), rd.min(12)),
+            _ => (0xFF, 0xFF),
+        };
+        let dst = if entry.dst_pat == 1 {
+            ra.min(12)
+        } else if entry.dst_pat == 2 {
+            rd.min(12)
+        } else {
+            0xFF
+        };
+        gas_sim.feed_direct(entry.cycles, entry.decode_slots, src1, src2, dst);
+        return (flags & F_TERM != 0, false);
+    }
+
+    // Slow path needed — caller must use the full FastCost path
+    (flags & F_TERM != 0, true)
+}
+
 /// Compute FastCost via lookup table — replaces the 256-arm match dispatch
 /// with a single array access + lightweight mask computation.
 #[inline(always)]
