@@ -499,65 +499,64 @@ impl Store {
     // ── Metadata ────────────────────────────────────────────────────────
 
     /// Set head block (best/latest block).
-    pub fn set_head(&self, hash: &Hash, slot: u32) -> Result<(), StoreError> {
+    /// Write a hash+slot pair to two META keys.
+    fn set_meta_hash_slot(
+        &self,
+        hash_key: &str,
+        slot_key: &str,
+        hash: &Hash,
+        slot: u32,
+    ) -> Result<(), StoreError> {
         let txn = self.db.begin_write()?;
         {
             let mut meta = txn.open_table(META)?;
-            meta.insert(META_HEAD_HASH, hash.0.as_slice())?;
-            meta.insert(META_HEAD_SLOT, &slot.to_le_bytes() as &[u8])?;
+            meta.insert(hash_key, hash.0.as_slice())?;
+            meta.insert(slot_key, &slot.to_le_bytes() as &[u8])?;
         }
         txn.commit()?;
         Ok(())
+    }
+
+    /// Read a hash+slot pair from two META keys.
+    fn get_meta_hash_slot(
+        &self,
+        hash_key: &str,
+        slot_key: &str,
+    ) -> Result<(Hash, u32), StoreError> {
+        let txn = self.db.begin_read()?;
+        let meta = txn.open_table(META)?;
+
+        let hash_val = meta.get(hash_key)?.ok_or(StoreError::NotFound)?;
+        let slot_val = meta.get(slot_key)?.ok_or(StoreError::NotFound)?;
+
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(hash_val.value());
+        let slot = u32::from_le_bytes(
+            slot_val
+                .value()
+                .try_into()
+                .map_err(|_| StoreError::Codec(format!("invalid {slot_key} bytes")))?,
+        );
+        Ok((Hash(hash), slot))
+    }
+
+    pub fn set_head(&self, hash: &Hash, slot: u32) -> Result<(), StoreError> {
+        self.set_meta_hash_slot(META_HEAD_HASH, META_HEAD_SLOT, hash, slot)
     }
 
     /// Get head block hash and timeslot.
     pub fn get_head(&self) -> Result<(Hash, u32), StoreError> {
-        let txn = self.db.begin_read()?;
-        let meta = txn.open_table(META)?;
-
-        let hash_val = meta.get(META_HEAD_HASH)?.ok_or(StoreError::NotFound)?;
-        let slot_val = meta.get(META_HEAD_SLOT)?.ok_or(StoreError::NotFound)?;
-
-        let mut hash = [0u8; 32];
-        hash.copy_from_slice(hash_val.value());
-        let slot = u32::from_le_bytes(
-            slot_val
-                .value()
-                .try_into()
-                .map_err(|_| StoreError::Codec("invalid head slot bytes".into()))?,
-        );
-        Ok((Hash(hash), slot))
+        self.get_meta_hash_slot(META_HEAD_HASH, META_HEAD_SLOT)
     }
 
     /// Set finalized block.
     pub fn set_finalized(&self, hash: &Hash, slot: u32) -> Result<(), StoreError> {
-        let txn = self.db.begin_write()?;
-        {
-            let mut meta = txn.open_table(META)?;
-            meta.insert(META_FINALIZED_HASH, hash.0.as_slice())?;
-            meta.insert(META_FINALIZED_SLOT, &slot.to_le_bytes() as &[u8])?;
-        }
-        txn.commit()?;
-        Ok(())
+        self.set_meta_hash_slot(META_FINALIZED_HASH, META_FINALIZED_SLOT, hash, slot)
     }
 
     /// Get finalized block hash and timeslot.
     pub fn get_finalized(&self) -> Result<(Hash, u32), StoreError> {
-        let txn = self.db.begin_read()?;
-        let meta = txn.open_table(META)?;
-
-        let hash_val = meta.get(META_FINALIZED_HASH)?.ok_or(StoreError::NotFound)?;
-        let slot_val = meta.get(META_FINALIZED_SLOT)?.ok_or(StoreError::NotFound)?;
-
-        let mut hash = [0u8; 32];
-        hash.copy_from_slice(hash_val.value());
-        let slot = u32::from_le_bytes(
-            slot_val
-                .value()
-                .try_into()
-                .map_err(|_| StoreError::Codec("invalid finalized slot bytes".into()))?,
-        );
-        Ok((Hash(hash), slot))
+        self.get_meta_hash_slot(META_FINALIZED_HASH, META_FINALIZED_SLOT)
     }
 
     // ── DA Chunks ───────────────────────────────────────────────────────
