@@ -177,6 +177,7 @@ pub async fn run_testnet(
                 pruning_depth: 0, // No pruning in testnet
                 keystore_path: None,
                 metrics_port: 0,
+                rpc_api_key: None,
             };
             if let Err(e) = crate::node::run_node(node_config).await {
                 tracing::error!("Validator {} exited with error: {}", i, e);

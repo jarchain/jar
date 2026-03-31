@@ -155,6 +155,11 @@ struct Cli {
     #[arg(long, default_value_t = 0)]
     metrics_port: u16,
 
+    /// Require API key for RPC access. When set, requests must include
+    /// `Authorization: Bearer <key>` header. Health/metrics endpoints are exempt.
+    #[arg(long)]
+    rpc_api_key: Option<String>,
+
     /// Log output format.
     #[arg(long, value_enum, default_value_t = LogFormat::Plain)]
     log_format: LogFormat,
@@ -461,6 +466,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pruning_depth: cli.pruning_depth,
         keystore_path: cli.keystore_path,
         metrics_port: cli.metrics_port,
+        rpc_api_key: cli.rpc_api_key,
     })
     .await
 }

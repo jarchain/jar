@@ -72,6 +72,8 @@ pub struct NodeConfig {
     pub keystore_path: Option<String>,
     /// Expose Prometheus metrics on a separate port (0 = disabled).
     pub metrics_port: u16,
+    /// Optional API key for RPC authentication.
+    pub rpc_api_key: Option<String>,
 }
 
 // FinalityTracker replaced by GrandpaState (see finality.rs)
@@ -162,12 +164,13 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
         );
         rpc_state = Some(state_arc.clone());
         let metrics_state = state_arc.clone();
-        let (_addr, _handle) = grey_rpc::start_rpc_server(
+        let (_addr, _handle) = grey_rpc::start_rpc_server_with_auth(
             &config.rpc_host,
             config.rpc_port,
             state_arc,
             config.rpc_cors,
             config.rpc_rate_limit,
+            config.rpc_api_key.clone(),
         )
         .await?;
         rpc_rx = Some(rx);

@@ -992,6 +992,100 @@ pub async fn start_metrics_server(
     Ok((bound_addr, join))
 }
 
+// ── API key authentication ──────────────────────────────────────────
+
+/// Optional API key authentication layer.
+/// When `key` is Some, requires `Authorization: Bearer <key>` header.
+/// Health and metrics endpoints are exempt.
+#[derive(Clone)]
+struct ApiKeyLayer {
+    key: Option<Arc<str>>,
+}
+
+impl<S> tower::Layer<S> for ApiKeyLayer {
+    type Service = ApiKeyService<S>;
+    fn layer(&self, inner: S) -> Self::Service {
+        ApiKeyService {
+            inner,
+            key: self.key.clone(),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ApiKeyService<S> {
+    inner: S,
+    key: Option<Arc<str>>,
+}
+
+impl<S, ReqBody> tower::Service<http::Request<ReqBody>> for ApiKeyService<S>
+where
+    S: tower::Service<http::Request<ReqBody>, Response = http::Response<HttpBody>>
+        + Clone
+        + Send
+        + 'static,
+    S::Future: Send,
+    ReqBody: Send + 'static,
+{
+    type Response = http::Response<HttpBody>;
+    type Error = S::Error;
+    type Future = std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>,
+    >;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, req: http::Request<ReqBody>) -> Self::Future {
+        let Some(ref expected_key) = self.key else {
+            // No API key configured — pass through
+            let fut = self.inner.call(req);
+            return Box::pin(fut);
+        };
+
+        // Exempt health and metrics endpoints from auth
+        let path = req.uri().path();
+        if path == "/health" || path == "/metrics" || path == "/ready" {
+            let fut = self.inner.call(req);
+            return Box::pin(fut);
+        }
+
+        // Check Authorization header
+        let authorized = req
+            .headers()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| {
+                v.strip_prefix("Bearer ")
+                    .or_else(|| v.strip_prefix("bearer "))
+                    .is_some_and(|token| token == expected_key.as_ref())
+            })
+            .unwrap_or(false);
+
+        if !authorized {
+            let body = serde_json::json!({
+                "error": "unauthorized",
+                "message": "missing or invalid Authorization: Bearer <api-key> header",
+            })
+            .to_string();
+            return Box::pin(async move {
+                Ok(http::Response::builder()
+                    .status(401)
+                    .header("content-type", "application/json")
+                    .body(HttpBody::from(body))
+                    .unwrap())
+            });
+        }
+
+        let fut = self.inner.call(req);
+        Box::pin(fut)
+    }
+}
+
 /// Start the JSON-RPC server. Returns the command receiver for the node event loop.
 pub async fn start_rpc_server(
     host: &str,
@@ -999,6 +1093,18 @@ pub async fn start_rpc_server(
     state: Arc<RpcState>,
     cors: bool,
     rate_limit: u64,
+) -> Result<(SocketAddr, tokio::task::JoinHandle<()>), Box<dyn std::error::Error + Send + Sync>> {
+    start_rpc_server_with_auth(host, port, state, cors, rate_limit, None).await
+}
+
+/// Start the JSON-RPC server with optional API key authentication.
+pub async fn start_rpc_server_with_auth(
+    host: &str,
+    port: u16,
+    state: Arc<RpcState>,
+    cors: bool,
+    rate_limit: u64,
+    api_key: Option<String>,
 ) -> Result<(SocketAddr, tokio::task::JoinHandle<()>), Box<dyn std::error::Error + Send + Sync>> {
     let addr = format!("{}:{}", host, port);
     let cors_layer = if cors {
@@ -1016,8 +1122,15 @@ pub async fn start_rpc_server(
         rate_limit
     };
     let rate_limiter = RateLimitLayer::new(max_requests);
+    let api_key_layer = ApiKeyLayer {
+        key: api_key.map(Arc::from),
+    };
+    if api_key_layer.key.is_some() {
+        tracing::info!("RPC API key authentication enabled");
+    }
     let middleware = tower::ServiceBuilder::new()
         .layer(cors_layer)
+        .layer(api_key_layer)
         .layer(rate_limiter)
         .layer(tower::timeout::TimeoutLayer::new(RPC_QUERY_TIMEOUT))
         .layer(health_layer);
@@ -1905,5 +2018,97 @@ mod tests {
         assert!(body.contains("# TYPE grey_block_height gauge"));
         assert!(body.contains("grey_finalized_height"));
         assert!(body.contains("grey_work_packages_submitted_total"));
+    }
+
+    /// Start RPC server with API key authentication enabled.
+    async fn setup_with_api_key(
+        key: &str,
+    ) -> (
+        String,
+        Arc<RpcState>,
+        mpsc::Receiver<RpcCommand>,
+        Arc<Store>,
+        tempfile::TempDir,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("test.redb")).unwrap();
+        let store = Arc::new(store);
+        let config = grey_types::config::Config::tiny();
+        let (state, rx) = create_rpc_channel(store.clone(), config, 0);
+        let (addr, _handle) = start_rpc_server_with_auth(
+            "127.0.0.1",
+            0,
+            state.clone(),
+            false,
+            0,
+            Some(key.to_string()),
+        )
+        .await
+        .unwrap();
+        (format!("http://{}", addr), state, rx, store, dir)
+    }
+
+    #[tokio::test]
+    async fn test_api_key_rejects_unauthenticated() {
+        let (url, _state, _rx, _store, _dir) = setup_with_api_key("test-secret-key").await;
+
+        // POST to JSON-RPC without auth header
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .body(r#"{"jsonrpc":"2.0","id":1,"method":"jam_getStatus","params":[]}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status().as_u16(),
+            401,
+            "should reject unauthenticated request"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_api_key_accepts_valid_token() {
+        let (url, _state, _rx, _store, _dir) = setup_with_api_key("test-secret-key").await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer test-secret-key")
+            .body(r#"{"jsonrpc":"2.0","id":1,"method":"jam_getStatus","params":[]}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 200, "should accept valid API key");
+    }
+
+    #[tokio::test]
+    async fn test_api_key_rejects_wrong_token() {
+        let (url, _state, _rx, _store, _dir) = setup_with_api_key("test-secret-key").await;
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer wrong-key")
+            .body(r#"{"jsonrpc":"2.0","id":1,"method":"jam_getStatus","params":[]}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 401, "should reject wrong API key");
+    }
+
+    #[tokio::test]
+    async fn test_api_key_exempts_health() {
+        let (url, _state, _rx, _store, _dir) = setup_with_api_key("test-secret-key").await;
+
+        // Health endpoint should work without auth
+        let (status, _body) = http_get(&format!("{}/health", url)).await;
+        assert_eq!(
+            status, 200,
+            "health endpoint should be exempt from API key auth"
+        );
     }
 }
