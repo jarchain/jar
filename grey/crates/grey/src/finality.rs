@@ -79,6 +79,10 @@ pub struct GrandpaState {
     precommit_archive: BTreeMap<(u64, ValidatorIndex), Hash>,
     /// Round at which the archive was last pruned (finalized round).
     archive_pruned_round: u64,
+    /// Buffered prevotes for future rounds. Replayed when we advance to that round.
+    pending_future_prevotes: Vec<Vote>,
+    /// Buffered precommits for future rounds. Replayed when we advance to that round.
+    pending_future_precommits: Vec<Vote>,
 }
 
 impl GrandpaState {
@@ -98,6 +102,8 @@ impl GrandpaState {
             prevote_archive: BTreeMap::new(),
             precommit_archive: BTreeMap::new(),
             archive_pruned_round: 0,
+            pending_future_prevotes: Vec::new(),
+            pending_future_precommits: Vec::new(),
         }
     }
 
@@ -215,6 +221,10 @@ impl GrandpaState {
         if vote.round != self.round {
             // Archive the vote even though it's for a different round
             self.prevote_archive.insert(archive_key, vote.block_hash);
+            // Buffer future-round votes for replay when we advance
+            if vote.round > self.round {
+                self.pending_future_prevotes.push(vote);
+            }
             return false;
         }
 
@@ -301,6 +311,10 @@ impl GrandpaState {
         if vote.round != self.round {
             // Archive the vote even though it's for a different round
             self.precommit_archive.insert(archive_key, vote.block_hash);
+            // Buffer future-round votes for replay when we advance
+            if vote.round > self.round {
+                self.pending_future_precommits.push(vote);
+            }
             return None;
         }
 
@@ -400,13 +414,58 @@ impl GrandpaState {
         self.archive_pruned_round = up_to_round;
     }
 
-    /// Advance to the next round.
+    /// Advance to the next round, replaying any buffered future-round votes.
     pub fn advance_round(&mut self) {
         self.round += 1;
         self.prevotes.clear();
         self.precommits.clear();
         self.prevoted = false;
         self.precommitted = false;
+
+        // Replay buffered future prevotes that match the new round
+        let prevotes: Vec<Vote> = self.pending_future_prevotes.drain(..).collect();
+        let mut replayed_prevotes = 0u32;
+        let mut remaining_prevotes = Vec::new();
+        for vote in prevotes {
+            if vote.round == self.round {
+                // Re-add to current round (archive already has it)
+                use std::collections::btree_map::Entry;
+                if let Entry::Vacant(e) = self.prevotes.entry(vote.validator_index) {
+                    e.insert(vote);
+                    replayed_prevotes += 1;
+                }
+            } else if vote.round > self.round {
+                remaining_prevotes.push(vote);
+            }
+            // Drop votes for past rounds
+        }
+        self.pending_future_prevotes = remaining_prevotes;
+
+        // Replay buffered future precommits that match the new round
+        let precommits: Vec<Vote> = self.pending_future_precommits.drain(..).collect();
+        let mut replayed_precommits = 0u32;
+        let mut remaining_precommits = Vec::new();
+        for vote in precommits {
+            if vote.round == self.round {
+                use std::collections::btree_map::Entry;
+                if let Entry::Vacant(e) = self.precommits.entry(vote.validator_index) {
+                    e.insert(vote);
+                    replayed_precommits += 1;
+                }
+            } else if vote.round > self.round {
+                remaining_precommits.push(vote);
+            }
+        }
+        self.pending_future_precommits = remaining_precommits;
+
+        if replayed_prevotes > 0 || replayed_precommits > 0 {
+            tracing::info!(
+                "GRANDPA round {}: replayed {} buffered prevotes, {} buffered precommits",
+                self.round,
+                replayed_prevotes,
+                replayed_precommits,
+            );
+        }
     }
 
     /// Check if the current round should advance (both prevote and precommit
@@ -917,5 +976,99 @@ mod tests {
             grandpa.prevotes[&0].block_hash, hash_a,
             "original vote preserved"
         );
+    }
+
+    #[test]
+    fn test_future_round_votes_replayed_on_advance() {
+        let mut grandpa = GrandpaState::new(6);
+        assert_eq!(grandpa.round, 1);
+
+        let hash_a = Hash([1u8; 32]);
+
+        // Add a prevote for round 2 (future) — should be buffered
+        let future_prevote = Vote {
+            round: 2,
+            block_hash: hash_a,
+            block_slot: 10,
+            validator_index: 0,
+            signature: grey_types::Ed25519Signature([0xAA; 64]),
+        };
+        let result = grandpa.add_prevote(future_prevote);
+        assert!(!result, "future-round prevote should not trigger threshold");
+        assert!(
+            grandpa.prevotes.is_empty(),
+            "current round should have no prevotes"
+        );
+        assert_eq!(
+            grandpa.pending_future_prevotes.len(),
+            1,
+            "should be buffered"
+        );
+
+        // Add a precommit for round 2 (future)
+        let future_precommit = Vote {
+            round: 2,
+            block_hash: hash_a,
+            block_slot: 10,
+            validator_index: 1,
+            signature: grey_types::Ed25519Signature([0xBB; 64]),
+        };
+        grandpa.add_precommit(future_precommit);
+        assert!(grandpa.precommits.is_empty());
+        assert_eq!(grandpa.pending_future_precommits.len(), 1);
+
+        // Advance to round 2 — should replay buffered votes
+        grandpa.advance_round();
+        assert_eq!(grandpa.round, 2);
+        assert_eq!(
+            grandpa.prevotes.len(),
+            1,
+            "buffered prevote should be replayed"
+        );
+        assert_eq!(grandpa.prevotes[&0].block_hash, hash_a);
+        assert_eq!(
+            grandpa.precommits.len(),
+            1,
+            "buffered precommit should be replayed"
+        );
+        assert_eq!(grandpa.precommits[&1].block_hash, hash_a);
+        assert!(grandpa.pending_future_prevotes.is_empty());
+        assert!(grandpa.pending_future_precommits.is_empty());
+    }
+
+    #[test]
+    fn test_future_votes_for_later_round_kept_buffered() {
+        let mut grandpa = GrandpaState::new(6);
+        let hash_a = Hash([1u8; 32]);
+
+        // Add prevote for round 3 while in round 1
+        let vote = Vote {
+            round: 3,
+            block_hash: hash_a,
+            block_slot: 20,
+            validator_index: 2,
+            signature: grey_types::Ed25519Signature([0xCC; 64]),
+        };
+        grandpa.add_prevote(vote);
+        assert_eq!(grandpa.pending_future_prevotes.len(), 1);
+
+        // Advance to round 2 — round 3 vote should still be buffered
+        grandpa.advance_round();
+        assert_eq!(grandpa.round, 2);
+        assert!(
+            grandpa.prevotes.is_empty(),
+            "round 3 vote should not replay in round 2"
+        );
+        assert_eq!(
+            grandpa.pending_future_prevotes.len(),
+            1,
+            "round 3 vote should remain buffered"
+        );
+
+        // Advance to round 3 — now it should replay
+        grandpa.advance_round();
+        assert_eq!(grandpa.round, 3);
+        assert_eq!(grandpa.prevotes.len(), 1, "round 3 vote should replay");
+        assert_eq!(grandpa.prevotes[&2].block_hash, hash_a);
     }
 }
