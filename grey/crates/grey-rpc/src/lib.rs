@@ -1469,7 +1469,7 @@ mod tests {
     async fn test_get_validators() {
         let (url, _state, _rx, store, _dir) = setup().await;
         let config = Config::tiny();
-        let (genesis_state, _secrets) = grey_consensus::genesis::create_genesis(&config);
+        let (genesis_state, secrets) = grey_consensus::genesis::create_genesis(&config);
 
         let block = test_block(1);
         let hash = store.put_block(&block).unwrap();
@@ -1491,6 +1491,25 @@ mod tests {
         assert!(validators[0]["ed25519"].is_string());
         assert!(validators[0]["bandersnatch"].is_string());
         assert_eq!(validators[0]["index"], 0);
+
+        // Verify validator keys match genesis secrets
+        for (i, secret) in secrets.iter().enumerate() {
+            let v = &validators[i];
+            let expected_ed = hex::encode(secret.ed25519.public_key().0);
+            let expected_band = hex::encode(secret.bandersnatch.public_key_bytes());
+            assert_eq!(
+                v["ed25519"].as_str().unwrap(),
+                expected_ed,
+                "ed25519 key mismatch for validator {}",
+                i
+            );
+            assert_eq!(
+                v["bandersnatch"].as_str().unwrap(),
+                expected_band,
+                "bandersnatch key mismatch for validator {}",
+                i
+            );
+        }
 
         // Explicit "pending"
         let result: serde_json::Value = client
