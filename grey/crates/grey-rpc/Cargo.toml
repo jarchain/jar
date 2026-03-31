@@ -25,3 +25,4 @@ jsonrpsee = { version = "0.24", features = ["client"] }
 reqwest = { version = "0.12", default-features = false }
 tempfile = "3"
 grey-consensus = { workspace = true }
+proptest = { workspace = true }
