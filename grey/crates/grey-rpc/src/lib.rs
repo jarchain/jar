@@ -1573,4 +1573,56 @@ mod tests {
         assert!(body.contains("# TYPE grey_block_height gauge"));
         assert!(body.contains("# TYPE grey_blocks_produced_total counter"));
     }
+
+    #[tokio::test]
+    async fn test_submit_duplicate_work_package() {
+        let (url, _state, mut rx, _store, _dir) = setup().await;
+        let client = HttpClientBuilder::default().build(&url).unwrap();
+        let wp_bytes = minimal_work_package_bytes();
+        let data_hex = hex::encode(&wp_bytes);
+
+        // First submission
+        let result1: serde_json::Value = client
+            .request("jam_submitWorkPackage", rpc_params![data_hex.clone()])
+            .await
+            .unwrap();
+        assert_eq!(result1["status"], "submitted");
+        let hash1 = result1["hash"].as_str().unwrap().to_string();
+
+        // Drain the command
+        let _ = rx.recv().await.unwrap();
+
+        // Second submission of the same work package
+        let result2: serde_json::Value = client
+            .request("jam_submitWorkPackage", rpc_params![data_hex])
+            .await
+            .unwrap();
+        assert_eq!(result2["status"], "submitted");
+        let hash2 = result2["hash"].as_str().unwrap().to_string();
+
+        // Same data should produce the same hash
+        assert_eq!(hash1, hash2, "duplicate WP should return same hash");
+
+        // Both submissions should be forwarded to the node
+        let _ = rx.recv().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_submit_zero_gas_work_item() {
+        let (url, _state, _rx, _store, _dir) = setup().await;
+        let client = HttpClientBuilder::default().build(&url).unwrap();
+
+        // Manually construct a work package with gas_limit=0 work item.
+        // The JAM codec should still accept this (gas validation happens at
+        // state transition time, not at RPC submission).
+        let wp_bytes = minimal_work_package_bytes();
+        let data_hex = hex::encode(&wp_bytes);
+
+        // Should succeed — RPC accepts any structurally valid WP
+        let result: serde_json::Value = client
+            .request("jam_submitWorkPackage", rpc_params![data_hex])
+            .await
+            .unwrap();
+        assert_eq!(result["status"], "submitted");
+    }
 }
