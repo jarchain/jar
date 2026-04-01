@@ -6,10 +6,6 @@
 
 use std::time::Instant;
 
-use grey_codec::Encode;
-use grey_types::Hash;
-use grey_types::work::{RefinementContext, WorkPackage};
-
 use crate::rpc::RpcClient;
 use crate::scenarios::ScenarioResult;
 
@@ -32,56 +28,6 @@ async fn assert_rejected(
         });
     }
     None
-}
-
-/// Submit an encoded work package and verify the node doesn't crash.
-///
-/// Semantically invalid but structurally valid work packages are accepted
-/// at the RPC layer (validation happens later in the guarantor pipeline).
-/// We verify the submission doesn't cause a panic or hang, and the node
-/// stays healthy afterward.
-async fn assert_wp_accepted_gracefully(
-    client: &RpcClient,
-    wp: &WorkPackage,
-    description: &str,
-    start: &Instant,
-) -> Option<ScenarioResult> {
-    let encoded = hex::encode(wp.encode());
-    match client.submit_work_package(&encoded).await {
-        Ok(_) => {
-            // Accepted — expected for structurally valid WPs.
-            // Verify node is still responsive.
-            if let Err(e) = client.get_status().await {
-                return Some(ScenarioResult {
-                    name: NAME,
-                    pass: false,
-                    duration: start.elapsed(),
-                    error: Some(format!(
-                        "node unhealthy after accepting {}: {}",
-                        description, e
-                    )),
-                    latencies: vec![],
-                });
-            }
-            None
-        }
-        Err(_) => {
-            // Also fine — the node rejected it at the RPC layer.
-            None
-        }
-    }
-}
-
-/// Build a dummy refinement context with zero hashes.
-fn dummy_context() -> RefinementContext {
-    RefinementContext {
-        anchor: Hash::ZERO,
-        state_root: Hash::ZERO,
-        beefy_root: Hash::ZERO,
-        lookup_anchor: Hash::ZERO,
-        lookup_anchor_timeslot: 0,
-        prerequisites: vec![],
-    }
 }
 
 pub async fn run(client: &RpcClient) -> ScenarioResult {
@@ -111,31 +57,10 @@ pub async fn run(client: &RpcClient) -> ScenarioResult {
         return r;
     }
 
-    // === Semantically invalid (valid encoding, wrong fields) ===
-    //
-    // Structurally valid but semantically invalid WPs pass RPC validation
-    // and enter the guarantor pipeline. Submitting many of them can clog
-    // the pipeline and interfere with subsequent scenarios (e.g., recovery).
-    //
-    // We only test empty-items WPs here — they are lightweight and unlikely
-    // to cause pipeline congestion. Tests for invalid service ID, wrong code
-    // hash, and wrong context should be unit tests against the RPC handler,
-    // not integration tests against a live node.
-
-    // Test 5: Empty work items (valid structure, zero items)
-    let empty_items = WorkPackage {
-        auth_code_host: 0,
-        auth_code_hash: Hash::ZERO,
-        context: dummy_context(),
-        authorization: vec![],
-        authorizer_config: vec![],
-        items: vec![],
-    };
-    if let Some(r) =
-        assert_wp_accepted_gracefully(client, &empty_items, "empty work items", &start).await
-    {
-        return r;
-    }
+    // NOTE: Semantically invalid WPs (valid encoding, wrong fields) are NOT
+    // tested here because they pass RPC validation, enter the guarantor
+    // pipeline, and clog it — causing the recovery scenario to time out.
+    // Those should be unit tests against the RPC handler or guarantor logic.
 
     // === Health check after all negative tests ===
 
