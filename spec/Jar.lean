@@ -16,6 +16,11 @@ import Jar.Accumulation
 import Jar.Variant
 import Jar.StateSerialization
 import Jar.Commitment
+import Jar.Proofs.Codec
+import Jar.Proofs.QuotaEcon
+import Jar.Proofs.BalanceEcon
+import Jar.Proofs.Hostcalls
+import Jar.Proofs.Variant
 
 /-!
 # JAR — JAM Axiomatic Reference
