@@ -194,8 +194,7 @@ pub struct BandersnatchRingVrfProof(pub Vec<u8>);
 #[derive(Clone, PartialEq, Eq)]
 pub struct BlsSignature(pub Vec<u8>);
 
-/// Balance type: NB = N_{2^64} (eq 4.21).
-pub type Balance = u64;
+// Balance type removed — coinless design. See docs/ideas/coinless-storage-quota.md.
 
 /// Gas type: NG = N_{2^64} (eq 4.23).
 pub type Gas = u64;

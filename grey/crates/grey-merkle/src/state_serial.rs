@@ -491,6 +491,9 @@ fn serialize_privileged(priv_svc: &PrivilegedServices) -> Vec<u8> {
         buf.extend_from_slice(&gas.to_le_bytes());
     }
 
+    // χQ: quota service (coinless)
+    buf.extend_from_slice(&priv_svc.quota_service.to_le_bytes());
+
     buf
 }
 
@@ -651,11 +654,11 @@ fn serialize_service_account_with_id(account: &ServiceAccount, sid: u32) -> Vec<
     // a_c: code_hash
     buf.extend_from_slice(&account.code_hash.0);
     // E_8 fields: b, g, m, o, f
-    buf.extend_from_slice(&account.balance.to_le_bytes());
+    buf.extend_from_slice(&account.quota_items.to_le_bytes()); // was: balance
     buf.extend_from_slice(&account.min_accumulate_gas.to_le_bytes());
     buf.extend_from_slice(&account.min_on_transfer_gas.to_le_bytes());
     buf.extend_from_slice(&account.total_footprint.to_le_bytes());
-    buf.extend_from_slice(&account.free_storage_offset.to_le_bytes());
+    buf.extend_from_slice(&account.quota_bytes.to_le_bytes()); // was: gratis
     // E_4 fields: i, r, a, p
     buf.extend_from_slice(&account.accumulation_counter.to_le_bytes());
     buf.extend_from_slice(&account.last_accumulation.to_le_bytes());
@@ -1180,12 +1183,20 @@ fn deserialize_privileged(data: &[u8], config: &Config) -> Result<PrivilegedServ
         always_accumulate.insert(service_id, gas);
     }
 
+    // χQ: quota service (coinless)
+    let quota_service = if pos < data.len() {
+        read_u32(data, &mut pos)?
+    } else {
+        0 // Default for legacy data without quota_service
+    };
+
     Ok(PrivilegedServices {
         manager,
         assigner,
         designator,
         registrar,
         always_accumulate,
+        quota_service,
     })
 }
 
@@ -1357,11 +1368,11 @@ fn deserialize_service_account(data: &[u8]) -> Result<ServiceAccount, String> {
     pos += 1;
 
     let code_hash = read_hash(data, &mut pos)?;
-    let balance = read_u64(data, &mut pos)?;
+    let quota_items = read_u64(data, &mut pos)?; // was: balance
     let min_accumulate_gas = read_u64(data, &mut pos)?;
     let min_on_transfer_gas = read_u64(data, &mut pos)?;
     let total_footprint = read_u64(data, &mut pos)?;
-    let free_storage_offset = read_u64(data, &mut pos)?;
+    let quota_bytes = read_u64(data, &mut pos)?; // was: free_storage_offset
     let accumulation_counter = read_u32(data, &mut pos)?;
     let last_accumulation = read_u32(data, &mut pos)?;
     let last_activity = read_u32(data, &mut pos)?;
@@ -1369,14 +1380,14 @@ fn deserialize_service_account(data: &[u8]) -> Result<ServiceAccount, String> {
 
     Ok(ServiceAccount {
         code_hash,
-        balance,
+        quota_items,
         min_accumulate_gas,
         min_on_transfer_gas,
         storage: BTreeMap::new(),
         preimage_lookup: BTreeMap::new(),
         preimage_info: BTreeMap::new(),
         total_footprint,
-        free_storage_offset,
+        quota_bytes,
         accumulation_counter,
         last_accumulation,
         last_activity,

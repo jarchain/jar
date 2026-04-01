@@ -77,11 +77,11 @@ const META_FINALIZED_SLOT: &str = "finalized_slot";
 #[derive(Debug, Clone)]
 pub struct ServiceMetadata {
     pub code_hash: Hash,
-    pub balance: u64,
+    pub quota_items: u64,
     pub min_accumulate_gas: u64,
     pub min_on_transfer_gas: u64,
     pub total_footprint: u64,
-    pub free_storage_offset: u64,
+    pub quota_bytes: u64,
     pub accumulation_counter: u32,
     pub last_accumulation: u32,
     pub last_activity: u32,
@@ -455,8 +455,8 @@ impl Store {
 
     /// Look up a service account's metadata (all fixed-size header fields).
     /// The service metadata is at key C(255, service_id).
-    /// Layout: version(1) + code_hash(32) + balance(8) + min_accumulate_gas(8) +
-    ///         min_on_transfer_gas(8) + total_footprint(8) + free_storage_offset(8) +
+    /// Layout: version(1) + code_hash(32) + quota_items(8) + min_accumulate_gas(8) +
+    ///         min_on_transfer_gas(8) + total_footprint(8) + quota_bytes(8) +
     ///         accumulation_counter(4) + last_accumulation(4) + last_activity(4) +
     ///         preimage_count(4) = 89 bytes minimum.
     pub fn get_service_metadata(
@@ -480,7 +480,7 @@ impl Store {
         let mut code_hash = [0u8; 32];
         code_hash.copy_from_slice(&v[pos..pos + 32]);
         pos += 32;
-        let balance = u64::from_le_bytes(v[pos..pos + 8].try_into().unwrap());
+        let quota_items = u64::from_le_bytes(v[pos..pos + 8].try_into().unwrap());
         pos += 8;
         let min_accumulate_gas = u64::from_le_bytes(v[pos..pos + 8].try_into().unwrap());
         pos += 8;
@@ -488,7 +488,7 @@ impl Store {
         pos += 8;
         let total_footprint = u64::from_le_bytes(v[pos..pos + 8].try_into().unwrap());
         pos += 8;
-        let free_storage_offset = u64::from_le_bytes(v[pos..pos + 8].try_into().unwrap());
+        let quota_bytes = u64::from_le_bytes(v[pos..pos + 8].try_into().unwrap());
         pos += 8;
         let accumulation_counter = u32::from_le_bytes(v[pos..pos + 4].try_into().unwrap());
         pos += 4;
@@ -500,11 +500,11 @@ impl Store {
 
         Ok(Some(ServiceMetadata {
             code_hash: Hash(code_hash),
-            balance,
+            quota_items,
             min_accumulate_gas,
             min_on_transfer_gas,
             total_footprint,
-            free_storage_offset,
+            quota_bytes,
             accumulation_counter,
             last_accumulation,
             last_activity,

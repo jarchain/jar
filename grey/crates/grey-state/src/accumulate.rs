@@ -6,7 +6,7 @@
 use crate::pvm_backend::{ExitReason, PvmInstance};
 use grey_types::config::Config;
 use grey_types::constants::{
-    HOST_CASH, HOST_CORE, HOST_FULL, HOST_HUH, HOST_LOW, HOST_NONE, HOST_OK, HOST_WHAT, HOST_WHO,
+    HOST_CORE, HOST_FULL, HOST_HUH, HOST_LOW, HOST_NONE, HOST_OK, HOST_WHAT, HOST_WHO,
 };
 use grey_types::work::{WorkReport, WorkResult};
 use grey_types::{Hash, ServiceId, Timeslot};
@@ -53,11 +53,11 @@ pub struct ReadyRecord {
 pub struct AccServiceAccount {
     pub version: u8,
     pub code_hash: Hash,
-    pub balance: u64,
+    pub quota_items: u64,
     pub min_item_gas: Gas,
     pub min_memo_gas: Gas,
     pub bytes: u64,
-    pub deposit_offset: u64,
+    pub quota_bytes: u64,
     pub items: u64,
     pub creation_slot: Timeslot,
     pub last_accumulation_slot: Timeslot,
@@ -81,6 +81,7 @@ pub struct AccPrivileges {
     pub designate: ServiceId,
     pub register: ServiceId,
     pub always_acc: Vec<(ServiceId, Gas)>,
+    pub quota_service: ServiceId,
 }
 
 /// Per-service accumulation statistics.
@@ -142,7 +143,6 @@ pub struct AccumulateOutput {
 pub struct DeferredTransfer {
     pub sender: ServiceId,
     pub destination: ServiceId,
-    pub amount: u64,
     pub memo: Vec<u8>,
     pub gas_limit: Gas,
 }
@@ -372,16 +372,7 @@ fn accumulate_single_service(
     }
 
     // Initialize accumulation context (regular dimension x)
-    // Credit incoming transfers to balance first (eq B.9)
-    let mut initial_accounts = accounts.clone();
-    let transfer_balance: u64 = transfers
-        .iter()
-        .filter(|t| t.destination == service_id)
-        .map(|t| t.amount)
-        .sum();
-    if let Some(acc) = initial_accounts.get_mut(&service_id) {
-        acc.balance = acc.balance.saturating_add(transfer_balance);
-    }
+    let initial_accounts = accounts.clone();
 
     // Compute next available service ID (eq B.10)
     // i = S + (H(E_4(s) ++ η'_0 ++ E_4(τ')) mod (2^32 - S - 2^8))
@@ -549,12 +540,13 @@ fn encode_operand(report: &WorkReport, digest: &grey_types::work::WorkDigest) ->
 }
 
 /// Encode a single deferred transfer (type X, eq C.31).
-/// EX(x) ≡ E(E4(xs), E4(xd), E8(xa), xm, E8(xg))
+/// EX(x) ≡ E(E4(xs), E4(xd), E8(0), xm, E8(xg))
+/// Amount field is always 0 in coinless design (preserved for format compatibility).
 fn encode_transfer(t: &DeferredTransfer) -> Vec<u8> {
     let mut buf = Vec::new();
     buf.extend_from_slice(&t.sender.to_le_bytes()); // E4(sender)
     buf.extend_from_slice(&t.destination.to_le_bytes()); // E4(dest)
-    buf.extend_from_slice(&t.amount.to_le_bytes()); // E8(amount)
+    buf.extend_from_slice(&0u64.to_le_bytes()); // E8(amount=0, coinless)
     // Memo: fixed 128 bytes (padded with zeros)
     let mut memo = [0u8; 128];
     let copy_len = t.memo.len().min(128);
@@ -764,6 +756,7 @@ fn handle_host_call(
         25 => host_forget(pvm, regular, timeslot, config),
         26 => host_yield(pvm, regular),
         27 => host_provide(pvm, regular),
+        28 => host_set_quota(pvm, regular),
         100 => {
             pvm.set_reg(7, HOST_WHAT);
             true
@@ -1006,14 +999,7 @@ fn host_write(pvm: &mut PvmInstance, ctx: &mut AccContext) -> bool {
             };
         }
 
-        let threshold = {
-            let raw = grey_types::constants::BALANCE_SERVICE_MINIMUM as i64
-                + grey_types::constants::BALANCE_PER_ITEM as i64 * new_items as i64
-                + grey_types::constants::BALANCE_PER_OCTET as i64 * new_bytes as i64
-                - account.deposit_offset as i64;
-            std::cmp::max(0, raw) as u64
-        };
-        if threshold > account.balance {
+        if new_items > account.quota_items || new_bytes > account.quota_bytes {
             pvm.set_reg(7, HOST_FULL);
             return true;
         }
@@ -1060,25 +1046,18 @@ fn host_info(pvm: &mut PvmInstance, ctx: &mut AccContext) -> bool {
         ctx.init_accounts.get(&service_id)
     };
     if let Some(account) = target {
-        // Build info struct v per GP:
-        // E(a_c, E_8(a_b, a_t, a_g, a_m, a_o), E_4(a_i), E_8(a_f), E_4(a_r, a_a, a_p))
+        // Build info struct v per GP (coinless):
+        // E(a_c, E_8(a_qi, a_qo, a_g, a_m, a_o), E_4(a_i), E_8(pad), E_4(a_r, a_a, a_p))
         // = 32 + 40 + 4 + 8 + 12 = 96 bytes
-        let threshold = {
-            let total = grey_types::constants::BALANCE_SERVICE_MINIMUM
-                + grey_types::constants::BALANCE_PER_ITEM * account.items
-                + grey_types::constants::BALANCE_PER_OCTET * account.bytes;
-            total.saturating_sub(account.deposit_offset)
-        };
-
         let mut buf = [0u8; 96];
         buf[0..32].copy_from_slice(&account.code_hash.0); // a_c
-        buf[32..40].copy_from_slice(&account.balance.to_le_bytes()); // a_b
-        buf[40..48].copy_from_slice(&threshold.to_le_bytes()); // a_t
+        buf[32..40].copy_from_slice(&account.quota_items.to_le_bytes()); // a_qi (was a_b)
+        buf[40..48].copy_from_slice(&account.quota_bytes.to_le_bytes()); // a_qo (was a_t)
         buf[48..56].copy_from_slice(&account.min_item_gas.to_le_bytes()); // a_g
         buf[56..64].copy_from_slice(&account.min_memo_gas.to_le_bytes()); // a_m
         buf[64..72].copy_from_slice(&account.bytes.to_le_bytes()); // a_o
         buf[72..76].copy_from_slice(&(account.items as u32).to_le_bytes()); // a_i
-        buf[76..84].copy_from_slice(&account.deposit_offset.to_le_bytes()); // a_f
+        buf[76..84].copy_from_slice(&0u64.to_le_bytes()); // padding (was a_f)
         buf[84..88].copy_from_slice(&account.creation_slot.to_le_bytes()); // a_r
         buf[88..92].copy_from_slice(&account.last_accumulation_slot.to_le_bytes()); // a_a
         buf[92..96].copy_from_slice(&account.parent_service.to_le_bytes()); // a_p
@@ -1113,15 +1092,14 @@ fn host_checkpoint(
     true
 }
 
-/// transfer (id=20): Queue a deferred balance transfer (GP eq B.19-B.20).
-/// φ[7] = dest, φ[8] = amount, φ[9] = gas_limit, φ[10] = memo_ptr
+/// transfer (id=20): Queue a deferred transfer (GP eq B.19-B.20, coinless).
+/// φ[7] = dest, φ[8] = (unused), φ[9] = gas_limit, φ[10] = memo_ptr
 /// Memo is always exactly W_T (128) bytes read from memory at φ[10].
-/// Returns: OK, WHO (dest unknown), LOW (gas < min), CASH (insufficient balance)
+/// Returns: OK, WHO (dest unknown), LOW (gas < min)
 fn host_transfer(pvm: &mut PvmInstance, ctx: &mut AccContext) -> bool {
     const MEMO_SIZE: u32 = 128; // W_T
 
     let dest = pvm.reg(7) as ServiceId;
-    let amount = pvm.reg(8);
     let gas_limit = pvm.reg(9);
     let memo_ptr = pvm.reg(10) as u32;
 
@@ -1142,27 +1120,15 @@ fn host_transfer(pvm: &mut PvmInstance, ctx: &mut AccContext) -> bool {
         return true;
     }
 
-    if let Some(account) = ctx.accounts.get(&ctx.service_id)
-        && account.balance < amount
-    {
-        pvm.set_reg(7, HOST_CASH);
-        return true;
-    }
-
     if pvm.gas() < gas_limit {
         pvm.set_gas(0);
         return false;
     }
     pvm.set_gas(pvm.gas() - gas_limit);
 
-    if let Some(account) = ctx.accounts.get_mut(&ctx.service_id) {
-        account.balance -= amount;
-    }
-
     ctx.transfers.push(DeferredTransfer {
         sender: ctx.service_id,
         destination: dest,
-        amount,
         memo,
         gas_limit,
     });
@@ -1252,12 +1218,8 @@ fn host_eject(
     if timeslots.len() >= 2 {
         let y = timeslots[1];
         if y < timeslot.saturating_sub(config.preimage_expunge_period) {
-            // Success: remove target, transfer balance to caller
-            let ejected_balance = ctx.accounts.get(&d).unwrap().balance;
+            // Success: remove target service (coinless: no balance transfer)
             ctx.accounts.remove(&d);
-            if let Some(self_acc) = ctx.accounts.get_mut(&ctx.service_id) {
-                self_acc.balance = self_acc.balance.saturating_add(ejected_balance);
-            }
             pvm.set_reg(7, HOST_OK);
             return true;
         }
@@ -1384,8 +1346,10 @@ fn host_bless(
         })
         .collect();
 
-    // Read always-accumulate map: n entries of (u32, u64) = 12 bytes each
-    let always_bytes = match pvm.try_read_bytes(o_ptr, 12 * n) {
+    // Read always-accumulate map + quota_service: n entries of (u32, u64) = 12 bytes each,
+    // followed by 4 bytes for quota_service (u32).
+    let total_bless_bytes = 12 * n + 4;
+    let always_bytes = match pvm.try_read_bytes(o_ptr, total_bless_bytes) {
         Some(b) => b,
         None => return false, // page fault → PANIC
     };
@@ -1410,6 +1374,14 @@ fn host_bless(
             (sid, gas)
         })
         .collect();
+    // Read quota_service (4 bytes after always-accumulate entries)
+    let qs_offset = (12 * n) as usize;
+    let quota_service = u32::from_le_bytes([
+        always_bytes[qs_offset],
+        always_bytes[qs_offset + 1],
+        always_bytes[qs_offset + 2],
+        always_bytes[qs_offset + 3],
+    ]);
 
     // Check (m, v, r) are valid service IDs (fit in u32)
     if m > u32::MAX as u64 || v > u32::MAX as u64 || r > u32::MAX as u64 {
@@ -1424,6 +1396,7 @@ fn host_bless(
         designate: v as ServiceId,
         register: r as ServiceId,
         always_acc,
+        quota_service,
     };
 
     pvm.set_reg(7, HOST_OK);
@@ -1540,7 +1513,7 @@ fn host_new(pvm: &mut PvmInstance, ctx: &mut AccContext, timeslot: Timeslot) -> 
     let l = pvm.reg(8);
     let g = pvm.reg(9);
     let m = pvm.reg(10);
-    let f = pvm.reg(11); // freeze / free_storage_offset
+    let f = pvm.reg(11); // freeze (legacy, unused in coinless)
     let hint_i = pvm.reg(12);
 
     // Read code hash from memory
@@ -1557,7 +1530,7 @@ fn host_new(pvm: &mut PvmInstance, ctx: &mut AccContext, timeslot: Timeslot) -> 
         return false; // panic
     }
 
-    // Build the new account to compute its threshold balance
+    // Build the new account
     let mut preimage_info = BTreeMap::new();
     preimage_info.insert((code_hash, l as u32), vec![]);
 
@@ -1567,32 +1540,9 @@ fn host_new(pvm: &mut PvmInstance, ctx: &mut AccContext, timeslot: Timeslot) -> 
     // a_o = Σ(81 + z) for (h,z) ∈ K(a_l)
     let footprint = 81u64 + l;
 
-    // a_t = max(0, B_S + B_I·a_i + B_L·a_o - a_f) (GP eq 9.8)
-    let threshold = {
-        let raw = grey_types::constants::BALANCE_SERVICE_MINIMUM as i64
-            + grey_types::constants::BALANCE_PER_ITEM as i64 * items_count as i64
-            + grey_types::constants::BALANCE_PER_OCTET as i64 * footprint as i64
-            - f as i64;
-        std::cmp::max(0, raw) as u64
-    };
-
     // Check f ≠ 0 requires caller to be manager (GP: if f ≠ 0 ∧ x_s ≠ χ_M → HUH)
     if f != 0 && ctx.service_id != ctx.privileges.bless {
         pvm.set_reg(7, HOST_HUH);
-        return true;
-    }
-
-    // Check caller has enough balance after deduction
-    // GP: let s = x_s except s_b = (x_s)_b - a_t; if s_b < (x_s)_t → CASH
-    // i.e. caller's balance after deducting a_t must still be ≥ caller's own threshold
-    if let Some(self_acc) = ctx.accounts.get(&ctx.service_id) {
-        let caller_threshold = compute_account_threshold(self_acc);
-        if self_acc.balance.saturating_sub(threshold) < caller_threshold {
-            pvm.set_reg(7, HOST_CASH);
-            return true;
-        }
-    } else {
-        pvm.set_reg(7, HOST_CASH);
         return true;
     }
 
@@ -1619,19 +1569,14 @@ fn host_new(pvm: &mut PvmInstance, ctx: &mut AccContext, timeslot: Timeslot) -> 
         id
     };
 
-    // Debit caller by threshold amount (GP: s_b = (x_s)_b - a_t)
-    if let Some(self_acc) = ctx.accounts.get_mut(&ctx.service_id) {
-        self_acc.balance -= threshold;
-    }
-
     let new_account = AccServiceAccount {
         version: 0,
         code_hash,
-        balance: threshold,
+        quota_items: 0,
         min_item_gas: g,
         min_memo_gas: m,
         bytes: footprint,
-        deposit_offset: f,
+        quota_bytes: 0,
         items: items_count,
         creation_slot: timeslot,
         last_accumulation_slot: 0,
@@ -1792,9 +1737,8 @@ fn host_solicit(pvm: &mut PvmInstance, ctx: &mut AccContext, timeslot: Timeslot)
             account.bytes += 81 + z as u64;
         }
 
-        // Check minimum balance requirement
-        let threshold = compute_account_threshold(account);
-        if threshold > account.balance {
+        // Check quota limits (coinless)
+        if account.items > account.quota_items || account.bytes > account.quota_bytes {
             // Undo the insert
             if account
                 .preimage_info
@@ -1968,18 +1912,30 @@ fn host_provide(pvm: &mut PvmInstance, ctx: &mut AccContext) -> bool {
     true
 }
 
-/// Compute the minimum balance threshold for a service account (GP eq 9.4/9.8).
-/// a_i = 2·|a_l| + |a_s|
-/// a_o = Σ(81+z) for (h,z)∈K(a_l) + Σ(34+|y|+|x|) for (x,y)∈a_s
-/// a_t = max(0, B_S + B_I·a_i + B_L·a_o - a_f)
-fn compute_account_threshold(account: &AccServiceAccount) -> u64 {
-    // Use stored items/bytes which are maintained incrementally by host calls.
-    // GP eq 9.8: a_t = max(0, B_S + B_I·a_i + B_L·a_o - a_f)
-    let raw = grey_types::constants::BALANCE_SERVICE_MINIMUM as i64
-        + grey_types::constants::BALANCE_PER_ITEM as i64 * account.items as i64
-        + grey_types::constants::BALANCE_PER_OCTET as i64 * account.bytes as i64
-        - account.deposit_offset as i64;
-    std::cmp::max(0, raw) as u64
+/// set_quota (id=28): Set storage quota for a target service (coinless).
+/// φ[7]=target, φ[8]=max_items, φ[9]=max_bytes
+/// Privilege check: caller must be ctx.privileges.quota_service.
+/// Returns: OK, HUH (not quota service), WHO (target not found)
+fn host_set_quota(pvm: &mut PvmInstance, ctx: &mut AccContext) -> bool {
+    let target = pvm.reg(7) as ServiceId;
+    let max_items = pvm.reg(8);
+    let max_bytes = pvm.reg(9);
+
+    // Privilege check: caller must be the quota service
+    if ctx.service_id != ctx.privileges.quota_service {
+        pvm.set_reg(7, HOST_HUH);
+        return true;
+    }
+
+    // Target must exist
+    if let Some(account) = ctx.accounts.get_mut(&target) {
+        account.quota_items = max_items;
+        account.quota_bytes = max_bytes;
+        pvm.set_reg(7, HOST_OK);
+    } else {
+        pvm.set_reg(7, HOST_WHO);
+    }
+    true
 }
 
 /// Find a free service ID starting from the given candidate.
@@ -2144,12 +2100,16 @@ fn accumulate_batch(
     let delta_r = delta_priv(r);
     let r_prime = priv_r(r, e_star.register, delta_r.register);
 
+    // q' = quota_service from manager's result (same pattern as m')
+    let q_prime = e_star.quota_service;
+
     current_privileges = AccPrivileges {
         bless: m_prime,
         assign: a_prime,
         designate: v_prime,
         register: r_prime,
         always_acc: z_prime,
+        quota_service: q_prime,
     };
 
     (
@@ -2647,11 +2607,11 @@ fn service_to_acc(
     AccServiceAccount {
         version: 0,
         code_hash: a.code_hash,
-        balance: a.balance,
+        quota_items: a.quota_items,
         min_item_gas: a.min_accumulate_gas,
         min_memo_gas: a.min_on_transfer_gas,
         bytes: a.total_footprint,
-        deposit_offset: a.free_storage_offset,
+        quota_bytes: a.quota_bytes,
         items: a.accumulation_counter as u64,
         creation_slot: a.last_accumulation, // position r = creation timeslot
         last_accumulation_slot: a.last_activity, // position a = last accumulation timeslot
@@ -2690,13 +2650,13 @@ fn acc_to_service(
 
     ServiceAccount {
         code_hash: a.code_hash,
-        balance: a.balance,
+        quota_items: a.quota_items,
         min_accumulate_gas: a.min_item_gas,
         min_on_transfer_gas: a.min_memo_gas,
         storage: a.storage.clone(),
         preimage_lookup: a.preimage_lookup.clone(),
         preimage_info: a.preimage_info.clone(),
-        free_storage_offset: a.deposit_offset,
+        quota_bytes: a.quota_bytes,
         total_footprint: a.bytes,
         accumulation_counter: a.items as u32,
         last_accumulation,
@@ -2713,6 +2673,7 @@ fn privileges_to_acc(p: &PrivilegedServices) -> AccPrivileges {
         designate: p.designator,
         register: p.registrar,
         always_acc: p.always_accumulate.iter().map(|(&s, &g)| (s, g)).collect(),
+        quota_service: p.quota_service,
     }
 }
 
@@ -2724,6 +2685,7 @@ fn acc_to_privileges(p: &AccPrivileges) -> PrivilegedServices {
         designator: p.designate,
         registrar: p.register,
         always_accumulate: p.always_acc.iter().map(|&(s, g)| (s, g)).collect(),
+        quota_service: p.quota_service,
     }
 }
 

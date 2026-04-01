@@ -418,11 +418,11 @@ impl JamRpcServer for RpcImpl {
             Some(meta) => Ok(serde_json::json!({
                 "service_id": service_id,
                 "code_hash": hex::encode(meta.code_hash.0),
-                "balance": meta.balance,
+                "quota_items": meta.quota_items,
                 "min_accumulate_gas": meta.min_accumulate_gas,
                 "min_on_transfer_gas": meta.min_on_transfer_gas,
                 "total_footprint": meta.total_footprint,
-                "free_storage_offset": meta.free_storage_offset,
+                "quota_bytes": meta.quota_bytes,
                 "accumulation_counter": meta.accumulation_counter,
                 "last_accumulation": meta.last_accumulation,
                 "last_activity": meta.last_activity,
@@ -1480,13 +1480,13 @@ mod tests {
         // Insert a service account
         let svc = grey_types::state::ServiceAccount {
             code_hash: Hash([0xAA; 32]),
-            balance: 1000,
+            quota_items: 1_000_000,
             min_accumulate_gas: 500,
             min_on_transfer_gas: 200,
             storage: std::collections::BTreeMap::new(),
             preimage_lookup: std::collections::BTreeMap::new(),
             preimage_info: std::collections::BTreeMap::new(),
-            free_storage_offset: 0,
+            quota_bytes: 1_000_000_000,
             total_footprint: 0,
             accumulation_counter: 0,
             last_accumulation: 0,
@@ -1509,7 +1509,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result["service_id"], 42);
-        assert_eq!(result["balance"], 1000);
+        assert_eq!(result["quota_items"], 1_000_000);
         assert_eq!(result["min_accumulate_gas"], 500);
         assert_eq!(result["min_on_transfer_gas"], 200);
         assert_eq!(result["code_hash"], hex::encode([0xAAu8; 32]));
@@ -1533,13 +1533,13 @@ mod tests {
         let expected_hash = grey_crypto::blake2b_256(code_data);
         let svc = grey_types::state::ServiceAccount {
             code_hash: expected_hash,
-            balance: 5_000_000,
+            quota_items: 1_000_000,
             min_accumulate_gas: 50_000,
             min_on_transfer_gas: 10_000,
             storage: std::collections::BTreeMap::new(),
             preimage_lookup: std::collections::BTreeMap::new(),
             preimage_info: std::collections::BTreeMap::new(),
-            free_storage_offset: 0,
+            quota_bytes: 1_000_000_000,
             total_footprint: 0,
             accumulation_counter: 0,
             last_accumulation: 0,
@@ -1565,7 +1565,7 @@ mod tests {
             hex::encode(expected_hash.0),
             "code_hash should match blake2b of the code data"
         );
-        assert_eq!(result["balance"], 5_000_000u64);
+        assert_eq!(result["quota_items"], 1_000_000u64);
         assert_eq!(result["min_accumulate_gas"], 50_000u64);
         assert_eq!(result["min_on_transfer_gas"], 10_000u64);
         assert_eq!(result["preimage_count"], 3);

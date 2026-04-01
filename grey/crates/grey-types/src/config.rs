@@ -124,9 +124,9 @@ impl Config {
         use crate::constants::*;
         let mut buf = Vec::with_capacity(134);
         // E_8 values
-        buf.extend_from_slice(&BALANCE_PER_ITEM.to_le_bytes()); // B_I
-        buf.extend_from_slice(&BALANCE_PER_OCTET.to_le_bytes()); // B_L
-        buf.extend_from_slice(&BALANCE_SERVICE_MINIMUM.to_le_bytes()); // B_S
+        buf.extend_from_slice(&0u64.to_le_bytes()); // B_I (removed in coinless, encode 0)
+        buf.extend_from_slice(&0u64.to_le_bytes()); // B_L (removed in coinless, encode 0)
+        buf.extend_from_slice(&0u64.to_le_bytes()); // B_S (removed in coinless, encode 0)
         // E_2 values
         buf.extend_from_slice(&self.core_count.to_le_bytes()); // C
         // E_4 values

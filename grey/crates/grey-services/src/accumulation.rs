@@ -11,7 +11,7 @@
 use grey_types::constants::*;
 use grey_types::state::{PrivilegedServices, ServiceAccount, State};
 use grey_types::work::WorkReport;
-use grey_types::{Balance, Hash, ServiceId, Timeslot};
+use grey_types::{Hash, ServiceId, Timeslot};
 use javm::Gas;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -29,14 +29,13 @@ pub enum AccumulationError {
 }
 
 /// A deferred transfer between services (eq 12.16: X).
+/// Coinless: no amount field. Transfers are pure message-passing (memo + gas).
 #[derive(Clone, Debug)]
 pub struct DeferredTransfer {
     /// Sender service.
     pub sender: ServiceId,
     /// Destination service.
     pub destination: ServiceId,
-    /// Amount to transfer.
-    pub amount: Balance,
     /// Memo (up to WT=128 bytes).
     pub memo: Vec<u8>,
     /// Gas limit for the transfer's on-transfer handler.
@@ -182,13 +181,8 @@ pub fn accumulate_service(
         .saturating_add(transfer_gas)
         .saturating_add(operand_gas);
 
-    // Credit incoming transfers to service balance
+    // Coinless: no balance to credit from transfers. Transfers are pure message-passing.
     if let Some(account) = services.get_mut(&service_id) {
-        for transfer in incoming_transfers {
-            if transfer.destination == service_id {
-                account.balance = account.balance.saturating_add(transfer.amount);
-            }
-        }
         // Update accumulation metadata
         account.last_accumulation = timeslot;
         account.accumulation_counter = account.accumulation_counter.saturating_add(1);
@@ -399,16 +393,16 @@ mod tests {
     use super::*;
     use grey_types::work::*;
 
-    fn make_service(balance: Balance) -> ServiceAccount {
+    fn make_service() -> ServiceAccount {
         ServiceAccount {
             code_hash: Hash::ZERO,
-            balance,
+            quota_items: 100,
             min_accumulate_gas: 0,
             min_on_transfer_gas: 0,
             storage: BTreeMap::new(),
             preimage_lookup: BTreeMap::new(),
             preimage_info: BTreeMap::new(),
-            free_storage_offset: 0,
+            quota_bytes: 10000,
             total_footprint: 0,
             accumulation_counter: 0,
             last_accumulation: 0,
@@ -486,26 +480,26 @@ mod tests {
     }
 
     #[test]
-    fn test_accumulate_service_credits_transfers() {
+    fn test_accumulate_service_with_transfers() {
         let mut services = BTreeMap::new();
-        services.insert(1, make_service(100));
+        services.insert(1, make_service());
 
         let transfers = vec![DeferredTransfer {
             sender: 0,
             destination: 1,
-            amount: 50,
             memo: vec![],
             gas_limit: 1000,
         }];
 
         let result = accumulate_service(&services, 1, &[], &transfers, 0, 10);
-        assert_eq!(result.services[&1].balance, 150);
+        // Coinless: transfers don't change balance. Check accumulation counter updated.
+        assert_eq!(result.services[&1].accumulation_counter, 1);
     }
 
     #[test]
     fn test_accumulate_all_basic() {
         let mut services = BTreeMap::new();
-        services.insert(42, make_service(1000));
+        services.insert(42, make_service());
 
         let state = State {
             services,
@@ -545,7 +539,7 @@ mod tests {
     #[test]
     fn test_integrate_preimages() {
         let mut services = BTreeMap::new();
-        let mut account = make_service(1000);
+        let mut account = make_service();
         let data = b"hello world";
         let hash = grey_crypto::blake2b_256(data);
         let len = data.len() as u32;
@@ -564,7 +558,7 @@ mod tests {
 
     #[test]
     fn test_is_preimage_solicited() {
-        let mut account = make_service(1000);
+        let mut account = make_service();
         let data = b"test";
         let hash = grey_crypto::blake2b_256(data);
         let len = data.len() as u32;

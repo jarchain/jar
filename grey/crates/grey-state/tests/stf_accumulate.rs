@@ -60,11 +60,17 @@ fn parse_service_account(v: &serde_json::Value) -> (ServiceId, AccServiceAccount
     let account = AccServiceAccount {
         version: svc["version"].as_u64().unwrap_or(0) as u8,
         code_hash: hash_from_hex(svc["code_hash"].as_str().unwrap()),
-        balance: svc["balance"].as_u64().unwrap(),
+        quota_items: svc["quota_items"]
+            .as_u64()
+            .or_else(|| svc["balance"].as_u64())
+            .unwrap_or(0),
         min_item_gas: svc["min_item_gas"].as_u64().unwrap() as Gas,
         min_memo_gas: svc["min_memo_gas"].as_u64().unwrap() as Gas,
         bytes: svc["bytes"].as_u64().unwrap(),
-        deposit_offset: svc["deposit_offset"].as_u64().unwrap_or(0),
+        quota_bytes: svc["quota_bytes"]
+            .as_u64()
+            .or_else(|| svc["deposit_offset"].as_u64())
+            .unwrap_or(0),
         items: svc["items"].as_u64().unwrap(),
         creation_slot: svc["creation_slot"].as_u64().unwrap() as Timeslot,
         last_accumulation_slot: svc["last_accumulation_slot"].as_u64().unwrap_or(0) as Timeslot,
@@ -99,6 +105,7 @@ fn parse_privileges(v: &serde_json::Value) -> AccPrivileges {
                 (sid, gas)
             })
             .collect(),
+        quota_service: v["quota_service"].as_u64().unwrap_or(0) as ServiceId,
     }
 }
 
@@ -315,9 +322,9 @@ fn run_accumulate_test(dir: &str, stem: &str) {
             .get(sid)
             .unwrap_or_else(|| panic!("missing account {sid} in {path}"));
         assert_eq!(
-            got_acc.balance, exp_acc.balance,
-            "account[{sid}].balance mismatch in {path}: got {} expected {}",
-            got_acc.balance, exp_acc.balance
+            got_acc.quota_items, exp_acc.quota_items,
+            "account[{sid}].quota_items mismatch in {path}: got {} expected {}",
+            got_acc.quota_items, exp_acc.quota_items
         );
         assert_eq!(
             got_acc.bytes, exp_acc.bytes,

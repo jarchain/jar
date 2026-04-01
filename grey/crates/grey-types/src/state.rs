@@ -139,6 +139,8 @@ pub struct PrivilegedServices {
     pub registrar: ServiceId,
     /// χZ: Always-accumulate services and their gas allowance.
     pub always_accumulate: BTreeMap<ServiceId, Gas>,
+    /// χQ: Quota manager service (coinless).
+    pub quota_service: ServiceId,
 }
 
 /// Past judgments ψ (eq 10.1).
@@ -155,12 +157,14 @@ pub struct Judgments {
 }
 
 /// Service account A (eq 9.3).
+/// Coinless design: balance/gratis replaced by quota_items/quota_bytes.
+/// See docs/ideas/coinless-storage-quota.md.
 #[derive(Clone, Debug)]
 pub struct ServiceAccount {
     /// c: Code hash.
     pub code_hash: Hash,
-    /// b: Balance.
-    pub balance: u64,
+    /// q_i: Maximum storage items quota (set by privileged quota service).
+    pub quota_items: u64,
     /// g: Minimum gas for accumulation.
     pub min_accumulate_gas: Gas,
     /// m: Minimum gas for on-transfer.
@@ -171,8 +175,8 @@ pub struct ServiceAccount {
     pub preimage_lookup: BTreeMap<Hash, Vec<u8>>,
     /// l: Preimage info dictionary ((hash, length) → timeslots).
     pub preimage_info: BTreeMap<(Hash, u32), Vec<Timeslot>>,
-    /// f: Gratis (free) storage offset.
-    pub free_storage_offset: u64,
+    /// q_o: Maximum storage bytes quota (set by privileged quota service).
+    pub quota_bytes: u64,
     /// o: Total storage footprint.
     pub total_footprint: u64,
     /// i: Accumulation counter.

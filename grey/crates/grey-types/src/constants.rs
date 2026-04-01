@@ -3,14 +3,8 @@
 /// A = 8: Period in seconds between audit tranches.
 pub const AUDIT_TRANCHE_PERIOD: u32 = 8;
 
-/// BI = 10: Additional minimum balance per item of elective service state.
-pub const BALANCE_PER_ITEM: u64 = 10;
-
-/// BL = 1: Additional minimum balance per octet of elective service state.
-pub const BALANCE_PER_OCTET: u64 = 1;
-
-/// BS = 100: Basic minimum balance for all services.
-pub const BALANCE_SERVICE_MINIMUM: u64 = 100;
+// BI, BL, BS removed — coinless design uses quota instead of balance threshold.
+// See docs/ideas/coinless-storage-quota.md.
 
 /// C = 341: Total number of cores.
 pub const TOTAL_CORES: u16 = 341;
@@ -129,6 +123,7 @@ pub const HOST_OOB: u64 = u64::MAX - 2; // 2^64 - 3
 pub const HOST_WHO: u64 = u64::MAX - 3; // 2^64 - 4
 pub const HOST_FULL: u64 = u64::MAX - 4; // 2^64 - 5
 pub const HOST_CORE: u64 = u64::MAX - 5; // 2^64 - 6
-pub const HOST_CASH: u64 = u64::MAX - 6; // 2^64 - 7
+// HOST_CASH removed — coinless design has no balance to be insufficient.
+// Quota exceeded uses HOST_FULL instead.
 pub const HOST_LOW: u64 = u64::MAX - 7; // 2^64 - 8
 pub const HOST_HUH: u64 = u64::MAX - 8; // 2^64 - 9
