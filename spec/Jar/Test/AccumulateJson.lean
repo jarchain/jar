@@ -178,13 +178,10 @@ private def parseGreyServiceAccount (dataJson : Json) : Except String ServiceAcc
     storage := storage
     preimages := preimages
     preimageInfo := preimageInfo
-    gratis := match svc.getObjVal? "deposit_offset" with
-      | .ok v => match @fromJson? UInt64 _ v with | .ok n => n | .error _ => 0
-      | .error _ => match svc.getObjVal? "gratis" with
-        | .ok v => match @fromJson? UInt64 _ v with | .ok n => n | .error _ => 0
-        | .error _ => 0
+    econ := match @EconModel.econFromJson? JamConfig.EconType JamConfig.TransferType _ svc with
+      | .ok e => e
+      | .error _ => default
     codeHash := ← fromJson? (← svc.getObjVal? "code_hash")
-    balance := ← fromJson? (← svc.getObjVal? "balance")
     minAccGas := ← fromJson? (← svcField "min_item_gas" "min_acc_gas")
     minOnTransferGas := ← fromJson? (← svcField "min_memo_gas" "min_on_transfer_gas")
     itemCount := UInt32.ofNat (← svcFieldNat "items" "item_count")
@@ -320,7 +317,7 @@ private def toJsonGreyServiceAccount (sid : ServiceId) (acct : ServiceAccount) :
     ("data", Json.mkObj [
       ("service", Json.mkObj [
         ("code_hash", toJson acct.codeHash),
-        ("balance", toJson acct.balance),
+        ("econ", Lean.Json.mkObj (@EconModel.econToJson JamConfig.EconType JamConfig.TransferType _ acct.econ)),
         ("min_item_gas", toJson acct.minAccGas),
         ("min_memo_gas", toJson acct.minOnTransferGas),
         ("creation_slot", toJson acct.creationSlot),

@@ -1,3 +1,5 @@
+import Lean.Data.Json
+
 /-!
 # Protocol Configuration — Gray Paper Appendix I.4.4
 
@@ -114,6 +116,57 @@ inductive HeapModel where
   | growHeap
   deriving BEq, Inhabited
 
+-- ============================================================================
+-- Economic Model Typeclass (defined here so JamConfig can reference it)
+-- ============================================================================
+
+/-- Abstraction over the economic model for service accounts.
+    Pure logic — no encoding/serialization methods (those are in EconEncode).
+    Instances are provided for BalanceEcon and QuotaEcon in Accounts.lean. -/
+class EconModel (econ : Type) (xfer : Type) where
+  /-- Check if a service can afford the given storage footprint.
+      bI, bL, bS are the storage deposit constants (from Params). -/
+  canAffordStorage : econ → (items : Nat) → (bytes : Nat) → (bI bL bS : Nat) → Bool
+  /-- Debit the creator's econ for new service creation.
+      Returns none if insufficient funds/quota. -/
+  debitForNewService : econ → (items : Nat) → (bytes : Nat) → (bI bL bS : Nat) → Option econ
+  /-- Create initial econ state for a newly created service. -/
+  newServiceEcon : (items : Nat) → (bytes : Nat) → (gratis : UInt64) → (bI bL bS : Nat) → econ
+  /-- Credit an incoming transfer's economic payload. -/
+  creditTransfer : econ → xfer → econ
+  /-- Check transfer affordability and return debited econ.
+      Returns none if insufficient balance (BalanceEcon only). -/
+  debitTransfer : econ → (amount : UInt64) → Option econ
+  /-- Absorb an ejected service's economic value. -/
+  absorbEjected : econ → (ejected : econ) → econ
+  /-- Set storage quota (jar080_tiny only).
+      Returns none if not supported by this economic model. -/
+  setQuota : econ → (maxItems : UInt64) → (maxBytes : UInt64) → Option econ
+  /-- Create transfer payload from the amount register value. -/
+  makeTransferPayload : (amountReg : UInt64) → xfer
+  /-- Encode transfer payload as 8 bytes (for PVM on-transfer arguments). -/
+  encodeTransferAmount : xfer → ByteArray
+  /-- Encode econ fields for the info host call (5).
+      Must produce exactly 24 bytes. bI, bL, bS are the storage deposit constants. -/
+  encodeInfo : econ → (items : Nat) → (bytes : Nat) → (bI bL bS : Nat) → ByteArray
+  /-- Serialize econ fields for state Merklization.
+      Must produce exactly 16 bytes. -/
+  serializeEcon : econ → ByteArray
+  /-- Deserialize econ fields. Returns (econ, bytes consumed) or none. -/
+  deserializeEcon : (data : ByteArray) → (offset : Nat) → Option (econ × Nat)
+  /-- Convert econ fields to JSON key-value pairs for ServiceAccount serialization. -/
+  econToJson : econ → List (String × Lean.Json)
+  /-- Parse econ fields from JSON. -/
+  econFromJson? : Lean.Json → Except String econ
+  /-- Convert transfer payload to JSON key-value pairs. -/
+  xferToJson : xfer → List (String × Lean.Json)
+  /-- Parse transfer payload from JSON. -/
+  xferFromJson? : Lean.Json → Except String xfer
+
+-- ============================================================================
+-- JamConfig Typeclass
+-- ============================================================================
+
 /-- JamConfig: provides protocol configuration and validity proofs.
     Used by struct types and Fin-based index aliases.
     Extended by `JamVariant` (in `Jar/Variant.lean`) to add PVM function fields. -/
@@ -130,6 +183,33 @@ class JamConfig where
   heapModel : HeapModel := .sbrk
   /-- Hostcall numbering version: 0 = v0.7.2, 1 = v0.8.0 (+1 shift for grow_heap). -/
   hostcallVersion : Nat := 0
+  /-- Economic model type for service accounts (BalanceEcon or QuotaEcon). -/
+  EconType : Type
+  /-- Transfer payload type (BalanceTransfer or QuotaTransfer). -/
+  TransferType : Type
+  /-- BEq instance for economic model (required for state comparison). -/
+  [econBEq : BEq EconType]
+  /-- Inhabited instance for economic model (required for default construction). -/
+  [econInhabited : Inhabited EconType]
+  /-- BEq instance for transfer payload. -/
+  [xferBEq : BEq TransferType]
+  /-- Inhabited instance for transfer payload. -/
+  [xferInhabited : Inhabited TransferType]
+  /-- Repr instance for economic model (for debugging). -/
+  [econRepr : Repr EconType]
+  /-- Repr instance for transfer payload (for debugging). -/
+  [xferRepr : Repr TransferType]
+  /-- EconModel instance linking EconType and TransferType. -/
+  [econModel : EconModel EconType TransferType]
+
+-- Forward typeclass instances from JamConfig fields
+instance [j : JamConfig] : BEq j.EconType := j.econBEq
+instance [j : JamConfig] : Inhabited j.EconType := j.econInhabited
+instance [j : JamConfig] : BEq j.TransferType := j.xferBEq
+instance [j : JamConfig] : Inhabited j.TransferType := j.xferInhabited
+instance [j : JamConfig] : Repr j.EconType := j.econRepr
+instance [j : JamConfig] : Repr j.TransferType := j.xferRepr
+instance [j : JamConfig] : EconModel j.EconType j.TransferType := j.econModel
 
 -- ============================================================================
 -- Standard Configurations

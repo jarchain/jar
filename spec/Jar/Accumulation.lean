@@ -33,6 +33,40 @@ namespace Jar.Accumulation
 variable [JamConfig]
 
 -- ============================================================================
+-- EconModel Helpers — avoid verbose @ syntax throughout
+-- ============================================================================
+
+private def econCanAfford (e : JamConfig.EconType) (items bytes : Nat) : Bool :=
+  @EconModel.canAffordStorage JamConfig.EconType JamConfig.TransferType _ e items bytes B_I B_L B_S
+
+private def econDebitNew (e : JamConfig.EconType) (items bytes : Nat) : Option JamConfig.EconType :=
+  @EconModel.debitForNewService JamConfig.EconType JamConfig.TransferType _ e items bytes B_I B_L B_S
+
+private def econNewService (items bytes : Nat) (gratis : UInt64) : JamConfig.EconType :=
+  @EconModel.newServiceEcon JamConfig.EconType JamConfig.TransferType _ items bytes gratis B_I B_L B_S
+
+private def econCreditXfer (e : JamConfig.EconType) (x : JamConfig.TransferType) : JamConfig.EconType :=
+  @EconModel.creditTransfer JamConfig.EconType JamConfig.TransferType _ e x
+
+private def econDebitXfer (e : JamConfig.EconType) (amount : UInt64) : Option JamConfig.EconType :=
+  @EconModel.debitTransfer JamConfig.EconType JamConfig.TransferType _ e amount
+
+private def econAbsorb (e ejected : JamConfig.EconType) : JamConfig.EconType :=
+  @EconModel.absorbEjected JamConfig.EconType JamConfig.TransferType _ e ejected
+
+private def econSetQuota (e : JamConfig.EconType) (maxItems maxBytes : UInt64) : Option JamConfig.EconType :=
+  @EconModel.setQuota JamConfig.EconType JamConfig.TransferType _ e maxItems maxBytes
+
+private def econMakeXfer (amount : UInt64) : JamConfig.TransferType :=
+  @EconModel.makeTransferPayload JamConfig.EconType JamConfig.TransferType _ amount
+
+private def econEncodeXfer (x : JamConfig.TransferType) : ByteArray :=
+  @EconModel.encodeTransferAmount JamConfig.EconType JamConfig.TransferType _ x
+
+private def econEncodeInfo (e : JamConfig.EconType) (items bytes : Nat) : ByteArray :=
+  @EconModel.encodeInfo JamConfig.EconType JamConfig.TransferType _ e items bytes B_I B_L B_S
+
+-- ============================================================================
 -- Operand Tuple — GP eq:operandtuple
 -- ============================================================================
 
@@ -75,6 +109,7 @@ structure PartialState where
   designator : ServiceId
   registrar : ServiceId
   alwaysAccumulate : Dict ServiceId Gas
+  quotaService : ServiceId := 0
 
 /-- Extract partial state from full state. -/
 def PartialState.fromState (s : State) : PartialState :=
@@ -85,7 +120,8 @@ def PartialState.fromState (s : State) : PartialState :=
     assigners := s.privileged.assigners
     designator := s.privileged.designator
     registrar := s.privileged.registrar
-    alwaysAccumulate := s.privileged.alwaysAccumulate }
+    alwaysAccumulate := s.privileged.alwaysAccumulate
+    quotaService := s.privileged.quotaService }
 
 -- ============================================================================
 -- Accumulation Output — GP eq:acconeout
@@ -289,20 +325,23 @@ private def encodeAccountInfo (acct : ServiceAccount) : ByteArray :=
   -- during accumulation host calls.
   let totalItems := acct.itemCount.toNat  -- a_i: item count
   let totalBytes := acct.totalFootprint   -- a_o: total storage footprint
-  -- Compute threshold: B_S + B_I * items + B_L * bytes - deposit_offset
-  let minBal := B_S + B_I * totalItems + B_L * totalBytes
-  let threshold := minBal - min acct.gratis.toNat minBal
+  -- econEncodeInfo produces 24 bytes for positions: balance(8) + threshold(8) + gratis(8)
+  -- These are placed at their original offsets in the 96-byte structure.
+  let econInfo := econEncodeInfo acct.econ totalItems totalBytes
+  let econBal := econInfo.extract 0 8        -- balance or quotaItems
+  let econThr := econInfo.extract 8 16       -- threshold or quotaBytes
+  let econGra := econInfo.extract 16 24      -- gratis or padding
   acct.codeHash.data
-    ++ Codec.encodeFixedNat 8 acct.balance.toNat       -- a_b
-    ++ Codec.encodeFixedNat 8 threshold                 -- a_t
+    ++ econBal                                          -- a_b (or quotaItems)
+    ++ econThr                                          -- a_t (or quotaBytes)
     ++ Codec.encodeFixedNat 8 acct.minAccGas.toNat      -- a_g
     ++ Codec.encodeFixedNat 8 acct.minOnTransferGas.toNat -- a_m
     ++ Codec.encodeFixedNat 8 totalBytes                -- a_o
     ++ Codec.encodeFixedNat 4 totalItems                -- a_i
-    ++ Codec.encodeFixedNat 8 acct.gratis.toNat         -- a_f
-    ++ Codec.encodeFixedNat 4 acct.creationSlot.toNat   -- a_r: creation timeslot
-    ++ Codec.encodeFixedNat 4 acct.lastAccumulation.toNat -- a_a: last accumulation timeslot
-    ++ Codec.encodeFixedNat 4 acct.parentServiceId      -- a_p: parent service ID
+    ++ econGra                                          -- a_f (or padding)
+    ++ Codec.encodeFixedNat 4 acct.creationSlot.toNat   -- a_r
+    ++ Codec.encodeFixedNat 4 acct.lastAccumulation.toNat -- a_a
+    ++ Codec.encodeFixedNat 4 acct.parentServiceId      -- a_p
 
 /-- Dispatch a host call during accumulation. GP §12, Appendix B.
     Returns updated invocation result and context. -/
@@ -572,10 +611,8 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
                 (acct.itemCount, acct.totalFootprint - oldSize + newSize)
               | none =>
                 (acct.itemCount + 1, acct.totalFootprint + newSize)
-            -- GP: Check threshold after write doesn't exceed balance
-            let newMinBal := B_S + B_I * items'.toNat + B_L * footprint'
-            let newThreshold := newMinBal - min acct.gratis.toNat newMinBal
-            if newThreshold > acct.balance.toNat then
+            -- GP: Check service can afford updated storage footprint
+            if !econCanAfford acct.econ items'.toNat footprint' then
               let regs' := setR7 regs PVM.RESULT_FULL
               (mkResult regs' mem gas', ctx)
             else
@@ -809,31 +846,22 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
       -- Compute items/footprint for new account (preimage_info entry)
       let newItems : Nat := 2  -- preimage_info entry counts as 2 items
       let newFootprint : Nat := 81 + preimLen.toNat  -- per GP eq 9.4
-      -- Compute threshold balance for new account
-      let threshold : Nat := (B_S + B_I * newItems + B_L * newFootprint) - min gratis.toNat (B_S + B_I * newItems + B_L * newFootprint)
       -- Check f ≠ 0 requires caller to be manager
       if gratis != 0 && ctx.serviceId != ctx.state.manager then
         let regs' := setR7 regs PVM.RESULT_HUH
         (mkResult regs' mem gas', ctx)
       else
-      -- Check caller has enough balance: balance - threshold >= callerThreshold
-      -- GP: let s = x_s except s_b = (x_s)_b - a_t; if s_b < (x_s)_t → CASH
+      -- Check caller can afford to create the new service (EconModel handles balance vs quota)
       match ctx.state.accounts.lookup ctx.serviceId with
       | none =>
         let regs' := setR7 regs PVM.RESULT_CASH
         (mkResult regs' mem gas', ctx)
       | some srcAcct =>
-        -- Compute caller's own threshold
-        let callerItems := srcAcct.itemCount.toNat
-        let callerBytes := srcAcct.totalFootprint
-        let callerMinBal := B_S + B_I * callerItems + B_L * callerBytes
-        let callerThreshold := callerMinBal - min srcAcct.gratis.toNat callerMinBal
-        -- Balance after deduction must still cover caller's own threshold
-        let balanceAfter := if srcAcct.balance.toNat >= threshold then srcAcct.balance.toNat - threshold else 0
-        if balanceAfter < callerThreshold then
+        match econDebitNew srcAcct.econ newItems newFootprint with
+        | none =>
           let regs' := setR7 regs PVM.RESULT_CASH
           (mkResult regs' mem gas', ctx)
-        else
+        | some debitedEcon =>
         -- Find service ID
         let sThreshold : Nat := 2^16  -- S per GP I.4.4
         let (newId, idOk) : ServiceId × Bool :=
@@ -848,17 +876,16 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
           let regs' := setR7 regs PVM.RESULT_FULL
           (mkResult regs' mem gas', ctx)
         else
-        -- Debit caller by threshold amount
-        let srcAcct' := { srcAcct with balance := srcAcct.balance - UInt64.ofNat threshold }
+        -- Debit caller's econ
+        let srcAcct' := { srcAcct with econ := debitedEcon }
         let accounts' := ctx.state.accounts.insert ctx.serviceId srcAcct'
         -- Create new account with preimage_info entry for code hash
         let newAcct : ServiceAccount := {
           storage := Dict.empty
           preimages := Dict.empty
           preimageInfo := Dict.empty.insert (codeHash, UInt32.ofNat preimLen.toNat) #[]
-          gratis := gratis
+          econ := econNewService newItems newFootprint gratis
           codeHash
-          balance := UInt64.ofNat threshold
           minAccGas
           minOnTransferGas
           itemCount := UInt32.ofNat newItems
@@ -935,16 +962,17 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
           let regs' := setR7 regs PVM.RESULT_LOW
           (mkResult regs' mem gas', ctx)
         else
-        -- Check source has enough balance
+        -- Check source can afford transfer
         match ctx.state.accounts.lookup ctx.serviceId with
         | none =>
           let regs' := setR7 regs PVM.RESULT_NONE
           (mkResult regs' mem gas', ctx)
         | some srcAcct =>
-          if srcAcct.balance < amount then
+          match econDebitXfer srcAcct.econ amount with
+          | none =>
             let regs' := setR7 regs PVM.RESULT_CASH
             (mkResult regs' mem gas', ctx)
-          else
+          | some debitedEcon =>
             -- GP: Check gas_limit ≤ remaining gas, otherwise panic
             if gas' < gasLimit then
               (mkPanic regs mem 0, ctx)
@@ -952,12 +980,13 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
             let gas'' := gas' - gasLimit
             let memoSeq : OctetSeq W_T := OctetSeq.mk! memoBytes W_T
             let xfer : DeferredTransfer := {
-              source := ctx.serviceId, dest, amount
+              source := ctx.serviceId, dest
+              payload := econMakeXfer amount
               memo := memoSeq
               gas := gasLimit
             }
-            -- Debit the source balance
-            let srcAcct' := { srcAcct with balance := srcAcct.balance - amount }
+            -- Debit the source econ
+            let srcAcct' := { srcAcct with econ := debitedEcon }
             let accounts' := ctx.state.accounts.insert ctx.serviceId srcAcct'
             let state' := { ctx.state with accounts := accounts' }
             let ctx' := { ctx with state := state', transfers := ctx.transfers.push xfer }
@@ -1037,7 +1066,7 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
               let regs' := setR7 regs PVM.RESULT_NONE
               (mkResult regs' mem gas', ctx)
             | some callerAcct =>
-              let callerAcct' := { callerAcct with balance := callerAcct.balance + ejected.balance }
+              let callerAcct' := { callerAcct with econ := econAbsorb callerAcct.econ ejected.econ }
               let accounts' := ctx.state.accounts.erase sid
               let accounts' := accounts'.insert ctx.serviceId callerAcct'
               let state' := { ctx.state with accounts := accounts' }
@@ -1148,11 +1177,9 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
             preimageInfo := acct.preimageInfo.insert (h, blobLen) #[]
             itemCount := newItems
             totalFootprint := newFootprint }
-          -- Check minimum balance requirement
-          let minBal := B_S + B_I * newItems.toNat + B_L * newFootprint
-          let threshold := minBal - min acct'.gratis.toNat minBal
-          if threshold > acct'.balance.toNat then
-            -- Insufficient balance: undo and return FULL
+          -- Check service can afford updated storage footprint
+          if !econCanAfford acct'.econ newItems.toNat newFootprint then
+            -- Insufficient balance/quota: undo and return FULL
             let regs' := setR7 regs PVM.RESULT_FULL
             (mkResult regs' mem gas', ctx)
           else
@@ -1348,7 +1375,7 @@ private def encodeTransferItem (t : DeferredTransfer) : ByteArray :=
   let memo := t.memo.data ++ ByteArray.mk (Array.replicate (128 - min 128 t.memo.data.size) 0)
   buf ++ Codec.encodeFixedNat 4 t.source.toNat
     ++ Codec.encodeFixedNat 4 t.dest.toNat
-    ++ Codec.encodeFixedNat 8 t.amount.toNat
+    ++ econEncodeXfer t.payload
     ++ memo
     ++ Codec.encodeFixedNat 8 t.gas.toNat
 
@@ -1386,9 +1413,9 @@ def accone (ps : PartialState) (serviceId : ServiceId)
     let transferGas := transfers.foldl (init := (0 : UInt64)) fun acc t => acc + t.gas
     let totalGas := freeGas + operandGas + transferGas
 
-    -- Credit incoming transfer amounts to service balance (GP eq B.9)
-    let transferBalance := transfers.foldl (init := (0 : UInt64)) fun acc t => acc + t.amount
-    let acct' := { acct with balance := acct.balance + transferBalance }
+    -- Credit incoming transfer payloads to service econ (GP eq B.9)
+    let acct' := transfers.foldl (init := acct) fun acc t =>
+      { acc with econ := econCreditXfer acc.econ t.payload }
     let ps := { ps with accounts := ps.accounts.insert serviceId acct' }
 
     -- Compute next available service ID (GP eq B.10)

@@ -2,6 +2,7 @@ import Lean.Data.Json
 import Lean.Data.Json.Parser
 import Jar.Erasure
 import Jar.Types.Config
+import Jar.Types.Accounts
 
 /-!
 # Erasure Coding Test Runner
@@ -237,6 +238,8 @@ def runAll : IO UInt32 := do
     name := "gp072_tiny"
     config := Params.tiny
     valid := Params.tiny_valid
+    EconType := Jar.BalanceEcon
+    TransferType := Jar.BalanceTransfer
   }
   let (tp, tf, ts) ← @runAllForConfig tinyJamConfig "gp072_tiny"
   -- Full config
@@ -244,6 +247,8 @@ def runAll : IO UInt32 := do
     name := "gp072_full"
     config := Params.full
     valid := Params.full_valid
+    EconType := Jar.BalanceEcon
+    TransferType := Jar.BalanceTransfer
   }
   let (fp, ff, fs) ← @runAllForConfig fullJamConfig "gp072_full"
   -- Recovery tests (tiny only — full config recovery is slow for large data sizes)

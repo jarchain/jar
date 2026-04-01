@@ -1,4 +1,5 @@
 import Jar.Test.Properties
+import Jar.Test.Arbitrary
 import Jar.Variant
 
 open Jar

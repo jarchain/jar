@@ -47,19 +47,31 @@ class JamVariant extends JamConfig where
 
 /-- Full GP v0.7.2 variant with standard PVM interpreter. -/
 instance JamVariant.gp072_full : JamVariant where
-  toJamConfig := { name := "gp072_full", config := Params.full, valid := Params.full_valid }
+  toJamConfig := {
+    name := "gp072_full"
+    config := Params.full
+    valid := Params.full_valid
+    EconType := BalanceEcon
+    TransferType := BalanceTransfer
+  }
   pvmRun := PVM.run
   pvmRunWithHostCalls := fun ctx _ prog pc regs mem gas handler context =>
     PVM.runWithHostCalls ctx prog pc regs mem gas handler context
 
 /-- Tiny GP v0.7.2 test variant with standard PVM interpreter. -/
 instance JamVariant.gp072_tiny : JamVariant where
-  toJamConfig := { name := "gp072_tiny", config := Params.tiny, valid := Params.tiny_valid }
+  toJamConfig := {
+    name := "gp072_tiny"
+    config := Params.tiny
+    valid := Params.tiny_valid
+    EconType := BalanceEcon
+    TransferType := BalanceTransfer
+  }
   pvmRun := PVM.run
   pvmRunWithHostCalls := fun ctx _ prog pc regs mem gas handler context =>
     PVM.runWithHostCalls ctx prog pc regs mem gas handler context
 
-/-- Tiny JAR v0.8.0 variant — contiguous linear memory, basic-block gas, grow_heap. -/
+/-- Tiny JAR v0.8.0 variant — contiguous linear memory, basic-block gas, grow_heap, coinless. -/
 instance JamVariant.jar080_tiny : JamVariant where
   toJamConfig := {
     name := "jar080_tiny"
@@ -69,6 +81,8 @@ instance JamVariant.jar080_tiny : JamVariant where
     gasModel := .basicBlockSinglePass
     heapModel := .growHeap
     hostcallVersion := 1
+    EconType := QuotaEcon
+    TransferType := QuotaTransfer
   }
   pvmRun := PVM.run
   pvmRunWithHostCalls := fun ctx _ prog pc regs mem gas handler context =>

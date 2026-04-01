@@ -30,15 +30,10 @@ variable [JamConfig]
 -- §9 — Minimum Balance
 -- ============================================================================
 
-/-- Minimum balance for a service account. GP eq (9.8).
-    Accounts must maintain sufficient balance to cover their storage costs.
-    min_balance(a) = B_S + B_I × |items| + B_L × |bytes|
-    where items/bytes count storage and preimage entries. -/
-def minimumBalance (acct : ServiceAccount) : Balance :=
-  let itemCount := acct.storage.entries.length + acct.preimageInfo.entries.length
-  let byteCount := acct.preimages.entries.foldl (init := 0)
-    fun acc kv => acc + kv.2.size
-  UInt64.ofNat (Jar.B_S + Jar.B_I * itemCount + Jar.B_L * byteCount)
+/-- Check if a service can afford its current storage footprint.
+    Delegates to EconModel.canAffordStorage. -/
+def canAffordStorage (acct : ServiceAccount) : Bool :=
+  @EconModel.canAffordStorage JamConfig.EconType JamConfig.TransferType _ acct.econ acct.itemCount.toNat acct.totalFootprint B_I B_L B_S
 
 -- ============================================================================
 -- §8 — Authorization (Ψ_I)
@@ -290,7 +285,7 @@ inductive AccumulationInput where
 private def encodeTransferArgs (t : DeferredTransfer) : ByteArray :=
   Codec.encodeFixedNat 4 t.source.toNat
     ++ Codec.encodeFixedNat 4 t.dest.toNat
-    ++ Codec.encodeFixedNat 8 t.amount.toNat
+    ++ @EconModel.encodeTransferAmount JamConfig.EconType JamConfig.TransferType _ t.payload
     ++ t.memo.data
     ++ Codec.encodeFixedNat 8 t.gas.toNat
 
@@ -310,11 +305,11 @@ def onTransfer
     let result := PVM.runProgram prog 0 regs mem (Int64.ofUInt64 transfer.gas)
     match result.exitReason with
     | .halt =>
-      -- On-transfer completed successfully; credit the transfer amount
-      { acct with balance := acct.balance + transfer.amount }
+      -- On-transfer completed successfully; credit the transfer payload
+      { acct with econ := @EconModel.creditTransfer JamConfig.EconType JamConfig.TransferType _ acct.econ transfer.payload }
     | _ =>
-      -- Panic/OOG/fault: still credit the amount but no side-effects
-      { acct with balance := acct.balance + transfer.amount }
+      -- Panic/OOG/fault: still credit the payload but no side-effects
+      { acct with econ := @EconModel.creditTransfer JamConfig.EconType JamConfig.TransferType _ acct.econ transfer.payload }
 
 -- ============================================================================
 -- §17 — Auditing (off-chain, left opaque)

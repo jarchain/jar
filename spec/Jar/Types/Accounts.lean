@@ -1,36 +1,211 @@
 import Jar.Notation
 import Jar.Types.Numerics
+import Jar.Codec
+import Lean.Data.Json
+import Lean.Data.Json.FromToJson
 
 /-!
 # Service Account Types — Gray Paper §9
 
 Service accounts, preimage lookups, and privileged services.
 References: `graypaper/text/accounts.tex` eq:serviceaccounts, eq:serviceaccount.
+
+## Economic Model
+
+The protocol supports two economic models via the `EconModel` typeclass (defined in Config.lean):
+- **BalanceEcon** (gp072 variants): token-based storage rent with balance/gratis fields.
+- **QuotaEcon** (jar080_tiny coinless): quota-based storage limits set by a privileged service.
+
+Similarly, deferred transfers are parameterized:
+- **BalanceTransfer** (gp072): carries a token amount.
+- **QuotaTransfer** (jar080_tiny): pure message-passing, no amount field.
+
+Encoding/serialization/JSON methods are NOT in the typeclass — they live in their
+respective files (Accumulation.lean, StateSerialization.lean, Json.lean) where the
+necessary imports (Codec, Lean.Data.Json) are available.
+
+See `docs/ideas/coinless-storage-quota.md` for the full design rationale.
 -/
 
 namespace Jar
+
+-- ============================================================================
+-- Economic Model Types
+-- ============================================================================
+
+/-- Balance-based economic model (gp072 variants).
+    Services must hold sufficient balance to cover storage costs.
+    GP §9, eq (9.8): a_t = B_S + B_I × items + B_L × bytes - min(f, minBal). -/
+structure BalanceEcon where
+  /-- b : Account balance. ℕ_B. -/
+  balance : Balance := 0
+  /-- f : Free (gratis) storage allowance. ℕ_B. -/
+  gratis : Balance := 0
+  deriving BEq, Inhabited, Repr
+
+/-- Quota-based economic model (jar080_tiny coinless).
+    Storage limits set by a privileged quota service (χ_Q). -/
+structure QuotaEcon where
+  /-- q_i : Maximum storage items allowed. -/
+  quotaItems : UInt64 := 0
+  /-- q_o : Maximum storage bytes allowed. -/
+  quotaBytes : UInt64 := 0
+  deriving BEq, Inhabited, Repr
+
+/-- Balance-based transfer payload (gp072 variants).
+    Carries a token amount to be debited from sender and credited to receiver. -/
+structure BalanceTransfer where
+  /-- a : Transfer amount. ℕ_B. -/
+  amount : Balance := 0
+  deriving BEq, Inhabited, Repr
+
+/-- Quota-based transfer payload (jar080_tiny coinless).
+    Pure message-passing — no token amount. -/
+structure QuotaTransfer where
+  deriving BEq, Inhabited, Repr
+
+-- ============================================================================
+-- EconModel Instances
+-- ============================================================================
+
+instance : EconModel BalanceEcon BalanceTransfer where
+  canAffordStorage e items bytes bI bL bS :=
+    let minBal := bS + bI * items + bL * bytes
+    let threshold := minBal - min e.gratis.toNat minBal
+    threshold ≤ e.balance.toNat
+
+  debitForNewService e items bytes bI bL bS :=
+    let minBal := bS + bI * items + bL * bytes
+    let threshold := minBal - min e.gratis.toNat minBal
+    if e.balance.toNat ≥ threshold
+    then some { e with balance := e.balance - UInt64.ofNat threshold }
+    else none
+
+  newServiceEcon items bytes gratis bI bL bS :=
+    let minBal := bS + bI * items + bL * bytes
+    let threshold := minBal - min gratis.toNat minBal
+    { balance := UInt64.ofNat threshold, gratis := gratis }
+
+  creditTransfer e t := { e with balance := e.balance + t.amount }
+
+  debitTransfer e amount :=
+    if e.balance ≥ amount
+    then some { e with balance := e.balance - amount }
+    else none
+
+  absorbEjected e ejected := { e with balance := e.balance + ejected.balance }
+
+  setQuota _e _maxItems _maxBytes := none  -- Not supported for balance model
+
+  makeTransferPayload amountReg := { amount := amountReg }
+
+  encodeTransferAmount t := Codec.encodeFixedNat 8 t.amount.toNat
+
+  encodeInfo e items bytes bI bL bS :=
+    let minBal := bS + bI * items + bL * bytes
+    let threshold := minBal - min e.gratis.toNat minBal
+    Codec.encodeFixedNat 8 e.balance.toNat
+      ++ Codec.encodeFixedNat 8 threshold
+      ++ Codec.encodeFixedNat 8 e.gratis.toNat
+
+  serializeEcon e :=
+    Codec.encodeFixedNat 8 e.balance.toNat
+      ++ Codec.encodeFixedNat 8 e.gratis.toNat
+
+  deserializeEcon data offset :=
+    if offset + 16 ≤ data.size then
+      let balance := Codec.decodeFixedNat (data.extract offset (offset + 8))
+      let gratis := Codec.decodeFixedNat (data.extract (offset + 8) (offset + 16))
+      some ({ balance := UInt64.ofNat balance, gratis := UInt64.ofNat gratis }, offset + 16)
+    else none
+
+  econToJson e := [("balance", Lean.toJson e.balance), ("gratis", Lean.toJson e.gratis)]
+
+  econFromJson? j := do
+    let balance ← (Lean.fromJson? (← j.getObjVal? "balance") : Except String Balance)
+    -- Handle legacy "deposit_offset" field name alongside "gratis"
+    let gratis : Balance := match j.getObjVal? "gratis" with
+      | .ok v => match Lean.fromJson? v with | .ok n => n | .error _ => 0
+      | .error _ => match j.getObjVal? "deposit_offset" with
+        | .ok v => match Lean.fromJson? v with | .ok n => n | .error _ => 0
+        | .error _ => 0
+    return { balance, gratis }
+
+  xferToJson t := [("amount", Lean.toJson t.amount)]
+
+  xferFromJson? j := do
+    let amount ← (Lean.fromJson? (← j.getObjVal? "amount") : Except String Balance)
+    return { amount }
+
+instance : EconModel QuotaEcon QuotaTransfer where
+  canAffordStorage e items bytes _bI _bL _bS :=
+    items ≤ e.quotaItems.toNat && bytes ≤ e.quotaBytes.toNat
+
+  debitForNewService e _items _bytes _bI _bL _bS := some e  -- No debit in coinless
+
+  newServiceEcon _items _bytes _gratis _bI _bL _bS :=
+    { quotaItems := 0, quotaBytes := 0 }  -- Quota service must grant later
+
+  creditTransfer e _t := e  -- No balance to credit
+
+  debitTransfer e _amount := some e  -- No balance to debit
+
+  absorbEjected e _ejected := e  -- Nothing to absorb
+
+  setQuota _e maxItems maxBytes :=
+    some { quotaItems := maxItems, quotaBytes := maxBytes }
+
+  makeTransferPayload _amountReg := {}
+
+  encodeTransferAmount _t := Codec.encodeFixedNat 8 0
+
+  encodeInfo e _items _bytes _bI _bL _bS :=
+    Codec.encodeFixedNat 8 e.quotaItems.toNat
+      ++ Codec.encodeFixedNat 8 e.quotaBytes.toNat
+      ++ Codec.encodeFixedNat 8 0  -- Padding (replaces gratis position)
+
+  serializeEcon e :=
+    Codec.encodeFixedNat 8 e.quotaItems.toNat
+      ++ Codec.encodeFixedNat 8 e.quotaBytes.toNat
+
+  deserializeEcon data offset :=
+    if offset + 16 ≤ data.size then
+      let quotaItems := Codec.decodeFixedNat (data.extract offset (offset + 8))
+      let quotaBytes := Codec.decodeFixedNat (data.extract (offset + 8) (offset + 16))
+      some ({ quotaItems := UInt64.ofNat quotaItems, quotaBytes := UInt64.ofNat quotaBytes }, offset + 16)
+    else none
+
+  econToJson e := [("quota_items", Lean.toJson e.quotaItems), ("quota_bytes", Lean.toJson e.quotaBytes)]
+
+  econFromJson? j := do
+    let quotaItems ← (Lean.fromJson? (← j.getObjVal? "quota_items") : Except String UInt64)
+    let quotaBytes ← (Lean.fromJson? (← j.getObjVal? "quota_bytes") : Except String UInt64)
+    return { quotaItems, quotaBytes }
+
+  xferToJson _t := []
+
+  xferFromJson? _j := return {}
 
 -- ============================================================================
 -- §9 — Service Account (eq:serviceaccount)
 -- ============================================================================
 
 /-- 𝔸 : Service account. GP eq (9.3).
-    A = ⟨s, p, l, f, c, b, g, m, i, r, a⟩
+    A = ⟨s, p, l, econ, c, g, m, i, r, a⟩
 
-    Contains code, storage, preimages, and gas configuration. -/
-structure ServiceAccount where
+    Contains code, storage, preimages, and gas configuration.
+    The economic model (balance vs quota) is determined by the variant. -/
+structure ServiceAccount [JamConfig] where
   /-- s : Key-value storage. ⟨𝔹→𝔹⟩. -/
   storage : Dict ByteArray ByteArray
   /-- p : Preimage lookup. ⟨ℍ→𝔹⟩. -/
   preimages : Dict Hash ByteArray
   /-- l : Preimage request metadata. ⟨(ℍ, ℕ_L) → ⟦ℕ_T⟧_{:3}⟩. -/
   preimageInfo : Dict (Hash × BlobLength) (Array Timeslot)
-  /-- f : Free (gratis) storage allowance. ℕ_B. -/
-  gratis : Balance
+  /-- Economic model fields (balance+gratis for gp072, quotaItems+quotaBytes for jar080_tiny). -/
+  econ : JamConfig.EconType
   /-- c : Service code hash. ℍ. -/
   codeHash : Hash
-  /-- b : Account balance. ℕ_B. -/
-  balance : Balance
   /-- g : Minimum accumulation gas. ℕ_G. -/
   minAccGas : Gas
   /-- m : Minimum on-transfer (memo) gas. ℕ_G. -/
@@ -58,7 +233,7 @@ structure ServiceAccount where
 -- ============================================================================
 
 /-- χ : Privileged service identifiers. GP §9.4.
-    χ = ⟨χ_M, χ_A, χ_V, χ_R, χ_Z⟩ -/
+    χ = ⟨χ_M, χ_A, χ_V, χ_R, χ_Z, χ_Q⟩ -/
 structure PrivilegedServices where
   /-- χ_M : Manager (blessed) service. ℕ_S. -/
   manager : ServiceId
@@ -70,20 +245,23 @@ structure PrivilegedServices where
   registrar : ServiceId
   /-- χ_Z : Always-accumulate services with gas limits. ⟨ℕ_S → ℕ_G⟩. -/
   alwaysAccumulate : Dict ServiceId Gas
+  /-- χ_Q : Quota manager service (jar080_tiny coinless). ℕ_S. -/
+  quotaService : ServiceId := 0
 
 -- ============================================================================
 -- §12 — Deferred Transfer (eq:defxfer)
 -- ============================================================================
 
 /-- 𝕏 : Deferred transfer. GP eq (12.3).
-    X = ⟨s, d, a, m, g⟩ -/
-structure DeferredTransfer where
+    X = ⟨s, d, payload, m, g⟩
+    The economic payload (token amount vs nothing) is determined by the variant. -/
+structure DeferredTransfer [JamConfig] where
   /-- s : Source service. ℕ_S. -/
   source : ServiceId
   /-- d : Destination service. ℕ_S. -/
   dest : ServiceId
-  /-- a : Amount. ℕ_B. -/
-  amount : Balance
+  /-- Economic payload (amount for gp072, unit for jar080_tiny). -/
+  payload : JamConfig.TransferType
   /-- m : Memo. 𝔹_{W_T} (128 bytes). -/
   memo : OctetSeq Jar.W_T
   /-- g : Gas limit for on-transfer. ℕ_G. -/

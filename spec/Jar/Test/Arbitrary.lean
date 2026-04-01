@@ -328,15 +328,26 @@ instance : Shrinkable PendingReport where
 -- Account types
 -- ============================================================================
 
-instance : Arbitrary ServiceAccount where
+instance : Arbitrary BalanceEcon where
+  arbitrary := do return { balance := ← arbitrary, gratis := ← arbitrary }
+
+instance : Arbitrary QuotaEcon where
+  arbitrary := do return { quotaItems := ← arbitrary, quotaBytes := ← arbitrary }
+
+instance : Arbitrary BalanceTransfer where
+  arbitrary := do return { amount := ← arbitrary }
+
+instance : Arbitrary QuotaTransfer where
+  arbitrary := return {}
+
+instance [Arbitrary JamConfig.EconType] : Arbitrary ServiceAccount where
   arbitrary := do
     return {
       storage := ← arbitrary
       preimages := ← arbitrary
       preimageInfo := ⟨[]⟩  -- complex key type, keep empty
-      gratis := ← arbitrary
+      econ := ← arbitrary
       codeHash := ← arbitrary
-      balance := ← arbitrary
       minAccGas := ← arbitrary
       minOnTransferGas := ← arbitrary
       itemCount := ← arbitrary
@@ -347,12 +358,12 @@ instance : Arbitrary ServiceAccount where
 instance : Shrinkable ServiceAccount where
   shrink _ := []
 
-instance : Arbitrary DeferredTransfer where
+instance [Arbitrary JamConfig.TransferType] : Arbitrary DeferredTransfer where
   arbitrary := do
     return {
       source := ← arbitrary
       dest := ← arbitrary
-      amount := ← arbitrary
+      payload := ← arbitrary
       memo := ← arbitrary
       gas := ← arbitrary
     }

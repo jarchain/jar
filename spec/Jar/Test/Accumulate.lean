@@ -478,9 +478,9 @@ def runTest (name : String) (pre : TAState) (inp : TAInput)
   for (sid, expAcct) in postAccounts do
     match result.accounts.lookup sid with
     | some gotAcct =>
-      if gotAcct.balance != expAcct.balance then
+      if gotAcct.econ != expAcct.econ then
         ok := false
-        IO.println s!"  account[{sid}].balance: expected {expAcct.balance}, got {gotAcct.balance}"
+        IO.println s!"  account[{sid}].econ: mismatch (expected vs got differ)"
       if gotAcct.storage.size != expAcct.storage.size then
         ok := false
         IO.println s!"  account[{sid}].storage: expected {expAcct.storage.size} entries, got {gotAcct.storage.size}"

@@ -410,13 +410,20 @@ private def serializeServiceAccount (account : ServiceAccount) (_sid : ServiceId
   let footprint := account.totalFootprint
   let itemCount := account.itemCount.toNat  -- a_i: item count
   let preimCount := account.parentServiceId -- a_p: parent service ID
+  -- Serialize econ fields at their original wire positions.
+  -- serializeEcon returns 16 bytes: [first_field(8) ++ second_field(8)]
+  -- For BalanceEcon: first=balance, second=gratis
+  -- For QuotaEcon: first=quotaItems, second=quotaBytes
+  let econBytes := @EconModel.serializeEcon JamConfig.EconType JamConfig.TransferType _ account.econ
+  let econFirst := econBytes.extract 0 8    -- balance or quotaItems
+  let econSecond := econBytes.extract 8 16  -- gratis or quotaBytes
   buf := buf ++ ByteArray.mk #[0]  -- version
   buf := buf ++ account.codeHash.data
-  buf := buf ++ encodeFixedNat 8 account.balance.toNat
+  buf := buf ++ econFirst                                    -- was: balance
   buf := buf ++ encodeFixedNat 8 account.minAccGas.toNat
   buf := buf ++ encodeFixedNat 8 account.minOnTransferGas.toNat
   buf := buf ++ encodeFixedNat 8 footprint
-  buf := buf ++ encodeFixedNat 8 account.gratis.toNat
+  buf := buf ++ econSecond                                   -- was: gratis
   buf := buf ++ encodeFixedNat 4 itemCount
   buf := buf ++ encodeFixedNat 4 account.creationSlot.toNat
   buf := buf ++ encodeFixedNat 4 account.lastAccumulation.toNat
@@ -830,22 +837,28 @@ where
 private def deserializeServiceAccountD : Decoder ServiceAccount := fun s => do
   let (_version, s) ← Decoder.readByte s
   let (codeHash, s) ← decodeHashD s
-  let (balance, s) ← decodeFixedNatD 8 s
+  -- Read first econ field (8 bytes): balance or quotaItems
+  let (econFirst, s) ← decodeFixedNatD 8 s
   let (minAccGas, s) ← decodeFixedNatD 8 s
   let (minOnTransferGas, s) ← decodeFixedNatD 8 s
   let (totalFootprint, s) ← decodeFixedNatD 8 s
-  let (gratis, s) ← decodeFixedNatD 8 s
+  -- Read second econ field (8 bytes): gratis or quotaBytes
+  let (econSecond, s) ← decodeFixedNatD 8 s
   let (accumCounter, s) ← decodeFixedNatD 4 s
   let (lastAccumulation, s) ← decodeFixedNatD 4 s
   let (lastActivity, s) ← decodeFixedNatD 4 s
   let (preimageCount, s) ← decodeFixedNatD 4 s
+  -- Reconstruct econ from the two fields via deserializeEcon
+  let econBytes := Codec.encodeFixedNat 8 econFirst ++ Codec.encodeFixedNat 8 econSecond
+  let econ : JamConfig.EconType := match @EconModel.deserializeEcon JamConfig.EconType JamConfig.TransferType _ econBytes 0 with
+    | some (e, _) => e
+    | none => default  -- Should not happen with valid data
   return ({
     storage := Dict.empty
     preimages := Dict.empty
     preimageInfo := Dict.empty
-    gratis := UInt64.ofNat gratis
+    econ
     codeHash
-    balance := UInt64.ofNat balance
     minAccGas := UInt64.ofNat minAccGas
     minOnTransferGas := UInt64.ofNat minOnTransferGas
     itemCount := UInt32.ofNat accumCounter
