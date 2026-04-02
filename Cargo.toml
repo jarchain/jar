@@ -23,6 +23,7 @@ members = [
     "tools/jar-genesis",
     "grey/crates/javm-builtins",
     "grey/crates/scale",
+    "grey/crates/scale-derive",
     "grey/services/bench-blake2b",
     "grey/services/bench-ecrecover",
     "grey/services/bench-ed25519",
@@ -61,6 +62,7 @@ grey-transpiler = { path = "grey/crates/grey-transpiler" }
 grey-store = { path = "grey/crates/grey-store" }
 grey-rpc = { path = "grey/crates/grey-rpc" }
 scale = { path = "grey/crates/scale" }
+scale-derive = { path = "grey/crates/scale-derive" }
 
 # External dependencies
 blake2 = "0.10"

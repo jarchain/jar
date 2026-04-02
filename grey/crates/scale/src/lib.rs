@@ -12,6 +12,7 @@
 mod error;
 
 pub use error::DecodeError;
+pub use scale_derive::{Decode, Encode};
 
 /// Encode a value to bytes.
 pub trait Encode {
