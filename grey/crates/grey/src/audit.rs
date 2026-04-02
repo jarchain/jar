@@ -48,7 +48,6 @@ pub struct AuditState {
 #[derive(Debug, Clone)]
 pub struct PendingAudit {
     pub report: WorkReport,
-    #[allow(dead_code)]
     pub core_index: u16,
     pub report_timeslot: Timeslot,
     pub our_tranche: Option<u32>,
