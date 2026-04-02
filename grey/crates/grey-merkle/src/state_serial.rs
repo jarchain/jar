@@ -229,7 +229,7 @@ pub fn serialize_state(state: &State, config: &Config) -> Vec<([u8; 31], Vec<u8>
     // C(12) → χ privileged_services
     kvs.push((
         key_from_index(12),
-        serialize_privileged(&state.privileged_services),
+        serialize_privileged(&state.privileged_services, config),
     ));
 
     // C(13) → π statistics
@@ -241,13 +241,13 @@ pub fn serialize_state(state: &State, config: &Config) -> Vec<([u8; 31], Vec<u8>
     // C(14) → ω accumulation_queue
     kvs.push((
         key_from_index(14),
-        serialize_accumulation_queue(&state.accumulation_queue),
+        serialize_accumulation_queue(&state.accumulation_queue, config),
     ));
 
     // C(15) → ξ accumulation_history
     kvs.push((
         key_from_index(15),
-        serialize_accumulation_history(&state.accumulation_history),
+        serialize_accumulation_history(&state.accumulation_history, config),
     ));
 
     // C(16) → θ accumulation_outputs
@@ -486,13 +486,14 @@ fn serialize_pending_reports(reports: &[Option<PendingReport>]) -> Vec<u8> {
 }
 
 /// C(12): χ privileged — E_4(M, A[0..C], V, R) + ↕Z.
-fn serialize_privileged(priv_svc: &PrivilegedServices) -> Vec<u8> {
+fn serialize_privileged(priv_svc: &PrivilegedServices, config: &Config) -> Vec<u8> {
     let mut buf = Vec::new();
 
     // E_4(χM)
     buf.extend_from_slice(&priv_svc.manager.to_le_bytes());
-    // E_4(χA) — C entries, fixed-size
-    for &svc_id in &priv_svc.assigner {
+    // E_4(χA) — C entries, fixed-size (pad with 0 if shorter)
+    for i in 0..config.core_count as usize {
+        let svc_id = priv_svc.assigner.get(i).copied().unwrap_or(0);
         buf.extend_from_slice(&svc_id.to_le_bytes());
     }
     // E_4(χV)
@@ -577,10 +578,13 @@ fn serialize_validator_records_e4(records: &[ValidatorRecord], count: usize, buf
 /// Each entry: E(r ∈ R) followed by ↕ sorted dependency hashes.
 fn serialize_accumulation_queue(
     queue: &[Vec<(grey_types::work::WorkReport, Vec<Hash>)>],
+    config: &Config,
 ) -> Vec<u8> {
     use scale::Encode;
     let mut buf = Vec::new();
-    for slot in queue {
+    let e = config.epoch_length as usize;
+    for i in 0..e {
+        let slot = queue.get(i).map(|s| s.as_slice()).unwrap_or(&[]);
         encode_u32_le(slot.len() as u32, &mut buf);
         for (report, deps) in slot {
             // Use standard block encoding E(r ∈ R) for work reports
@@ -596,9 +600,11 @@ fn serialize_accumulation_queue(
 }
 
 /// C(15): ξ accumulation_history — E fixed-size array of ↕ sorted hash lists.
-fn serialize_accumulation_history(history: &[Vec<Hash>]) -> Vec<u8> {
+fn serialize_accumulation_history(history: &[Vec<Hash>], config: &Config) -> Vec<u8> {
     let mut buf = Vec::new();
-    for slot in history {
+    let e = config.epoch_length as usize;
+    for i in 0..e {
+        let slot = history.get(i).map(|s| s.as_slice()).unwrap_or(&[]);
         encode_u32_le(slot.len() as u32, &mut buf);
         for hash in slot {
             buf.extend_from_slice(&hash.0);
@@ -1320,6 +1326,9 @@ fn deserialize_accumulation_queue(
     data: &[u8],
     config: &Config,
 ) -> Result<Vec<Vec<(grey_types::work::WorkReport, Vec<Hash>)>>, String> {
+    if data.is_empty() {
+        return Ok(vec![Vec::new(); config.epoch_length as usize]);
+    }
     let mut pos = 0;
     let e = config.epoch_length as usize;
     let mut queue = Vec::with_capacity(e);
@@ -1346,6 +1355,9 @@ fn deserialize_accumulation_history(
     data: &[u8],
     config: &Config,
 ) -> Result<Vec<Vec<Hash>>, String> {
+    if data.is_empty() {
+        return Ok(vec![Vec::new(); config.epoch_length as usize]);
+    }
     let mut pos = 0;
     let e = config.epoch_length as usize;
     let mut history = Vec::with_capacity(e);

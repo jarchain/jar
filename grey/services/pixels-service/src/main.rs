@@ -122,7 +122,6 @@ mod service {
         result
     }
 
-    /// Operand layout offset to pixel data.
     // Offset to pixel data in the operand blob (after fixed-width encoding):
     // item_discriminator(1) + package_hash(32) + exports_root(32) +
     // authorizer_hash(32) + payload_hash(32) = 129

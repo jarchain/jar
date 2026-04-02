@@ -3,10 +3,29 @@
 //! Implements the standard program format (GP eq A.38) and the
 //! inner deblob format (GP eq A.2).
 
-/// Encode a natural number as fixed-width u32 LE.
+/// Encode a natural number using the JAM variable-length codec.
 /// Used in the deblob format for jump table length and code length.
+/// NOTE: Kept as compact for now — PVM blob format change requires
+/// coordinated Lean spec + Rust + test vector update.
 pub fn encode_natural(value: u64) -> Vec<u8> {
-    (value as u32).to_le_bytes().to_vec()
+    if value < 128 {
+        vec![value as u8]
+    } else if value < (1 << 14) {
+        vec![0x80 | ((value >> 8) as u8 & 0x3F), (value & 0xFF) as u8]
+    } else if value < (1 << 21) {
+        vec![
+            0xC0 | ((value >> 16) as u8 & 0x1F),
+            (value & 0xFF) as u8,
+            ((value >> 8) & 0xFF) as u8,
+        ]
+    } else {
+        vec![
+            0xE0 | ((value >> 24) as u8 & 0x0F),
+            (value & 0xFF) as u8,
+            ((value >> 8) & 0xFF) as u8,
+            ((value >> 16) & 0xFF) as u8,
+        ]
+    }
 }
 
 /// Pack a bitmask array (one byte per bit, 0 or 1) into packed bytes (LSB first).

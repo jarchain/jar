@@ -370,19 +370,11 @@ fn validate_basic_blocks(code: &[u8], bitmask: &[u8], jump_table: &[u32]) -> boo
     true
 }
 
-/// Decode a u32 LE natural number (fixed-width, no compact encoding).
-/// Returns (value, bytes_consumed=4) or None.
+/// Decode a variable-length natural number (JAM compact encoding).
+/// Used in PVM blob header for |j| and |c|.
+/// NOTE: Kept as compact for now — PVM blob format change requires
+/// coordinated Lean spec + Rust + test vector update.
 fn decode_natural(data: &[u8], offset: usize) -> Option<(usize, usize)> {
-    if offset + 4 > data.len() {
-        return None;
-    }
-    let val = u32::from_le_bytes(data[offset..offset + 4].try_into().ok()?) as usize;
-    Some((val, 4))
-}
-
-/// Legacy: kept for reference, no longer used.
-#[allow(dead_code)]
-fn decode_natural_compact(data: &[u8], offset: usize) -> Option<(usize, usize)> {
     if offset >= data.len() {
         return None;
     }

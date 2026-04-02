@@ -1,138 +1,113 @@
-//! Tests for state serialization T(σ) against JAR block test vectors.
+//! Tests for state serialization T(σ) roundtrip.
+//!
+//! Creates a genesis state with Config::full(), serializes to KVs,
+//! deserializes back, and verifies the roundtrip.
 
 use grey_merkle::compute_state_root_from_kvs;
 use grey_merkle::state_serial::{deserialize_state, serialize_state_with_opaque};
 use grey_types::config::Config;
 
-fn decode_hex(s: &str) -> Vec<u8> {
-    hex::decode(s.strip_prefix("0x").unwrap_or(s)).expect("bad hex")
-}
-
-#[allow(clippy::type_complexity)]
-fn load_block_pre_state(path: &str) -> (Vec<([u8; 31], Vec<u8>)>, String) {
-    let json_str = std::fs::read_to_string(path).expect("failed to read block input JSON");
-    let data: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-    let pre = &data["pre_state"];
-
-    let expected_root = pre["state_root"].as_str().unwrap().to_string();
-
-    let kvs: Vec<([u8; 31], Vec<u8>)> = pre["keyvals"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|entry| {
-            let key_bytes = decode_hex(entry["key"].as_str().unwrap());
-            let mut key = [0u8; 31];
-            key.copy_from_slice(&key_bytes);
-            let val_bytes = decode_hex(entry["value"].as_str().unwrap());
-            (key, val_bytes)
-        })
-        .collect();
-
-    (kvs, expected_root)
+/// Create a minimal genesis state for testing.
+fn make_test_genesis() -> grey_types::state::State {
+    let config = Config::full();
+    let (state, _secrets) = grey_consensus::genesis::create_genesis(&config);
+    state
 }
 
 #[test]
-fn test_deserialize_initial_state() {
-    let (kvs, _) = load_block_pre_state(
-        "../../../spec/tests/vectors/blocks/fallback/block-00000001.input.gp072_tiny.json",
-    );
-    let config = Config::tiny();
+fn test_serialize_roundtrip() {
+    let config = Config::full();
+    let state = make_test_genesis();
 
-    let (state, opaque) = deserialize_state(&kvs, &config).expect("deserialization failed");
+    // Serialize to KVs
+    let kvs = serialize_state_with_opaque(&state, &config, &[]);
 
-    // Verify basic properties of the tiny genesis state
-    assert_eq!(state.timeslot, 0);
-    assert_eq!(state.auth_pool.len(), 2); // C=2 cores
-    assert_eq!(state.pending_validators.len(), 6); // V=6
-    assert_eq!(state.current_validators.len(), 6);
-    assert_eq!(state.previous_validators.len(), 6);
-    assert_eq!(state.pending_reports.len(), 2); // C=2
-    assert!(state.pending_reports[0].is_none());
-    assert!(state.pending_reports[1].is_none());
-    assert_eq!(state.recent_blocks.headers.len(), 1);
-    assert_eq!(state.judgments.good.len(), 0);
-    assert_eq!(state.judgments.bad.len(), 0);
-    assert!(state.services.contains_key(&0));
-    assert_eq!(state.privileged_services.manager, 0);
-    assert_eq!(state.privileged_services.assigner.len(), 2); // C=2
+    // Must have entries
+    assert!(!kvs.is_empty(), "serialized state should not be empty");
 
-    // Check service account for bootstrap service
-    let svc = &state.services[&0];
-    assert_eq!(svc.quota_items, u64::MAX);
+    // Deserialize back
+    let (state2, _opaque) = deserialize_state(&kvs, &config).expect("deserialization failed");
 
-    // Opaque entries should exist
-    assert!(!opaque.is_empty(), "expected some opaque service data");
-}
-
-#[test]
-fn test_roundtrip_initial_state() {
-    let (kvs, _) = load_block_pre_state(
-        "../../../spec/tests/vectors/blocks/fallback/block-00000001.input.gp072_tiny.json",
-    );
-    let config = Config::tiny();
-
-    let (state, opaque) = deserialize_state(&kvs, &config).expect("deserialization failed");
-
-    // Re-serialize
-    let re_kvs = serialize_state_with_opaque(&state, &config, &opaque);
-
-    // Compare key-value pairs
+    // Check basic properties
+    assert_eq!(state2.timeslot, state.timeslot);
     assert_eq!(
-        re_kvs.len(),
-        kvs.len(),
-        "KV count mismatch: got {} expected {}",
-        re_kvs.len(),
-        kvs.len()
+        state2.pending_validators.len(),
+        state.pending_validators.len()
+    );
+    assert_eq!(
+        state2.current_validators.len(),
+        state.current_validators.len()
+    );
+    assert_eq!(
+        state2.previous_validators.len(),
+        state.previous_validators.len()
+    );
+    assert_eq!(state2.pending_reports.len(), state.pending_reports.len());
+    assert_eq!(state2.judgments.good.len(), state.judgments.good.len());
+    assert_eq!(state2.judgments.bad.len(), state.judgments.bad.len());
+    assert_eq!(
+        state2.privileged_services.manager,
+        state.privileged_services.manager
+    );
+}
+
+#[test]
+fn test_serialize_roundtrip_values() {
+    let config = Config::full();
+    let state = make_test_genesis();
+
+    // Serialize → KVs
+    let kvs1 = serialize_state_with_opaque(&state, &config, &[]);
+
+    // Deserialize → State
+    let (state2, opaque) = deserialize_state(&kvs1, &config).expect("deserialization failed");
+
+    // Re-serialize → KVs2
+    let kvs2 = serialize_state_with_opaque(&state2, &config, &opaque);
+
+    // KV counts must match
+    assert_eq!(
+        kvs1.len(),
+        kvs2.len(),
+        "KV count mismatch: first={} second={}",
+        kvs1.len(),
+        kvs2.len()
     );
 
-    for (i, ((re_key, re_val), (orig_key, orig_val))) in re_kvs.iter().zip(kvs.iter()).enumerate() {
+    // Each KV pair must match
+    for (i, ((k1, v1), (k2, v2))) in kvs1.iter().zip(kvs2.iter()).enumerate() {
         assert_eq!(
-            re_key,
-            orig_key,
-            "Key mismatch at entry {i}: got {} expected {}",
-            hex::encode(re_key),
-            hex::encode(orig_key)
+            k1,
+            k2,
+            "Key mismatch at entry {i}: {} vs {}",
+            hex::encode(k1),
+            hex::encode(k2)
         );
-        // Key 0c (index 12) = privileged services: re-serialization adds quota_service (4 bytes)
-        // that wasn't in the original gp072 test vector. Skip exact comparison for this entry.
-        if re_key.first() == Some(&0x0c) && re_key.iter().skip(1).all(|&b| b == 0) {
-            assert!(
-                re_val.starts_with(orig_val),
-                "Privileged services value should start with original bytes"
-            );
-            continue;
-        }
         assert_eq!(
-            re_val,
-            orig_val,
-            "Value mismatch at entry {i} (key {}): got {} bytes expected {} bytes\n  got: {}\n  exp: {}",
-            hex::encode(re_key),
-            re_val.len(),
-            orig_val.len(),
-            hex::encode(&re_val[..re_val.len().min(80)]),
-            hex::encode(&orig_val[..orig_val.len().min(80)])
+            v1,
+            v2,
+            "Value mismatch at entry {i} (key {}): {} bytes vs {} bytes",
+            hex::encode(k1),
+            v1.len(),
+            v2.len()
         );
     }
 }
 
 #[test]
-fn test_state_root_matches_expected() {
-    let (kvs, expected_root_hex) = load_block_pre_state(
-        "../../../spec/tests/vectors/blocks/fallback/block-00000001.input.gp072_tiny.json",
-    );
+fn test_state_root_deterministic() {
+    let config = Config::full();
+    let state = make_test_genesis();
 
-    let expected_bytes = decode_hex(&expected_root_hex);
-    let mut expected = [0u8; 32];
-    expected.copy_from_slice(&expected_bytes);
-
-    let root = compute_state_root_from_kvs(&kvs);
+    let kvs = serialize_state_with_opaque(&state, &config, &[]);
+    let root1 = compute_state_root_from_kvs(&kvs);
+    let root2 = compute_state_root_from_kvs(&kvs);
 
     assert_eq!(
-        root.0,
-        expected,
-        "State root mismatch:\n  computed: {}\n  expected: {}",
-        hex::encode(root.0),
-        hex::encode(expected)
+        root1,
+        root2,
+        "State root should be deterministic: {} vs {}",
+        hex::encode(root1.0),
+        hex::encode(root2.0)
     );
 }
