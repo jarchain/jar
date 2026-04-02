@@ -9,4 +9,7 @@ pub enum DecodeError {
 
     #[error("sequence count {count} exceeds remaining bytes {remaining}")]
     SequenceTooLong { count: u32, remaining: u32 },
+
+    #[error("set elements not in strictly ascending order")]
+    NotSorted,
 }
