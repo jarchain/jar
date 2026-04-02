@@ -946,7 +946,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "gp072 codec vectors lack erasure_shards field (GP#514)"]
+    #[ignore = "gp072 codec vectors lack GP#514 epoch marker format"]
     fn test_decode_extrinsic_tiny_roundtrip() {
         let config = Config::tiny();
         let bin = include_bytes!("../../../../spec/tests/vectors/codec/extrinsic.gp072_tiny.bin");
@@ -957,7 +957,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "gp072 codec vectors lack erasure_shards field (GP#514)"]
+    #[ignore = "gp072 codec vectors lack GP#514 epoch marker format"]
     fn test_decode_block_tiny_roundtrip() {
         let config = Config::tiny();
         let block_bin = include_bytes!("../../../../spec/tests/vectors/codec/block.gp072_tiny.bin");
