@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 description = "SCALE codec without compact encoding. Fixed-width LE integers, u32 count-prefixed arrays."
 
+[features]
+default = ["std"]
+std = []
+
 [dependencies]
 thiserror = { workspace = true }
 scale-derive = { workspace = true }

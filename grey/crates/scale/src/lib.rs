@@ -9,6 +9,11 @@
 //! - `Option<T>`: discriminator byte (0=None, 1=Some) + payload
 //! - Enums: u8 discriminator + variant payload
 
+#![cfg_attr(not(feature = "std"), no_std)]
+extern crate alloc;
+
+use alloc::vec::Vec;
+
 mod error;
 
 pub use error::DecodeError;
@@ -272,7 +277,7 @@ impl<T: Decode> Decode for Option<T> {
 // BTreeSet<T> — u32 count + sorted elements
 // ============================================================================
 
-impl<T: Encode + Ord> Encode for std::collections::BTreeSet<T> {
+impl<T: Encode + Ord> Encode for alloc::collections::BTreeSet<T> {
     fn encode_to(&self, buf: &mut Vec<u8>) {
         (self.len() as u32).encode_to(buf);
         for item in self {
@@ -281,7 +286,7 @@ impl<T: Encode + Ord> Encode for std::collections::BTreeSet<T> {
     }
 }
 
-impl<T: Decode + Ord> Decode for std::collections::BTreeSet<T> {
+impl<T: Decode + Ord> Decode for alloc::collections::BTreeSet<T> {
     fn decode(data: &[u8]) -> Result<(Self, usize), DecodeError> {
         let (count, mut off) = u32::decode(data)?;
         let count = count as usize;
@@ -291,7 +296,7 @@ impl<T: Decode + Ord> Decode for std::collections::BTreeSet<T> {
                 remaining: data.len() as u32,
             });
         }
-        let mut set = std::collections::BTreeSet::new();
+        let mut set = alloc::collections::BTreeSet::new();
         for _ in 0..count {
             let (item, c) = T::decode(&data[off..])?;
             off += c;
@@ -330,7 +335,7 @@ impl<A: Decode, B: Decode> Decode for (A, B) {
 // BTreeMap<K, V> — u32 count + sorted key-value pairs
 // ============================================================================
 
-impl<K: Encode + Ord, V: Encode> Encode for std::collections::BTreeMap<K, V> {
+impl<K: Encode + Ord, V: Encode> Encode for alloc::collections::BTreeMap<K, V> {
     fn encode_to(&self, buf: &mut Vec<u8>) {
         (self.len() as u32).encode_to(buf);
         for (k, v) in self {
@@ -340,7 +345,7 @@ impl<K: Encode + Ord, V: Encode> Encode for std::collections::BTreeMap<K, V> {
     }
 }
 
-impl<K: Decode + Ord, V: Decode> Decode for std::collections::BTreeMap<K, V> {
+impl<K: Decode + Ord, V: Decode> Decode for alloc::collections::BTreeMap<K, V> {
     fn decode(data: &[u8]) -> Result<(Self, usize), DecodeError> {
         let (count, mut off) = u32::decode(data)?;
         let count = count as usize;
@@ -350,7 +355,7 @@ impl<K: Decode + Ord, V: Decode> Decode for std::collections::BTreeMap<K, V> {
                 remaining: data.len() as u32,
             });
         }
-        let mut map = std::collections::BTreeMap::new();
+        let mut map = alloc::collections::BTreeMap::new();
         for _ in 0..count {
             let (k, c) = K::decode(&data[off..])?;
             off += c;
@@ -457,7 +462,7 @@ mod tests {
 
     #[test]
     fn test_btreemap_roundtrip() {
-        use std::collections::BTreeMap;
+        use alloc::collections::BTreeMap;
         let mut map = BTreeMap::new();
         map.insert(1u16, 10u32);
         map.insert(2u16, 20u32);
