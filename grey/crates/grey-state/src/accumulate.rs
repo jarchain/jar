@@ -1469,8 +1469,9 @@ fn host_assign(
     true
 }
 
-/// designate (id=16): Set pending validator keys (GP ΩD).
-/// φ[7]=o (memory offset for V validator keys, 336 bytes each)
+/// designate (id=16): Set pending validator keys (GP ΩD, GP#514).
+/// φ[7]=o (memory offset for validator keys, 336 bytes each)
+/// φ[8]=z (validator count, GP#514)
 /// Updates the regular context's environment (x'_e)_i (pending validators).
 fn host_designate(
     pvm: &mut PvmInstance,
@@ -1479,13 +1480,19 @@ fn host_designate(
     config: &Config,
 ) -> bool {
     let o_ptr = pvm.reg(7) as u32;
-
-    let v = config.validators_count as u32;
     let key_size = 336u32; // Each validator key is 336 bytes
+
+    // GP#514: read validator count from reg[8], validate ∈ valcount
+    let z = pvm.reg(8) as u16;
+    if !config.is_valid_val_count(z) {
+        pvm.set_reg(7, HOST_HUH);
+        return true;
+    }
+    let val_count = z as u32;
 
     // GP order (eq Ω_D): read memory FIRST, then check privileges.
     // If memory inaccessible → PANIC (⚡), takes priority over all other checks.
-    let keys_bytes = match pvm.try_read_bytes(o_ptr, key_size * v) {
+    let keys_bytes = match pvm.try_read_bytes(o_ptr, key_size * val_count) {
         Some(b) => b,
         None => return false, // page fault → PANIC
     };
@@ -1496,7 +1503,7 @@ fn host_designate(
         return true;
     }
 
-    let keys: Vec<Vec<u8>> = (0..v as usize)
+    let keys: Vec<Vec<u8>> = (0..val_count as usize)
         .map(|i| keys_bytes[i * key_size as usize..(i + 1) * key_size as usize].to_vec())
         .collect();
 

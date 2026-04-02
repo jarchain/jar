@@ -153,7 +153,7 @@ fn validate_header(
     }
 
     // Author index must be valid
-    if header.author_index as usize >= config.validators_count as usize {
+    if header.author_index as usize >= state.current_validators.len() {
         return Err(TransitionError::InvalidAuthorIndex(header.author_index));
     }
 
@@ -164,10 +164,11 @@ fn validate_header(
 fn apply_judgments(
     state: &mut State,
     disputes: &grey_types::header::DisputesExtrinsic,
-    config: &Config,
+    _config: &Config,
 ) {
-    let supermajority = config.super_majority() as usize;
-    let one_third = (config.validators_count / 3) as usize;
+    let val_count = state.current_validators.len();
+    let supermajority = Config::super_majority_of(val_count);
+    let one_third = val_count / 3;
 
     // Process verdicts (eq 10.12-10.19)
     for verdict in &disputes.verdicts {
@@ -197,9 +198,9 @@ fn apply_judgments(
 fn clear_disputed_reports(
     state: &mut State,
     disputes: &grey_types::header::DisputesExtrinsic,
-    config: &Config,
+    _config: &Config,
 ) {
-    let supermajority = config.super_majority() as usize;
+    let supermajority = Config::super_majority_of(state.current_validators.len());
 
     for verdict in &disputes.verdicts {
         let positive_count: usize = verdict.judgments.iter().filter(|j| j.is_valid).count();
@@ -294,7 +295,7 @@ fn process_assurances(
     current_timeslot: grey_types::Timeslot,
     config: &Config,
 ) -> Vec<grey_types::work::WorkReport> {
-    let threshold = config.super_majority() as u32;
+    let threshold = Config::super_majority_of(state.current_validators.len()) as u32;
     let mut available = Vec::new();
 
     let num_cores = state.pending_reports.len();

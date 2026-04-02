@@ -50,7 +50,7 @@ pub fn process_assurances(
     parent_hash: Hash,
     current_validators: &[ValidatorKey],
 ) -> Result<AssuranceOutput, AssuranceError> {
-    let super_majority = config.super_majority();
+    let super_majority = Config::super_majority_of(current_validators.len()) as u16;
     let num_cores = config.core_count as usize;
 
     // Validate validator indices (must be valid before other checks)

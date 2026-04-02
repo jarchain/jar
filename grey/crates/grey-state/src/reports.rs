@@ -176,7 +176,7 @@ pub fn process_reports(
     known_packages: &BTreeSet<Hash>,
 ) -> Result<ReportsOutput, ReportError> {
     let num_cores = config.core_count as usize;
-    let num_validators = config.validators_count as usize;
+    let num_validators = state.curr_validators.len();
     let rotation_period = config.rotation_period();
     let epoch_length = config.epoch_length;
 
@@ -194,7 +194,8 @@ pub fn process_reports(
         .collect();
 
     // Compute the per-validator core assignment for M and M*
-    let assignment_m = compute_core_assignments(config, &state.entropy[2], current_slot);
+    let assignment_m =
+        compute_core_assignments(config, &state.entropy[2], current_slot, num_validators);
     let prev_timeslot = current_slot.saturating_sub(rotation_period);
     let prev_same_epoch = prev_timeslot / epoch_length == current_slot / epoch_length;
     let prev_entropy = if prev_same_epoch {
@@ -202,7 +203,8 @@ pub fn process_reports(
     } else {
         &state.entropy[3]
     };
-    let assignment_m_star = compute_core_assignments(config, prev_entropy, prev_timeslot);
+    let assignment_m_star =
+        compute_core_assignments(config, prev_entropy, prev_timeslot, num_validators);
 
     // Track seen packages for duplicate checking
     let mut seen_packages: BTreeSet<Hash> = BTreeSet::new();
@@ -485,8 +487,13 @@ pub fn process_reports(
 ///   1. initial[i] = floor(C * i / V)  (home core)
 ///   2. Shuffle initial sequence with entropy e
 ///   3. Apply rotation: (shuffled[i] + floor((t mod E) / R)) mod C
-fn compute_core_assignments(config: &Config, entropy: &Hash, timeslot: Timeslot) -> Vec<usize> {
-    let v = config.validators_count as usize;
+fn compute_core_assignments(
+    config: &Config,
+    entropy: &Hash,
+    timeslot: Timeslot,
+    validator_count: usize,
+) -> Vec<usize> {
+    let v = validator_count;
     let c = config.core_count as usize;
     let r = config.rotation_period();
     let e = config.epoch_length;
