@@ -966,17 +966,14 @@ impl Store {
 
 /// Encode a block to bytes for storage using JAM codec (header + extrinsic).
 fn encode_block(block: &Block) -> Vec<u8> {
-    use grey_codec::Encode;
+    use scale::Encode;
     block.encode()
 }
 
-/// Decode a block from storage bytes using JAM codec.
+/// Decode a block from storage bytes.
 fn decode_block(data: &[u8]) -> Option<Block> {
-    use grey_codec::decode::DecodeWithConfig;
-    // Use tiny config for storage decode — matches testnet parameters.
-    // For full config, the store would need to know the config.
-    let config = grey_types::config::Config::tiny();
-    let (block, _consumed) = Block::decode_with_config(data, &config).ok()?;
+    use scale::Decode;
+    let (block, _consumed) = Block::decode(data).ok()?;
     Some(block)
 }
 

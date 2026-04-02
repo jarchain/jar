@@ -8,7 +8,7 @@
 //! 5. Signing and broadcasting guarantees
 //! 6. Generating availability assurances for chunks we hold
 
-use grey_codec::Encode;
+use scale::Encode;
 use grey_consensus::genesis::ValidatorSecrets;
 use grey_erasure::ErasureParams;
 use grey_state::refine::{self, RefineContext};

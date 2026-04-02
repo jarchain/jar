@@ -453,7 +453,7 @@ fn serialize_validators(validators: &[grey_types::validator::ValidatorKey]) -> V
 
 /// C(10): ρ pending_reports — C fixed-size array of ¿(report, E_4(timeslot)).
 fn serialize_pending_reports(reports: &[Option<PendingReport>]) -> Vec<u8> {
-    use grey_codec::Encode;
+    use scale::Encode;
     let mut buf = Vec::new();
     for report in reports {
         match report {
@@ -562,7 +562,7 @@ fn serialize_validator_records_e4(records: &[ValidatorRecord], count: usize, buf
 fn serialize_accumulation_queue(
     queue: &[Vec<(grey_types::work::WorkReport, Vec<Hash>)>],
 ) -> Vec<u8> {
-    use grey_codec::Encode;
+    use scale::Encode;
     let mut buf = Vec::new();
     for slot in queue {
         encode_compact(slot.len() as u64, &mut buf);

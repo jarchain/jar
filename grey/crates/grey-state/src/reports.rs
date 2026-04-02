@@ -318,7 +318,7 @@ pub fn process_reports(
         }
 
         // Verify Ed25519 signatures
-        let encoded_report = grey_codec::Encode::encode(report);
+        let encoded_report = scale::Encode::encode(report);
         let report_hash = grey_crypto::blake2b_256(&encoded_report);
         let mut message = Vec::with_capacity(13 + 32);
         message.extend_from_slice(b"jam_guarantee");

@@ -974,7 +974,7 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                                     // imported block — otherwise they become zombies that
                                     // endlessly defer and block new work package processing.
                                     if !block.extrinsic.guarantees.is_empty() {
-                                        use grey_codec::Encode;
+                                        use scale::Encode;
                                         let included_hashes: std::collections::HashSet<_> =
                                             block.extrinsic.guarantees.iter().map(|g| {
                                                 grey_crypto::blake2b_256(&g.report.encode())
@@ -1361,7 +1361,7 @@ fn compute_state_root(state: &State) -> Hash {
 /// Encode a block for network transmission.
 /// Format: [header_hash (32)][block_len (4)][JAM-encoded block (header + extrinsic)]
 fn encode_block_message(block: &Block, header_hash: &Hash) -> Vec<u8> {
-    use grey_codec::Encode;
+    use scale::Encode;
     let encoded_block = block.encode();
     let mut msg = Vec::with_capacity(32 + 4 + encoded_block.len());
     msg.extend_from_slice(&header_hash.0);

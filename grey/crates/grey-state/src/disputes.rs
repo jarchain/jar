@@ -302,7 +302,7 @@ pub fn process_disputes(
     // eq removenonpositive: Clear pending reports with non-good verdicts
     // For each core c: if H(E(ρ[c].r)) matches a verdict with t < ⌊2/3 V⌋ + 1, clear it
     {
-        use grey_codec::Encode;
+        use scale::Encode;
         let non_good: std::collections::BTreeSet<Hash> = verdict_summary
             .iter()
             .filter(|&&(_, positive)| positive < super_majority)

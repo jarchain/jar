@@ -277,7 +277,7 @@ impl JamRpcServer for RpcImpl {
         }
 
         // Verify the payload is a valid JAM-encoded work package.
-        use grey_codec::Decode;
+        use scale::Decode;
         if grey_types::work::WorkPackage::decode(&data).is_err() {
             return Err(internal_error(
                 "invalid work package: JAM codec decode failed",
@@ -1349,7 +1349,7 @@ mod tests {
 
     /// Build a minimal valid JAM-encoded work package for testing.
     fn minimal_work_package_bytes() -> Vec<u8> {
-        use grey_codec::Encode;
+        use scale::Encode;
         use grey_types::work::{RefinementContext, WorkPackage};
         let wp = WorkPackage {
             auth_code_host: 0,
@@ -1961,7 +1961,7 @@ mod tests {
 
         // Store a block and set it as head
         let block = test_block(1);
-        let hash = grey_crypto::blake2b_256(&grey_codec::Encode::encode(&block.header));
+        let hash = grey_crypto::blake2b_256(&scale::Encode::encode(&block.header));
         store.put_block(&block).unwrap();
         store.set_head(&hash, 1).unwrap();
 
