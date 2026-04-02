@@ -35,9 +35,17 @@ fn bless(dir: &PathBuf) {
 
     let minimal_path = dir.join("minimal.pvm");
     fs::write(&minimal_path, MINIMAL_BLOB).expect("failed to write minimal.pvm");
-    eprintln!("wrote {} ({} bytes)", minimal_path.display(), MINIMAL_BLOB.len());
+    eprintln!(
+        "wrote {} ({} bytes)",
+        minimal_path.display(),
+        MINIMAL_BLOB.len()
+    );
 
     let bootstrap_path = dir.join("bootstrap.pvm");
     fs::write(&bootstrap_path, BOOTSTRAP_BLOB).expect("failed to write bootstrap.pvm");
-    eprintln!("wrote {} ({} bytes)", bootstrap_path.display(), BOOTSTRAP_BLOB.len());
+    eprintln!(
+        "wrote {} ({} bytes)",
+        bootstrap_path.display(),
+        BOOTSTRAP_BLOB.len()
+    );
 }

@@ -8,6 +8,7 @@ use grey_types::{
     BandersnatchPublicKey, BlsPublicKey, Ed25519PublicKey, Ed25519Signature, Hash, ServiceId,
 };
 use std::collections::BTreeMap;
+use std::path::Path;
 
 /// Decode a 0x-prefixed hex string to bytes. Panics on invalid input.
 pub fn decode_hex(s: &str) -> Vec<u8> {
@@ -27,6 +28,60 @@ pub fn ed25519_from_hex(s: &str) -> Ed25519PublicKey {
 /// Parse an Ed25519Signature from a hex string.
 pub fn sig_from_hex(s: &str) -> Ed25519Signature {
     Ed25519Signature::from_hex(s)
+}
+
+/// Resolve blob_file/code_blob_file references in a JSON value.
+/// Reads files relative to `base_dir`, computes blake2b hash.
+pub fn resolve_blob_files(json: &mut serde_json::Value, base_dir: &Path) {
+    let accounts = match json
+        .pointer_mut("/pre_state/accounts")
+        .and_then(|v| v.as_array_mut())
+    {
+        Some(a) => a,
+        None => return,
+    };
+    for acct in accounts.iter_mut() {
+        let data = match acct.get_mut("data") {
+            Some(d) => d,
+            None => continue,
+        };
+        // Resolve code_blob_file in service
+        if let Some(svc) = data.get_mut("service") {
+            if let Some(path) = svc
+                .get("code_blob_file")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+            {
+                let bytes = std::fs::read(base_dir.join(&path))
+                    .unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+                let hash = grey_crypto::blake2b_256(&bytes);
+                svc.as_object_mut()
+                    .unwrap()
+                    .insert("code_hash".to_string(), serde_json::json!(hash.to_string()));
+            }
+        }
+        // Resolve blob_file in preimage_blobs
+        if let Some(blobs) = data
+            .get_mut("preimage_blobs")
+            .and_then(|v| v.as_array_mut())
+        {
+            for item in blobs.iter_mut() {
+                if let Some(path) = item
+                    .get("blob_file")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                {
+                    let bytes = std::fs::read(base_dir.join(&path))
+                        .unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+                    let hash = grey_crypto::blake2b_256(&bytes);
+                    *item = serde_json::json!({
+                        "hash": hash.to_string(),
+                        "blob": format!("0x{}", hex::encode(&bytes)),
+                    });
+                }
+            }
+        }
+    }
 }
 
 /// Parse a BandersnatchPublicKey from a hex string.
@@ -171,6 +226,7 @@ pub fn load_jar_test(dir: &str, stem: &str) -> serde_json::Value {
 
     let mut input_json: serde_json::Value = serde_json::from_str(&input_content)
         .unwrap_or_else(|e| panic!("failed to parse {input_path}: {e}"));
+    resolve_blob_files(&mut input_json, Path::new(dir));
     let output_json: serde_json::Value = serde_json::from_str(&output_content)
         .unwrap_or_else(|e| panic!("failed to parse {output_path}: {e}"));
 

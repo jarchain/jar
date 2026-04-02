@@ -1,5 +1,6 @@
 fn main() {
-    let sample = build_javm::build_service("../../services/samples/sample-service", "sample-service");
+    let sample =
+        build_javm::build_service("../../services/samples/sample-service", "sample-service");
     let pixels = build_javm::build_service("../../services/pixels-service", "pixels-service");
 
     let out_dir = std::env::var("OUT_DIR").unwrap();

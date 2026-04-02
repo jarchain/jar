@@ -9,7 +9,8 @@ fn main() {
     let pvm_blake2b = build_pvm::build("../../services/benches/blake2b");
     let javm_keccak = build_javm::build("../../services/benches/keccak", "bench-keccak");
     let pvm_keccak = build_pvm::build("../../services/benches/keccak");
-    let service_blob = build_javm::build_service("../../services/samples/sample-service", "sample-service");
+    let service_blob =
+        build_javm::build_service("../../services/samples/sample-service", "sample-service");
 
     let out_dir = std::env::var("OUT_DIR").unwrap();
     std::fs::write(
