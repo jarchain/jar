@@ -103,6 +103,7 @@ private def jar1Config : JamConfig where
   gasModel := .basicBlockSinglePass
   heapModel := .growHeap
   hostcallVersion := 1
+  useCompactDeblob := false
   variableValidators := true
   EconType := QuotaEcon
   TransferType := QuotaTransfer

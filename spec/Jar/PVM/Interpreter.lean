@@ -143,8 +143,9 @@ def runBlockGasSinglePass := runBlockGasWith gasCostForBlockSinglePass
 
 /-- Skip metadata prefix in a PVM program blob.
     Metadata format: E(metadata_length) ‖ metadata_bytes ‖ actual_program
-    Uses JAM codec natural encoding for the length prefix. -/
-def skipMetadata (blob : ByteArray) : ByteArray :=
+    When `compact` is true, uses JAM codec natural encoding for the length prefix (gp072).
+    When false, uses u32 LE (jar1). -/
+def skipMetadata (blob : ByteArray) (compact : Bool := true) : ByteArray :=
   if blob.size < 14 then blob
   else
     -- Check if first 3 bytes look like a valid ro_size (standard program header)
@@ -152,7 +153,7 @@ def skipMetadata (blob : ByteArray) : ByteArray :=
     if roSize + 14 <= blob.size then blob  -- Already a valid program header
     else
       -- Try to decode metadata length and skip
-      match decodeJamNatural blob 0 with
+      match decodeDeBlobNat blob 0 compact with
       | some (metaLen, consumed) =>
         let skip := consumed + metaLen
         if skip < blob.size then blob.extract skip blob.size
@@ -192,9 +193,9 @@ private def copyToMem (m : Memory) (base : Nat) (data : ByteArray) : Memory := I
       E₃(|o|) ‖ E₃(|w|) ‖ E₂(z) ‖ E₃(s) ‖ o ‖ w ‖ E₄(|c|) ‖ c
     where c is a deblob-format blob.
     Returns (ProgramBlob, initial registers, initial memory). -/
-def initStandard (blob' : ByteArray) (args : ByteArray)
+def initStandard (blob' : ByteArray) (args : ByteArray) (compact : Bool := true)
     : Option (ProgramBlob × Registers × Memory) := do
-  let blob := skipMetadata blob'
+  let blob := skipMetadata blob' compact
   if blob.size < 15 then none
 
   -- Parse header: E₃(|o|) ‖ E₃(|w|) ‖ E₂(z) ‖ E₃(s)
@@ -223,7 +224,7 @@ def initStandard (blob' : ByteArray) (args : ByteArray)
   let codeBlobData := blob.extract offset (offset + codeLen)
 
   -- Deblob the code section
-  let prog ← deblob codeBlobData
+  let prog ← deblob codeBlobData compact
 
   -- Memory layout (GP eq A.42):
   let roBase := Z_Z
@@ -283,9 +284,9 @@ def initStandard (blob' : ByteArray) (args : ByteArray)
     Arguments are placed after RW data so that RO/RW addresses are
     independent of argument size (the transpiler bakes absolute data
     addresses at compile time). -/
-def initLinear (blob' : ByteArray) (args : ByteArray)
+def initLinear (blob' : ByteArray) (args : ByteArray) (compact : Bool := true)
     : Option (ProgramBlob × Registers × Memory) := do
-  let blob := skipMetadata blob'
+  let blob := skipMetadata blob' compact
   if blob.size < 15 then none
 
   -- Parse header (same format as initStandard)
@@ -313,7 +314,7 @@ def initLinear (blob' : ByteArray) (args : ByteArray)
   if offset + codeLen > blob.size then none
   let codeBlobData := blob.extract offset (offset + codeLen)
 
-  let prog ← deblob codeBlobData
+  let prog ← deblob codeBlobData compact
   -- v0.8.0: validate basic block structure
   if !validateBasicBlocks prog then none
 
@@ -353,9 +354,10 @@ def initLinear (blob' : ByteArray) (args : ByteArray)
     Uses segmented (GP v0.7.2) or linear layout based on JamConfig. -/
 def initProgram [JamConfig] (blob : ByteArray) (args : ByteArray)
     : Option (ProgramBlob × Registers × Memory) :=
+  let compact := JamConfig.useCompactDeblob
   match JamConfig.memoryModel with
-  | .segmented => initStandard blob args
-  | .linear => initLinear blob args
+  | .segmented => initStandard blob args compact
+  | .linear => initLinear blob args compact
 
 /-- Ψ : Core PVM run dispatched by gas model.
     Uses per-instruction (v0.7.2) or per-basic-block (v0.8.0) gas charging. -/

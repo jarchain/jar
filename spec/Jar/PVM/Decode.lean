@@ -99,22 +99,30 @@ def decodeJamNatural (data : ByteArray) (offset : Nat) : Option (Nat × Nat) :=
           + (data.get! (offset + 1)).toNat
         some (val, 4)
 
+/-- Decode a natural from the deblob header. In compact mode (gp072) uses JAM
+    variable-length encoding; in fixed mode (jar1) uses u32 LE. -/
+def decodeDeBlobNat (blob : ByteArray) (offset : Nat) (compact : Bool)
+    : Option (Nat × Nat) :=
+  if compact then decodeJamNatural blob offset
+  else if offset + 4 ≤ blob.size then some (decodeLEn blob offset 4, 4)
+  else none
+
 /-- Deblob: parse a program blob into (code, bitmask, jumpTable). GP Appendix A.
     Format: E(|j|) ‖ E₁(z) ‖ E(|c|) ‖ E_z(j) ‖ c ‖ k
     where z = jump table entry size (1-4), j = jump table, c = code, k = bitmask.
-    E() uses JAM codec variable-length natural encoding.
-    TODO: jar1 should use u32 LE once test vectors are regenerated. -/
-def deblob (blob : ByteArray) : Option ProgramBlob := do
-  -- Decode |j| using variable-length natural
-  let (jumpLen, n1) ← decodeJamNatural blob 0
+    When `compact` is true, E() uses JAM codec variable-length natural (gp072).
+    When false, E() = E₄() is u32 LE (jar1). -/
+def deblob (blob : ByteArray) (compact : Bool := true) : Option ProgramBlob := do
+  -- Decode |j|
+  let (jumpLen, n1) ← decodeDeBlobNat blob 0 compact
   let mut offset := n1
   -- Decode z: 1 byte (bytes per jump table entry)
   if offset >= blob.size then none
   let z := (blob.get! offset).toNat
   offset := offset + 1
   if z == 0 || z > 4 then none
-  -- Decode |c| using variable-length natural
-  let (codeLen, n3) ← decodeJamNatural blob offset
+  -- Decode |c|
+  let (codeLen, n3) ← decodeDeBlobNat blob offset compact
   offset := offset + n3
   -- Read jump table: jumpLen entries of z bytes each
   let jumpDataStart := offset
