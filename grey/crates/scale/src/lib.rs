@@ -340,10 +340,7 @@ mod tests {
         map.insert(2u16, 20u32);
         let encoded = map.encode();
         // u32 count (2) + (u16, u32) × 2
-        assert_eq!(
-            encoded,
-            [2, 0, 0, 0, 1, 0, 10, 0, 0, 0, 2, 0, 20, 0, 0, 0]
-        );
+        assert_eq!(encoded, [2, 0, 0, 0, 1, 0, 10, 0, 0, 0, 2, 0, 20, 0, 0, 0]);
         let (decoded, consumed) = BTreeMap::<u16, u32>::decode(&encoded).unwrap();
         assert_eq!(decoded, map);
         assert_eq!(consumed, 16);

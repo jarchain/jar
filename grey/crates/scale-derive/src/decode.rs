@@ -36,10 +36,8 @@ fn decode_struct_body(name: &syn::Ident, fields: &Fields) -> syn::Result<TokenSt
                 let ident = field.ident.as_ref().unwrap();
                 let ty = &field.ty;
                 let attrs = parse_field_attrs(&field.attrs)?;
-                let consumed = syn::Ident::new(
-                    &format!("__consumed_{i}"),
-                    proc_macro2::Span::call_site(),
-                );
+                let consumed =
+                    syn::Ident::new(&format!("__consumed_{i}"), proc_macro2::Span::call_site());
 
                 if attrs.skip {
                     field_inits.push(quote! { #ident: Default::default() });
@@ -62,14 +60,11 @@ fn decode_struct_body(name: &syn::Ident, fields: &Fields) -> syn::Result<TokenSt
             let mut field_bindings = Vec::new();
 
             for (i, field) in unnamed.unnamed.iter().enumerate() {
-                let binding =
-                    syn::Ident::new(&format!("f{i}"), proc_macro2::Span::call_site());
+                let binding = syn::Ident::new(&format!("f{i}"), proc_macro2::Span::call_site());
                 let ty = &field.ty;
                 let attrs = parse_field_attrs(&field.attrs)?;
-                let consumed = syn::Ident::new(
-                    &format!("__consumed_{i}"),
-                    proc_macro2::Span::call_site(),
-                );
+                let consumed =
+                    syn::Ident::new(&format!("__consumed_{i}"), proc_macro2::Span::call_site());
 
                 if attrs.skip {
                     field_bindings.push(quote! { Default::default() });
@@ -110,13 +105,10 @@ fn decode_enum_body(name: &syn::Ident, data: &syn::DataEnum) -> syn::Result<Toke
                 let mut field_bindings = Vec::new();
 
                 for (i, field) in unnamed.unnamed.iter().enumerate() {
-                    let binding =
-                        syn::Ident::new(&format!("f{i}"), proc_macro2::Span::call_site());
+                    let binding = syn::Ident::new(&format!("f{i}"), proc_macro2::Span::call_site());
                     let ty = &field.ty;
-                    let consumed = syn::Ident::new(
-                        &format!("__consumed_{i}"),
-                        proc_macro2::Span::call_site(),
-                    );
+                    let consumed =
+                        syn::Ident::new(&format!("__consumed_{i}"), proc_macro2::Span::call_site());
                     decode_stmts.push(quote! {
                         let (#binding, #consumed) = <#ty as scale::Decode>::decode(&data[off..])?;
                         off += #consumed;
@@ -136,10 +128,8 @@ fn decode_enum_body(name: &syn::Ident, data: &syn::DataEnum) -> syn::Result<Toke
                 for (i, field) in named.named.iter().enumerate() {
                     let ident = field.ident.as_ref().unwrap();
                     let ty = &field.ty;
-                    let consumed = syn::Ident::new(
-                        &format!("__consumed_{i}"),
-                        proc_macro2::Span::call_site(),
-                    );
+                    let consumed =
+                        syn::Ident::new(&format!("__consumed_{i}"), proc_macro2::Span::call_site());
                     decode_stmts.push(quote! {
                         let (#ident, #consumed) = <#ty as scale::Decode>::decode(&data[off..])?;
                         off += #consumed;

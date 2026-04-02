@@ -1349,8 +1349,8 @@ mod tests {
 
     /// Build a minimal valid JAM-encoded work package for testing.
     fn minimal_work_package_bytes() -> Vec<u8> {
-        use scale::Encode;
         use grey_types::work::{RefinementContext, WorkPackage};
+        use scale::Encode;
         let wp = WorkPackage {
             auth_code_host: 0,
             auth_code_hash: Hash([0u8; 32]),

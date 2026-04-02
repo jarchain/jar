@@ -1798,6 +1798,7 @@ dependencies = [
  "grey-types",
  "hex",
  "reqwest",
+ "scale",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
