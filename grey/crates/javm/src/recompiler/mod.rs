@@ -1005,6 +1005,17 @@ pub fn initialize_program_recompiled(
 ) -> Option<RecompiledPvm> {
     let parsed = crate::program::parse_program_blob(blob, arguments, gas)?;
 
+    // Charge per-page allocation gas (same as interpreter path)
+    let init_pages = parsed
+        .layout
+        .as_ref()
+        .map_or(0, |l| l.mem_size / crate::PVM_PAGE_SIZE);
+    let init_cost = init_pages as u64 * crate::program::GAS_PER_PAGE;
+    if gas < init_cost {
+        return None;
+    }
+    let gas = gas - init_cost;
+
     let mut rpvm = RecompiledPvm::new(
         parsed.code,
         parsed.bitmask,

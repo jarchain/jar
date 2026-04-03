@@ -629,7 +629,7 @@ mod tests_sort {
     #[test]
     fn test_ecrecover_code_size() {
         let grey_blob = grey_ecrecover_blob();
-        let grey_pvm = javm::program::initialize_program(grey_blob, &[], 1000).unwrap();
+        let grey_pvm = javm::program::initialize_program(grey_blob, &[], 1_000_000).unwrap();
         let grey_inst_count: usize = grey_pvm.bitmask.iter().filter(|&&b| b == 1).count();
         eprintln!(
             "Grey PVM:  code={} bytes, {} instructions",
@@ -746,7 +746,7 @@ mod tests_sort {
     fn test_sample_service_loadable() {
         let blob = sample_service_blob();
         assert!(!blob.is_empty());
-        let pvm = javm::program::initialize_program(blob, &[], 10_000);
+        let pvm = javm::program::initialize_program(blob, &[], 1_000_000);
         assert!(
             pvm.is_some(),
             "sample service blob should be loadable by PVM"
@@ -756,8 +756,8 @@ mod tests_sort {
     #[test]
     fn test_sample_service_refine_halts() {
         let blob = sample_service_blob();
-        let mut pvm =
-            javm::program::initialize_program(blob, &[], 10_000).expect("blob should be loadable");
+        let mut pvm = javm::program::initialize_program(blob, &[], 1_000_000)
+            .expect("blob should be loadable");
         let (result, _gas) = pvm.run();
         assert!(
             result == javm::ExitReason::Halt || result == javm::ExitReason::Panic,
@@ -769,8 +769,8 @@ mod tests_sort {
     #[test]
     fn test_sample_service_accumulate_host_write() {
         let blob = sample_service_blob();
-        let mut pvm =
-            javm::program::initialize_program(blob, &[], 10_000).expect("blob should be loadable");
+        let mut pvm = javm::program::initialize_program(blob, &[], 1_000_000)
+            .expect("blob should be loadable");
         pvm.pc = 5;
         let (result, _gas) = pvm.run();
         match result {
