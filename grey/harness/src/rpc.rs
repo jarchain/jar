@@ -49,6 +49,14 @@ pub struct ContextResult {
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
+pub struct StateSummaryResult {
+    pub block_hash: String,
+    pub state_root: String,
+    pub timeslot: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct StorageResult {
     pub service_id: u32,
     pub key: String,
@@ -174,6 +182,14 @@ impl RpcClient {
 
     pub async fn get_context(&self, service_id: u32) -> Result<ContextResult, RpcError> {
         self.call("jam_getContext", serde_json::json!([service_id]))
+            .await
+    }
+
+    pub async fn get_state_summary(
+        &self,
+        block_hash: Option<&str>,
+    ) -> Result<StateSummaryResult, RpcError> {
+        self.call("jam_getState", serde_json::json!([block_hash]))
             .await
     }
 

@@ -114,7 +114,8 @@ async fn main() {
 
     // Run scenarios sequentially.
     let mut results = Vec::new();
-    let all_scenarios = [
+    let consistency_supported = !cli.no_testnet && !cli.seq_testnet;
+    let mut all_scenarios = vec![
         "serial",
         "repeat",
         "liveness",
@@ -122,9 +123,16 @@ async fn main() {
         "recovery",
         "metrics",
     ];
+    if consistency_supported {
+        all_scenarios.push("consistency");
+    }
 
     // Filter to a single scenario if --scenario is specified.
     let scenario_list: Vec<&str> = if let Some(ref name) = cli.scenario {
+        if name == "consistency" && !consistency_supported {
+            error!("scenario \"consistency\" requires the networked local testnet");
+            std::process::exit(1);
+        }
         if !all_scenarios.contains(&name.as_str()) {
             error!(
                 "unknown scenario: {:?} (available: {})",
@@ -147,6 +155,7 @@ async fn main() {
             "invalid_wp" => scenarios::invalid_wp::run(&client).await,
             "recovery" => scenarios::recovery::run(&client).await,
             "metrics" => scenarios::metrics::run(&client).await,
+            "consistency" => scenarios::consistency::run(&client).await,
             _ => unreachable!(),
         };
         let dur = result.duration.as_secs();

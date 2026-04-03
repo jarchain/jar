@@ -1,5 +1,6 @@
 //! Integration test scenarios.
 
+pub mod consistency;
 pub mod invalid_wp;
 pub mod liveness;
 pub mod metrics;
