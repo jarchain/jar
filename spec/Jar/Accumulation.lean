@@ -386,7 +386,7 @@ def handleHostCall (callId : PVM.Reg) (gas : Gas) (regs : PVM.Registers)
       (mkResult regs' mem gas', ctx)
     else
       let newPages := desiredPages - currentPages
-      let growCost := newPages * 10
+      let growCost := newPages * PVM.gasPerPage
       if gas'.toNat < growCost then
         -- Out of gas: return current count, don't grow
         let regs' := setR7 regs (UInt64.ofNat currentPages)

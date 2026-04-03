@@ -70,6 +70,54 @@ def decodeLEn (data : ByteArray) (offset n : Nat) : Nat :=
         go (i + 1) (acc + b * 2 ^ (8 * i)) fuel'
   go 0 0 n
 
+-- ============================================================================
+-- JAR v1 Program Header
+-- ============================================================================
+
+/-- JAR v1 unified program header (all u32 LE fields + u8 entry_size). -/
+structure JarProgramHeader where
+  roSize : Nat
+  rwSize : Nat
+  heapPages : Nat
+  maxHeapPages : Nat
+  stackPages : Nat
+  jumpLen : Nat
+  entrySize : Nat
+  codeLen : Nat
+
+/-- JAR v1 magic value as u32 LE: 'J'=0x4A, 'A'=0x41, 'R'=0x52, 0x01. -/
+def jarMagic : Nat := decodeLEn ⟨#[0x4A, 0x41, 0x52, 0x01]⟩ 0 4
+
+/-- Parse a JAR v1 unified program header (33 bytes). -/
+def parseJarHeader (blob : ByteArray) : Option (JarProgramHeader × Nat) := do
+  if blob.size < 33 then none
+  let magic := decodeLEn blob 0 4
+  if magic != jarMagic then none
+  some ({
+    roSize := decodeLEn blob 4 4
+    rwSize := decodeLEn blob 8 4
+    heapPages := decodeLEn blob 12 4
+    maxHeapPages := decodeLEn blob 16 4
+    stackPages := decodeLEn blob 20 4
+    jumpLen := decodeLEn blob 24 4
+    entrySize := (blob.get! 28).toNat
+    codeLen := decodeLEn blob 29 4
+  }, 33)
+
+/-- Gas cost per page for memory allocation (init + grow_heap). -/
+def gasPerPage : Nat := 1500
+
+/-- Compute memory tier load/store cycles based on total accessible pages. -/
+def computeMemCycles (totalPages : Nat) : Nat :=
+  if totalPages ≤ 2048 then 25
+  else if totalPages ≤ 8192 then 50
+  else if totalPages ≤ 65536 then 75
+  else 100
+
+-- ============================================================================
+-- Legacy Compact Encoding (gp072)
+-- ============================================================================
+
 /-- Decode a JAM codec variable-length natural number. GP Appendix C.
     Returns (value, bytes_consumed) or none. -/
 def decodeJamNatural (data : ByteArray) (offset : Nat) : Option (Nat × Nat) :=

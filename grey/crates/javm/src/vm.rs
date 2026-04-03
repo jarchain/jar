@@ -74,6 +74,10 @@ pub struct Pvm {
     pub heap_base: u32,
     /// Current heap top pointer for sbrk (heap_base + total_allocated).
     pub heap_top: u32,
+    /// Maximum heap pages (grow_heap refuses beyond this).
+    pub max_heap_pages: u32,
+    /// Memory tier load/store cycles (25, 50, 75, or 100).
+    pub mem_cycles: u8,
     /// Set of valid branch/jump landing targets (post-terminator PCs + static branch targets).
     /// Used for branch validation, not for gas block boundaries.
     pub(crate) basic_block_starts: Vec<bool>,
@@ -103,10 +107,12 @@ impl Pvm {
         registers: [u64; PVM_REGISTER_COUNT],
         flat_mem: Vec<u8>,
         gas: Gas,
+        mem_cycles: u8,
     ) -> Self {
         let basic_block_starts = compute_basic_block_starts(&code, &bitmask);
         let gas_block_starts = compute_gas_block_starts(&code, &bitmask);
-        let block_gas_costs = compute_block_gas_costs(&code, &bitmask, &gas_block_starts);
+        let block_gas_costs =
+            compute_block_gas_costs(&code, &bitmask, &gas_block_starts, mem_cycles);
         let (decoded_insts, pc_to_idx) = predecode_instructions(
             &code,
             &bitmask,
@@ -124,6 +130,8 @@ impl Pvm {
             jump_table,
             heap_base: 0,
             heap_top: 0,
+            max_heap_pages: 0,
+            mem_cycles,
             basic_block_starts,
             block_gas_costs,
             need_gas_charge: true,
@@ -148,9 +156,17 @@ impl Pvm {
         gas: Gas,
     ) -> Self {
         // Build a bitmask where every byte is marked as an instruction start
-        // This is a simplified mode; real programs use deblob.
+        // This is a simplified mode; real programs use parse_blob.
         let bitmask = vec![1u8; code.len()];
-        Self::new(code, bitmask, vec![], registers, flat_mem, gas)
+        Self::new(
+            code,
+            bitmask,
+            vec![],
+            registers,
+            flat_mem,
+            gas,
+            crate::gas_cost::DEFAULT_MEM_CYCLES,
+        )
     }
 
     // --- Flat memory accessors ---
@@ -2733,7 +2749,12 @@ fn compute_bb_starts_inner(code: &[u8], bitmask: &[u8]) -> (Vec<bool>, Vec<u8>) 
 ///
 /// Uses the same GasSimulator as the recompiler — single code path.
 /// Gas is charged per basic block at block entry: max(max_done - 3, 1).
-fn compute_block_gas_costs(code: &[u8], bitmask: &[u8], basic_block_starts: &[bool]) -> Vec<u64> {
+fn compute_block_gas_costs(
+    code: &[u8],
+    bitmask: &[u8],
+    basic_block_starts: &[bool],
+    mem_cycles: u8,
+) -> Vec<u64> {
     use crate::gas_cost::{fast_cost_from_raw, skip_distance};
     use crate::gas_sim::GasSimulator;
 
@@ -2786,6 +2807,7 @@ fn compute_block_gas_costs(code: &[u8], bitmask: &[u8], basic_block_starts: &[bo
             pc as u32,
             code,
             bitmask,
+            mem_cycles,
         );
         sim.feed(&fc);
 
@@ -3031,7 +3053,15 @@ mod tests {
         // Bitmask: [1, 0, 0, 0, 0, 0, 1] for the load_imm (6 bytes) + trap
         let code = vec![51, 0x00, 42, 0, 0, 0, 0]; // opcode + reg + 4-byte imm + trap
         let bitmask = vec![1, 0, 0, 0, 0, 0, 1];
-        let mut vm = Pvm::new(code, bitmask, vec![], [0; 13], Vec::new(), 100);
+        let mut vm = Pvm::new(
+            code,
+            bitmask,
+            vec![],
+            [0; 13],
+            Vec::new(),
+            100,
+            crate::gas_cost::DEFAULT_MEM_CYCLES,
+        );
         vm.step();
         assert_eq!(vm.registers[0], 42);
     }
@@ -3043,7 +3073,15 @@ mod tests {
         let bitmask = vec![1, 0, 0, 0, 0, 0, 1];
         let mut regs = [0u64; 13];
         regs[1] = 32;
-        let mut vm = Pvm::new(code, bitmask, vec![], regs, Vec::new(), 100);
+        let mut vm = Pvm::new(
+            code,
+            bitmask,
+            vec![],
+            regs,
+            Vec::new(),
+            100,
+            crate::gas_cost::DEFAULT_MEM_CYCLES,
+        );
         vm.step();
         assert_eq!(vm.registers[0], 42);
     }
@@ -3056,7 +3094,15 @@ mod tests {
         let mut regs = [0u64; 13];
         regs[0] = 100;
         regs[1] = 200;
-        let mut vm = Pvm::new(code, bitmask, vec![], regs, Vec::new(), 100);
+        let mut vm = Pvm::new(
+            code,
+            bitmask,
+            vec![],
+            regs,
+            Vec::new(),
+            100,
+            crate::gas_cost::DEFAULT_MEM_CYCLES,
+        );
         vm.step();
         assert_eq!(vm.registers[2], 300);
     }
@@ -3068,7 +3114,15 @@ mod tests {
         let mut regs = [0u64; 13];
         regs[0] = 300;
         regs[1] = 100;
-        let mut vm = Pvm::new(code, bitmask, vec![], regs, Vec::new(), 100);
+        let mut vm = Pvm::new(
+            code,
+            bitmask,
+            vec![],
+            regs,
+            Vec::new(),
+            100,
+            crate::gas_cost::DEFAULT_MEM_CYCLES,
+        );
         vm.step();
         assert_eq!(vm.registers[2], 200);
     }
@@ -3081,7 +3135,15 @@ mod tests {
         let mut regs = [0u64; 13];
         regs[0] = 0xFF00;
         regs[1] = 0x0FF0;
-        let mut vm = Pvm::new(code, bitmask, vec![], regs, Vec::new(), 100);
+        let mut vm = Pvm::new(
+            code,
+            bitmask,
+            vec![],
+            regs,
+            Vec::new(),
+            100,
+            crate::gas_cost::DEFAULT_MEM_CYCLES,
+        );
         vm.step();
         assert_eq!(vm.registers[2], 0x0F00);
     }
@@ -3093,7 +3155,15 @@ mod tests {
         let mut regs = [0u64; 13];
         regs[0] = 5;
         regs[1] = 10;
-        let mut vm = Pvm::new(code, bitmask, vec![], regs, Vec::new(), 100);
+        let mut vm = Pvm::new(
+            code,
+            bitmask,
+            vec![],
+            regs,
+            Vec::new(),
+            100,
+            crate::gas_cost::DEFAULT_MEM_CYCLES,
+        );
         vm.step();
         assert_eq!(vm.registers[2], 1);
     }
@@ -3103,7 +3173,15 @@ mod tests {
         // ecalli (10), immediate = 7 (1 byte)
         let code = vec![10, 7];
         let bitmask = vec![1, 0];
-        let mut vm = Pvm::new(code, bitmask, vec![], [0; 13], Vec::new(), 100);
+        let mut vm = Pvm::new(
+            code,
+            bitmask,
+            vec![],
+            [0; 13],
+            Vec::new(),
+            100,
+            crate::gas_cost::DEFAULT_MEM_CYCLES,
+        );
         let exit = vm.step();
         assert_eq!(exit, Some(ExitReason::HostCall(7)));
     }
@@ -3114,7 +3192,15 @@ mod tests {
         let bitmask = vec![1, 0, 1];
         let mut regs = [0u64; 13];
         regs[1] = 42;
-        let mut vm = Pvm::new(code, bitmask, vec![], regs, Vec::new(), 100);
+        let mut vm = Pvm::new(
+            code,
+            bitmask,
+            vec![],
+            regs,
+            Vec::new(),
+            100,
+            crate::gas_cost::DEFAULT_MEM_CYCLES,
+        );
         vm.step();
         assert_eq!(vm.registers[0], 42);
     }
@@ -3125,7 +3211,15 @@ mod tests {
         let bitmask = vec![1, 0, 1];
         let mut regs = [0u64; 13];
         regs[1] = 0xFF; // 8 bits set
-        let mut vm = Pvm::new(code, bitmask, vec![], regs, Vec::new(), 100);
+        let mut vm = Pvm::new(
+            code,
+            bitmask,
+            vec![],
+            regs,
+            Vec::new(),
+            100,
+            crate::gas_cost::DEFAULT_MEM_CYCLES,
+        );
         vm.step();
         assert_eq!(vm.registers[0], 8);
     }
@@ -3137,7 +3231,15 @@ mod tests {
         let mut regs = [0u64; 13];
         regs[0] = 100;
         regs[1] = 0; // divide by zero
-        let mut vm = Pvm::new(code, bitmask, vec![], regs, Vec::new(), 100);
+        let mut vm = Pvm::new(
+            code,
+            bitmask,
+            vec![],
+            regs,
+            Vec::new(),
+            100,
+            crate::gas_cost::DEFAULT_MEM_CYCLES,
+        );
         vm.step();
         assert_eq!(vm.registers[2], u64::MAX);
     }
@@ -3148,7 +3250,15 @@ mod tests {
         let bitmask = vec![1, 0, 1];
         let mut regs = [0u64; 13];
         regs[1] = 0x80; // -128 as i8
-        let mut vm = Pvm::new(code, bitmask, vec![], regs, Vec::new(), 100);
+        let mut vm = Pvm::new(
+            code,
+            bitmask,
+            vec![],
+            regs,
+            Vec::new(),
+            100,
+            crate::gas_cost::DEFAULT_MEM_CYCLES,
+        );
         vm.step();
         assert_eq!(vm.registers[0] as i64, -128);
     }
@@ -3159,7 +3269,15 @@ mod tests {
         let bitmask = vec![1, 0, 1];
         let mut regs = [0u64; 13];
         regs[1] = 0x0123456789ABCDEF;
-        let mut vm = Pvm::new(code, bitmask, vec![], regs, Vec::new(), 100);
+        let mut vm = Pvm::new(
+            code,
+            bitmask,
+            vec![],
+            regs,
+            Vec::new(),
+            100,
+            crate::gas_cost::DEFAULT_MEM_CYCLES,
+        );
         vm.step();
         assert_eq!(vm.registers[0], 0xEFCDAB8967452301);
     }
@@ -3258,7 +3376,12 @@ mod tests {
     fn test_block_gas_costs_only_at_gas_block_starts() {
         let (code, bitmask) = branch_target_mid_block_program();
         let gas_starts = compute_gas_block_starts(&code, &bitmask);
-        let costs = compute_block_gas_costs(&code, &bitmask, &gas_starts);
+        let costs = compute_block_gas_costs(
+            &code,
+            &bitmask,
+            &gas_starts,
+            crate::gas_cost::DEFAULT_MEM_CYCLES,
+        );
 
         // Gas costs should be nonzero only at gas block starts
         assert!(
@@ -3300,6 +3423,7 @@ mod tests {
             [0; 13],
             Vec::new(),
             1000,
+            crate::gas_cost::DEFAULT_MEM_CYCLES,
         );
         let initial_gas = vm_step.gas;
         loop {
@@ -3310,7 +3434,15 @@ mod tests {
         let gas_used_step = initial_gas - vm_step.gas;
 
         // Run via run()
-        let mut vm_run = Pvm::new(code, bitmask, vec![], [0; 13], Vec::new(), 1000);
+        let mut vm_run = Pvm::new(
+            code,
+            bitmask,
+            vec![],
+            [0; 13],
+            Vec::new(),
+            1000,
+            crate::gas_cost::DEFAULT_MEM_CYCLES,
+        );
         let (_, gas_used_run) = vm_run.run();
 
         assert_eq!(
@@ -3327,7 +3459,15 @@ mod tests {
 
         // PC 3 is a branch target but NOT a gas start.
         // Verify is_basic_block_start accepts it (branch validation).
-        let vm = Pvm::new(code, bitmask, vec![], [0; 13], Vec::new(), 1000);
+        let vm = Pvm::new(
+            code,
+            bitmask,
+            vec![],
+            [0; 13],
+            Vec::new(),
+            1000,
+            crate::gas_cost::DEFAULT_MEM_CYCLES,
+        );
         assert!(
             vm.is_basic_block_start(3),
             "branch target at PC 3 must be a valid basic block start for validation"

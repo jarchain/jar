@@ -283,59 +283,65 @@ def initStandard (blob' : ByteArray) (args : ByteArray) (compact : Bool := true)
     No guard zone, no read-only pages, no zone alignment.
     Arguments are placed after RW data so that RO/RW addresses are
     independent of argument size (the transpiler bakes absolute data
-    addresses at compile time). -/
-def initLinear (blob' : ByteArray) (args : ByteArray) (compact : Bool := true)
+    addresses at compile time).
+    JAR v1: parses unified header directly (no deblob, no metadata skip). -/
+def initLinear (blob : ByteArray) (args : ByteArray) (_compact : Bool := true)
     : Option (ProgramBlob × Registers × Memory) := do
-  let blob := skipMetadata blob' compact
-  if blob.size < 15 then none
+  -- JAR v1: parse unified header directly (no deblob, no metadata skip)
+  let (hdr, off0) ← parseJarHeader blob
 
-  -- Parse header (same format as initStandard)
-  let roSize := decodeLEn blob 0 3
-  let rwSize := decodeLEn blob 3 3
-  let heapPages := decodeLEn blob 6 2
-  let stackSize := decodeLEn blob 8 3
+  -- Read ro_data
+  if off0 + hdr.roSize > blob.size then none
+  let roData := blob.extract off0 (off0 + hdr.roSize)
+  let off1 := off0 + hdr.roSize
 
-  let mut offset := 11
+  -- Read rw_data
+  if off1 + hdr.rwSize > blob.size then none
+  let rwData := blob.extract off1 (off1 + hdr.rwSize)
+  let off2 := off1 + hdr.rwSize
 
-  -- Read read-only data
-  if offset + roSize > blob.size then none
-  let roData := blob.extract offset (offset + roSize)
-  offset := offset + roSize
+  -- Read jump table
+  if hdr.entrySize == 0 || hdr.entrySize > 4 then none
+  let jumpDataLen := hdr.jumpLen * hdr.entrySize
+  if off2 + jumpDataLen > blob.size then none
+  let jumpTable := Array.ofFn (n := hdr.jumpLen) fun ⟨i, _⟩ =>
+    UInt32.ofNat (decodeLEn blob (off2 + i * hdr.entrySize) hdr.entrySize)
+  let off3 := off2 + jumpDataLen
 
-  -- Read read-write data
-  if offset + rwSize > blob.size then none
-  let rwData := blob.extract offset (offset + rwSize)
-  offset := offset + rwSize
+  -- Read code
+  if off3 + hdr.codeLen > blob.size then none
+  let code := blob.extract off3 (off3 + hdr.codeLen)
+  let off4 := off3 + hdr.codeLen
 
-  -- Read E₄(|c|) and code blob
-  if offset + 4 > blob.size then none
-  let codeLen := decodeLEn blob offset 4
-  offset := offset + 4
-  if offset + codeLen > blob.size then none
-  let codeBlobData := blob.extract offset (offset + codeLen)
+  -- Read packed bitmask
+  let bitmaskLen := (hdr.codeLen + 7) / 8
+  if off4 + bitmaskLen > blob.size then none
+  let packedBitmask := blob.extract off4 (off4 + bitmaskLen)
+  let bitmask := ByteArray.mk (Array.ofFn (n := hdr.codeLen) fun ⟨i, _⟩ =>
+    let byteIdx := i / 8
+    let bitIdx := i % 8
+    if byteIdx < packedBitmask.size then
+      UInt8.ofNat ((packedBitmask.get! byteIdx).toNat / (2 ^ bitIdx) % 2)
+    else 0)
 
-  let prog ← deblob codeBlobData compact
-  -- v0.8.0: validate basic block structure
+  let prog : ProgramBlob := { code, bitmask, jumpTable }
   if !validateBasicBlocks prog then none
 
-  -- Linear layout: stack | roData | rwData | args | heap
-  let s := pageRound stackSize         -- stack occupies [0, s)
-  let roStart := s
-  let rwStart := roStart + pageRound roSize
-  let argStart := rwStart + pageRound rwSize
+  -- Linear memory layout: stack | ro | rw | args | heap
+  let stackSize := hdr.stackPages * Z_P
+  let roStart := stackSize
+  let rwStart := roStart + pageRound hdr.roSize
+  let argStart := rwStart + pageRound hdr.rwSize
   let heapStart := argStart + pageRound args.size
-  let heapEnd := heapStart + heapPages * Z_P
-  let memSize := heapEnd
+  let heapEnd := heapStart + hdr.heapPages * Z_P
+  let total := heapEnd
+  if total > 2^32 then none
 
-  -- Check fits in 32-bit address space
-  if memSize > 2^32 then none
+  -- All pages writable up to heapEnd, rest inaccessible
+  let totalPagesAll := 2^32 / Z_P
+  let access := Array.replicate totalPagesAll PageAccess.inaccessible
+  let access := mapRegionAccess access 0 total .writable
 
-  -- All pages writable up to memSize, rest inaccessible
-  let totalPages := 2^32 / Z_P
-  let access := Array.replicate totalPages PageAccess.inaccessible
-  let access := mapRegionAccess access 0 memSize .writable
-
-  -- Build memory with guardZone = 0 (address 0 is valid)
   let mem : Memory := { pages := Dict.empty, access, heapTop := heapEnd, guardZone := 0 }
   let mem := copyToMem mem roStart roData
   let mem := copyToMem mem rwStart rwData
@@ -343,10 +349,10 @@ def initLinear (blob' : ByteArray) (args : ByteArray) (compact : Bool := true)
 
   -- Registers
   let regs := Array.replicate PVM_REGISTERS (0 : RegisterValue)
-  let regs := regs.set! 0 (UInt64.ofNat (2^32 - 2^16))  -- ω[0]: RA (halt address, code addr)
-  let regs := regs.set! 1 (UInt64.ofNat s)              -- ω[1]: SP (top of stack)
-  let regs := regs.set! 7 (UInt64.ofNat argStart)    -- ω[7]: argument base
-  let regs := regs.set! 8 (UInt64.ofNat args.size)   -- ω[8]: argument length
+  let regs := regs.set! 0 (UInt64.ofNat (2^32 - 2^16))  -- RA (halt addr)
+  let regs := regs.set! 1 (UInt64.ofNat stackSize)       -- SP
+  let regs := regs.set! 7 (UInt64.ofNat argStart)        -- arg base
+  let regs := regs.set! 8 (UInt64.ofNat args.size)       -- arg len
 
   some (prog, regs, mem)
 

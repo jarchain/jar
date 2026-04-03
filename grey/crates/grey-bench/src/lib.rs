@@ -1,12 +1,50 @@
 //! PVM benchmark programs and helpers.
 //!
-//! Provides two guest programs for benchmarking:
+//! Provides guest programs for benchmarking:
 //! - `fib`: compute-intensive iterative Fibonacci
 //! - `hostcall`: host-call-heavy with many ecalli invocations
+//! - `sort`: insertion sort (compute + memory interleaved)
+//! - `mem`: memory cache pressure (sequential + random access patterns)
 //!
 //! Each program is available in both grey-pvm blob format and polkavm blob format.
 
+pub mod mem;
+
 use grey_transpiler::assembler::{Assembler, Reg};
+
+// ---------------------------------------------------------------------------
+// Shared PVM runners
+// ---------------------------------------------------------------------------
+
+/// Default gas limit for standard benchmarks.
+pub const GAS_LIMIT: u64 = 100_000_000;
+
+/// Run a grey-pvm blob on the interpreter (parse + execute). Returns (result, gas_consumed).
+pub fn run_grey_interpreter(blob: &[u8], gas: u64) -> (u64, u64) {
+    let mut pvm = javm::program::initialize_program(blob, &[], gas).unwrap();
+    loop {
+        let (exit, _) = pvm.run();
+        match exit {
+            javm::ExitReason::Halt => break,
+            javm::ExitReason::HostCall(_) => continue,
+            other => panic!("unexpected exit: {:?}", other),
+        }
+    }
+    (pvm.registers[7], gas - pvm.gas)
+}
+
+/// Run a grey-pvm blob on the recompiler (compile + execute). Returns (result, gas_consumed).
+pub fn run_grey_recompiler(blob: &[u8], gas: u64) -> (u64, u64) {
+    let mut pvm = javm::recompiler::initialize_program_recompiled(blob, &[], gas).unwrap();
+    loop {
+        match pvm.run() {
+            javm::ExitReason::Halt => break,
+            javm::ExitReason::HostCall(_) => continue,
+            other => panic!("unexpected exit: {:?}", other),
+        }
+    }
+    (pvm.registers()[7], gas - pvm.gas())
+}
 
 /// Number of Fibonacci iterations for the compute benchmark.
 pub const FIB_N: u64 = 1_000_000;
@@ -30,7 +68,7 @@ pub const SORT_N: u32 = 1_000;
 ///   halt
 pub fn grey_fib_blob(n: u64) -> Vec<u8> {
     let mut asm = Assembler::new();
-    asm.set_stack_size(4096);
+    asm.set_stack_pages(1);
     asm.set_heap_pages(0);
 
     asm.load_imm_64(Reg::RA, 0xFFFF0000u64); // halt address (linear layout doesn't pre-set RA)
@@ -68,7 +106,7 @@ pub fn grey_fib_blob(n: u64) -> Vec<u8> {
 /// Repeatedly calls ecalli(0) N times, then halts.
 pub fn grey_hostcall_blob(n: u64) -> Vec<u8> {
     let mut asm = Assembler::new();
-    asm.set_stack_size(4096);
+    asm.set_stack_pages(1);
     asm.set_heap_pages(0);
 
     asm.load_imm_64(Reg::RA, 0xFFFF0000u64); // halt address
@@ -108,13 +146,14 @@ pub fn grey_hostcall_blob(n: u64) -> Vec<u8> {
 ///   - O(n²) comparisons and O(n²) memory moves for worst-case input
 pub fn grey_sort_blob(n: u32) -> Vec<u8> {
     let array_bytes = n * 4;
-    let stack_size = 4096 + array_bytes;
+    let stack_bytes = 4096 + array_bytes;
+    let stack_pages = stack_bytes.div_ceil(4096);
 
     let mut c = Vec::new(); // code bytes
     let mut m = Vec::new(); // bitmask
 
     // Register assignments
-    // In JAR v0.8.0 linear memory: φ[0]=RA (halt addr), φ[1]=SP
+    // In JAR v1 linear memory: φ[0]=RA (halt addr), φ[1]=SP
     const RA: u8 = 0; // return address (φ[0] = 0xFFFF0000 from init)
     const SP: u8 = 1; // stack pointer (φ[1] = s from init)
     const S0: u8 = 5; // array base
@@ -351,7 +390,7 @@ pub fn grey_sort_blob(n: u32) -> Vec<u8> {
     let offset = (insert_pc as i32) - (j_check_pc as i32);
     c[j_check_pc + 6..j_check_pc + 10].copy_from_slice(&offset.to_le_bytes());
 
-    grey_transpiler::emitter::build_standard_program(&[], &[], 0, stack_size, &c, &m, &[])
+    grey_transpiler::emitter::build_standard_program(&[], &[], 0, 0, stack_pages, &c, &m, &[])
 }
 
 fn emit_branch_lt_u(asm: &mut Assembler, ra: Reg, rb: Reg, rel_offset: i32) {
@@ -590,7 +629,7 @@ mod tests_sort {
     #[test]
     fn test_ecrecover_code_size() {
         let grey_blob = grey_ecrecover_blob();
-        let grey_pvm = javm::program::initialize_program(grey_blob, &[], 1000).unwrap();
+        let grey_pvm = javm::program::initialize_program(grey_blob, &[], 1_000_000).unwrap();
         let grey_inst_count: usize = grey_pvm.bitmask.iter().filter(|&&b| b == 1).count();
         eprintln!(
             "Grey PVM:  code={} bytes, {} instructions",
@@ -707,7 +746,7 @@ mod tests_sort {
     fn test_sample_service_loadable() {
         let blob = sample_service_blob();
         assert!(!blob.is_empty());
-        let pvm = javm::program::initialize_program(blob, &[], 10_000);
+        let pvm = javm::program::initialize_program(blob, &[], 1_000_000);
         assert!(
             pvm.is_some(),
             "sample service blob should be loadable by PVM"
@@ -717,8 +756,8 @@ mod tests_sort {
     #[test]
     fn test_sample_service_refine_halts() {
         let blob = sample_service_blob();
-        let mut pvm =
-            javm::program::initialize_program(blob, &[], 10_000).expect("blob should be loadable");
+        let mut pvm = javm::program::initialize_program(blob, &[], 1_000_000)
+            .expect("blob should be loadable");
         let (result, _gas) = pvm.run();
         assert!(
             result == javm::ExitReason::Halt || result == javm::ExitReason::Panic,
@@ -730,8 +769,8 @@ mod tests_sort {
     #[test]
     fn test_sample_service_accumulate_host_write() {
         let blob = sample_service_blob();
-        let mut pvm =
-            javm::program::initialize_program(blob, &[], 10_000).expect("blob should be loadable");
+        let mut pvm = javm::program::initialize_program(blob, &[], 1_000_000)
+            .expect("blob should be loadable");
         pvm.pc = 5;
         let (result, _gas) = pvm.run();
         match result {

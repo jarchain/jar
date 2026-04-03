@@ -23,45 +23,6 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use grey_bench::*;
 
-const GAS_LIMIT: u64 = 100_000_000;
-
-// ---------------------------------------------------------------------------
-// Grey-PVM interpreter runner (parse + execute)
-// ---------------------------------------------------------------------------
-
-fn run_grey_interpreter(blob: &[u8]) -> (u64, u64) {
-    let mut pvm = javm::program::initialize_program(blob, &[], GAS_LIMIT).unwrap();
-    loop {
-        let (exit, _) = pvm.run();
-        match exit {
-            javm::ExitReason::Halt => break,
-            javm::ExitReason::HostCall(_) => continue,
-            other => panic!("unexpected exit: {:?}", other),
-        }
-    }
-    let result = pvm.registers[7]; // A0
-    let consumed = GAS_LIMIT - pvm.gas;
-    (result, consumed)
-}
-
-// ---------------------------------------------------------------------------
-// Grey-PVM recompiler runner (compile + execute)
-// ---------------------------------------------------------------------------
-
-fn run_grey_recompiler(blob: &[u8]) -> (u64, u64) {
-    let mut pvm = javm::recompiler::initialize_program_recompiled(blob, &[], GAS_LIMIT).unwrap();
-    loop {
-        match pvm.run() {
-            javm::ExitReason::Halt => break,
-            javm::ExitReason::HostCall(_) => continue,
-            other => panic!("unexpected exit: {:?}", other),
-        }
-    }
-    let result = pvm.registers()[7]; // A0
-    let consumed = GAS_LIMIT - pvm.gas();
-    (result, consumed)
-}
-
 // ---------------------------------------------------------------------------
 // PolkaVM runners
 // ---------------------------------------------------------------------------
@@ -136,7 +97,7 @@ fn run_polkavm_compile_and_run(blob: &[u8], engine: &Engine) -> (u64, i64) {
 // ---------------------------------------------------------------------------
 
 fn validate(name: &str, grey_blob: &[u8], pvm_blob: &[u8]) {
-    let (gi_result, gi_gas) = run_grey_interpreter(grey_blob);
+    let (gi_result, gi_gas) = run_grey_interpreter(grey_blob, GAS_LIMIT);
 
     let (_, pvm_module) = try_make_polkavm_module(pvm_blob, BackendKind::Interpreter)
         .expect("polkavm interpreter should always work");
@@ -170,11 +131,11 @@ fn bench_standard(c: &mut Criterion, name: &str, grey_blob: &[u8], pvm_blob: &[u
     let mut group = c.benchmark_group(name);
 
     group.bench_function("grey-interpreter", |b| {
-        b.iter(|| run_grey_interpreter(grey_blob))
+        b.iter(|| run_grey_interpreter(grey_blob, GAS_LIMIT))
     });
 
     group.bench_function("grey-recompiler", |b| {
-        b.iter(|| run_grey_recompiler(grey_blob))
+        b.iter(|| run_grey_recompiler(grey_blob, GAS_LIMIT))
     });
 
     // Execution-only: compile in setup (not timed), measure only execution.

@@ -72,7 +72,7 @@ private def dstOverlapsSrc (dst : Nat) (srcs : Array Nat) : Bool :=
 
 /-- Instruction cost lookup.
     Returns cost info based on opcode. Uses code/bitmask for branch target lookup. -/
-def instructionCost (code bitmask : ByteArray) (pc : Nat) : InstrCost :=
+def instructionCost (code bitmask : ByteArray) (pc : Nat) (memCycles : Nat := 25) : InstrCost :=
   let opcode := if pc < code.size then code.get! pc |>.toNat else 0
   let skip := skipDistance bitmask pc
   -- Helper: extract register indices
@@ -105,21 +105,21 @@ def instructionCost (code bitmask : ByteArray) (pc : Nat) : InstrCost :=
     let rA' := rA; let rB' := rB
     mkCost 22 1 aluUnit #[rA'] #[rB'] true
 
-  -- Loads
+  -- Loads (cycles = memCycles, tier-dependent)
   | 52 | 53 | 54 | 55 | 56 | 57 | 58 =>
-    mkCost 25 1 loadUnit #[rA] #[rB]
+    mkCost memCycles 1 loadUnit #[rA] #[rB]
   | 124 | 125 | 126 | 127 | 128 | 129 | 130 =>
-    mkCost 25 1 loadUnit #[rA] #[rB]
+    mkCost memCycles 1 loadUnit #[rA] #[rB]
 
-  -- Stores
+  -- Stores (cycles = memCycles, tier-dependent)
   | 59 | 60 | 61 | 62 =>
-    mkCost 25 1 storeUnit #[] #[rA, rB]
+    mkCost memCycles 1 storeUnit #[] #[rA, rB]
   | 120 | 121 | 122 | 123 =>
-    mkCost 25 1 storeUnit #[] #[rA, rB]
+    mkCost memCycles 1 storeUnit #[] #[rA, rB]
   | 30 | 31 | 32 | 33 =>
-    mkCost 25 1 storeUnit #[] #[]
+    mkCost memCycles 1 storeUnit #[] #[]
   | 70 | 71 | 72 | 73 =>
-    mkCost 25 1 storeUnit #[] #[rA]
+    mkCost memCycles 1 storeUnit #[] #[rA]
 
   -- Load immediates
   | 51 => mkCost 1 1 {} #[rA] #[]             -- load_imm

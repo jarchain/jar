@@ -194,6 +194,8 @@ pub struct Compiler {
     /// Trap table for signal-based bounds checking: (native_offset, pvm_pc).
     #[cfg(feature = "signals")]
     trap_entries: Vec<(u32, u32)>,
+    /// Memory tier load/store cycles for gas simulation.
+    mem_cycles: u8,
 }
 
 impl Compiler {
@@ -203,6 +205,7 @@ impl Compiler {
         helpers: HelperFns,
         code_len: usize,
         use_mmap: bool,
+        mem_cycles: u8,
     ) -> Self {
         // Estimate native code size: ~3x PVM code provides safety margin for
         // direct-write emission (no per-byte capacity checks in hot loop).
@@ -245,6 +248,7 @@ impl Compiler {
             bitmask_len: bitmask.len(),
             #[cfg(feature = "signals")]
             trap_entries: Vec::with_capacity(2048),
+            mem_cycles,
         }
     }
 
@@ -507,6 +511,7 @@ impl Compiler {
                     raw_rb,
                     reg_byte2 & 0x0F,
                     &mut gas_sim,
+                    self.mem_cycles,
                 );
                 if needs_full {
                     // Slow path for branches/overlap/move: use full FastCost
@@ -519,6 +524,7 @@ impl Compiler {
                         raw_ra,
                         raw_rb,
                         reg_byte2 & 0x0F,
+                        self.mem_cycles,
                     );
                     gas_sim.feed(&fc);
                     fc.is_terminator
@@ -782,7 +788,14 @@ impl Compiler {
 
         // Feed instructions 2-4 to gas sim (using decoded args, no redundant decode)
         for &(opc, a, p) in &[(op2, &args2, pc2), (op3, &args3, pc3), (op4, &args4, pc4)] {
-            let fc = crate::gas_cost::fast_cost_from_decoded(opc as u8, a, p as u32, code, bitmask);
+            let fc = crate::gas_cost::fast_cost_from_decoded(
+                opc as u8,
+                a,
+                p as u32,
+                code,
+                bitmask,
+                self.mem_cycles,
+            );
             gas_sim.feed(&fc);
         }
 
@@ -888,8 +901,14 @@ impl Compiler {
         }
 
         // Feed instruction 2 to gas sim (using decoded args, no redundant decode)
-        let fc =
-            crate::gas_cost::fast_cost_from_decoded(op2 as u8, &args2, pc2 as u32, code, bitmask);
+        let fc = crate::gas_cost::fast_cost_from_decoded(
+            op2 as u8,
+            &args2,
+            pc2 as u32,
+            code,
+            bitmask,
+            self.mem_cycles,
+        );
         gas_sim.feed(&fc);
 
         // Bind labels

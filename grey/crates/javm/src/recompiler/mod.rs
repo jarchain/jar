@@ -61,6 +61,9 @@ pub struct JitContext {
     /// Fast re-entry flag (offset 200).
     pub fast_reentry: u32,
     _pad2: u32,
+    /// Maximum heap pages — grow_heap refuses beyond this (offset 208).
+    pub max_heap_pages: u32,
+    _pad3: u32,
 }
 
 /// Compiled native code buffer (mmap'd as executable).
@@ -471,6 +474,15 @@ extern "sysv64" fn sbrk_helper(ctx: *mut JitContext, size: u64) -> u64 {
     }
 
     let new_top_u32 = new_top as u32;
+
+    // Check max_heap_pages limit
+    if ctx.max_heap_pages > 0 {
+        let max_top = ctx.heap_base as u64 + (ctx.max_heap_pages as u64) * (ps as u64);
+        if new_top > max_top {
+            return 0;
+        }
+    }
+
     // Map any pages in [old_top, new_top) that aren't mapped yet
     let start_page = old_top / ps;
     let end_page = if new_top_u32 == 0 {
@@ -543,6 +555,7 @@ impl RecompiledPvm {
         registers: [u64; PVM_REGISTER_COUNT],
         gas: Gas,
         data_layout: Option<crate::program::DataLayout>,
+        mem_cycles: u8,
     ) -> Result<Self, String> {
         let debug = {
             use std::sync::atomic::{AtomicU8, Ordering};
@@ -595,6 +608,8 @@ impl RecompiledPvm {
                 flat_perms: flat_memory.perms,
                 fast_reentry: 0,
                 _pad2: 0,
+                max_heap_pages: 0,
+                _pad3: 0,
             });
         }
         // SAFETY: ctx_raw was just initialized above; valid for the lifetime of flat_memory.
@@ -633,6 +648,7 @@ impl RecompiledPvm {
             helpers,
             code.len(),
             true, // use mmap-backed assembler
+            mem_cycles,
         );
         let compile_result = compiler.compile(code, &bitmask);
         let _t_compile = _t2.elapsed();
@@ -989,6 +1005,17 @@ pub fn initialize_program_recompiled(
 ) -> Option<RecompiledPvm> {
     let parsed = crate::program::parse_program_blob(blob, arguments, gas)?;
 
+    // Charge per-page allocation gas (same as interpreter path)
+    let init_pages = parsed
+        .layout
+        .as_ref()
+        .map_or(0, |l| l.mem_size / crate::PVM_PAGE_SIZE);
+    let init_cost = init_pages as u64 * crate::program::GAS_PER_PAGE;
+    if gas < init_cost {
+        return None;
+    }
+    let gas = gas - init_cost;
+
     let mut rpvm = RecompiledPvm::new(
         parsed.code,
         parsed.bitmask,
@@ -996,11 +1023,13 @@ pub fn initialize_program_recompiled(
         parsed.registers,
         gas,
         parsed.layout,
+        parsed.mem_cycles,
     )
     .ok()?;
 
     rpvm.ctx_mut().heap_base = parsed.heap_base;
     rpvm.ctx_mut().heap_top = parsed.heap_top;
+    rpvm.ctx_mut().max_heap_pages = parsed.max_heap_pages;
 
     #[cfg(feature = "signals")]
     if let Some(ref fm) = rpvm.flat_memory {
@@ -1045,6 +1074,8 @@ mod tests {
             flat_perms: std::ptr::null(),
             fast_reentry: 0,
             _pad2: 0,
+            max_heap_pages: 0,
+            _pad3: 0,
         };
         let base = &ctx as *const JitContext as usize;
         // Convert codegen offset (negative from R15) to struct offset:
@@ -1088,9 +1119,16 @@ mod tests {
         let bitmask = vec![1u8];
         let registers = [0u64; 13];
 
-        let mut pvm =
-            RecompiledPvm::new(&code, bitmask, vec![], registers, 1000, Some(test_layout()))
-                .expect("compilation should succeed");
+        let mut pvm = RecompiledPvm::new(
+            &code,
+            bitmask,
+            vec![],
+            registers,
+            1000,
+            Some(test_layout()),
+            crate::gas_cost::DEFAULT_MEM_CYCLES,
+        )
+        .expect("compilation should succeed");
         let exit = pvm.run();
         assert_eq!(exit, ExitReason::Panic);
     }
@@ -1101,9 +1139,16 @@ mod tests {
         let bitmask = vec![1, 0];
         let registers = [0u64; 13];
 
-        let mut pvm =
-            RecompiledPvm::new(&code, bitmask, vec![], registers, 1000, Some(test_layout()))
-                .expect("compilation should succeed");
+        let mut pvm = RecompiledPvm::new(
+            &code,
+            bitmask,
+            vec![],
+            registers,
+            1000,
+            Some(test_layout()),
+            crate::gas_cost::DEFAULT_MEM_CYCLES,
+        )
+        .expect("compilation should succeed");
         let exit = pvm.run();
         assert_eq!(exit, ExitReason::HostCall(42));
     }
@@ -1114,9 +1159,16 @@ mod tests {
         let bitmask = vec![1, 0, 0, 1];
         let registers = [0u64; 13];
 
-        let mut pvm =
-            RecompiledPvm::new(&code, bitmask, vec![], registers, 1000, Some(test_layout()))
-                .expect("compilation should succeed");
+        let mut pvm = RecompiledPvm::new(
+            &code,
+            bitmask,
+            vec![],
+            registers,
+            1000,
+            Some(test_layout()),
+            crate::gas_cost::DEFAULT_MEM_CYCLES,
+        )
+        .expect("compilation should succeed");
         let exit = pvm.run();
         assert_eq!(pvm.registers()[0], 123);
         assert_eq!(exit, ExitReason::Panic);
@@ -1133,9 +1185,16 @@ mod tests {
         let bitmask = vec![1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0];
         let registers = [0u64; 13];
 
-        let mut pvm =
-            RecompiledPvm::new(&code, bitmask, vec![], registers, 1000, Some(test_layout()))
-                .expect("compilation should succeed");
+        let mut pvm = RecompiledPvm::new(
+            &code,
+            bitmask,
+            vec![],
+            registers,
+            1000,
+            Some(test_layout()),
+            crate::gas_cost::DEFAULT_MEM_CYCLES,
+        )
+        .expect("compilation should succeed");
         let exit = pvm.run();
         assert_eq!(pvm.registers()[2], 30);
         assert_eq!(exit, ExitReason::HostCall(0));
@@ -1147,8 +1206,16 @@ mod tests {
         let bitmask = vec![1, 0, 0];
         let registers = [0u64; 13];
 
-        let mut pvm = RecompiledPvm::new(&code, bitmask, vec![], registers, 0, Some(test_layout()))
-            .expect("compilation should succeed");
+        let mut pvm = RecompiledPvm::new(
+            &code,
+            bitmask,
+            vec![],
+            registers,
+            0,
+            Some(test_layout()),
+            crate::gas_cost::DEFAULT_MEM_CYCLES,
+        )
+        .expect("compilation should succeed");
         let exit = pvm.run();
         assert_eq!(exit, ExitReason::OutOfGas);
     }
@@ -1176,6 +1243,7 @@ mod tests {
             registers,
             10000,
             Some(test_layout()),
+            crate::gas_cost::DEFAULT_MEM_CYCLES,
         )
         .expect("compilation should succeed");
         let exit = pvm.run();
@@ -1194,6 +1262,7 @@ mod tests {
             registers2,
             10000,
             Some(test_layout()),
+            crate::gas_cost::DEFAULT_MEM_CYCLES,
         )
         .expect("compilation should succeed");
         let exit2 = pvm2.run();

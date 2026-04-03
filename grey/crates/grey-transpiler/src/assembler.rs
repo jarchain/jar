@@ -31,8 +31,9 @@ pub struct Assembler {
     jump_table: Vec<u32>,
     ro_data: Vec<u8>,
     rw_data: Vec<u8>,
-    heap_pages: u16,
-    stack_size: u32,
+    heap_pages: u32,
+    max_heap_pages: u32,
+    stack_pages: u32,
     /// Labels: name → code offset
     labels: std::collections::HashMap<String, u32>,
     /// Pending fixups: (code_offset, label_name, fixup_size)
@@ -54,7 +55,8 @@ impl Assembler {
             ro_data: Vec::new(),
             rw_data: Vec::new(),
             heap_pages: 0,
-            stack_size: 4096,
+            max_heap_pages: 0,
+            stack_pages: 1, // 1 page = 4096 bytes default
             labels: std::collections::HashMap::new(),
             _fixups: Vec::new(),
         }
@@ -70,13 +72,21 @@ impl Assembler {
         self
     }
 
-    pub fn set_heap_pages(&mut self, pages: u16) -> &mut Self {
+    pub fn set_heap_pages(&mut self, pages: u32) -> &mut Self {
         self.heap_pages = pages;
+        if self.max_heap_pages < pages {
+            self.max_heap_pages = pages;
+        }
         self
     }
 
-    pub fn set_stack_size(&mut self, size: u32) -> &mut Self {
-        self.stack_size = size;
+    pub fn set_max_heap_pages(&mut self, pages: u32) -> &mut Self {
+        self.max_heap_pages = pages;
+        self
+    }
+
+    pub fn set_stack_pages(&mut self, pages: u32) -> &mut Self {
+        self.stack_pages = pages;
         self
     }
 
@@ -337,7 +347,8 @@ impl Assembler {
             &self.ro_data,
             &self.rw_data,
             self.heap_pages,
-            self.stack_size,
+            self.max_heap_pages,
+            self.stack_pages,
             &self.code,
             &self.bitmask,
             &self.jump_table,
@@ -377,7 +388,7 @@ impl Assembler {
 /// - Accumulate: writes the first work item's result to storage key `[0]`
 pub fn build_sample_service() -> Vec<u8> {
     let mut asm = Assembler::new();
-    asm.set_stack_size(4096);
+    asm.set_stack_pages(1);
     asm.set_heap_pages(1);
 
     // Jump table entry 0: refine entry (djump address = 2, index 0)
@@ -687,10 +698,11 @@ pub fn build_sample_service_precise() -> Vec<u8> {
 
     // Build the standard program blob
     emitter::build_standard_program(
-        &[],  // no ro_data
-        &[],  // no rw_data
-        1,    // 1 heap page
-        4096, // 4K stack
+        &[], // no ro_data
+        &[], // no rw_data
+        1,   // 1 heap page
+        1,   // max 1 heap page
+        1,   // 1 stack page (4K)
         &code,
         &bitmask,
         &jump_table,
@@ -705,7 +717,7 @@ pub fn build_sample_service_precise() -> Vec<u8> {
 pub fn build_trivial_authorizer() -> Vec<u8> {
     let mut asm = Assembler::new();
     asm.set_heap_pages(0);
-    asm.set_stack_size(4096);
+    asm.set_stack_pages(1);
     // Emit trap instruction (opcode 0) at PC=0
     asm.emit_raw(0, true);
     asm.build()

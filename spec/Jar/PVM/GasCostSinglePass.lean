@@ -66,11 +66,11 @@ structure GasSimStateSP where
   maxDone   : Nat           -- max completion cycle across all instructions
 
 /-- Single-pass gas simulation: process one instruction at a time. -/
-partial def gasSimSinglePass (code bitmask : ByteArray) (s : GasSimStateSP) : GasSimStateSP :=
+partial def gasSimSinglePass (code bitmask : ByteArray) (memCycles : Nat) (s : GasSimStateSP) : GasSimStateSP :=
   match s.ι with
   | none => s
   | some pc =>
-    let cost := instructionCost code bitmask pc
+    let cost := instructionCost code bitmask pc memCycles
     -- Advance cycle if all decode slots are consumed.
     -- Matches the full model's canDecode: decode is allowed as long as at least
     -- 1 slot remains, even if the instruction's decodeSlots exceeds what's left.
@@ -88,7 +88,7 @@ partial def gasSimSinglePass (code bitmask : ByteArray) (s : GasSimStateSP) : Ga
         cost.destRegs.foldl (fun rd r =>
           if r < rd.size then rd.set! r srcDone else rd) s.regDone
       else s.regDone
-      gasSimSinglePass code bitmask { s with ι := nextι, cycle := cycle, decodeUsed := decodeUsed, regDone := regDone }
+      gasSimSinglePass code bitmask memCycles { s with ι := nextι, cycle := cycle, decodeUsed := decodeUsed, regDone := regDone }
     else
       -- Start cycle = max(decode_cycle, max(regDone[src_regs]))
       let start := cost.srcRegs.foldl (fun acc r =>
@@ -98,11 +98,11 @@ partial def gasSimSinglePass (code bitmask : ByteArray) (s : GasSimStateSP) : Ga
       let regDone := cost.destRegs.foldl (fun rd r =>
         if r < rd.size then rd.set! r done else rd) s.regDone
       let maxDone := max s.maxDone done
-      gasSimSinglePass code bitmask { ι := nextι, cycle := cycle, decodeUsed := decodeUsed, regDone := regDone, maxDone := maxDone }
+      gasSimSinglePass code bitmask memCycles { ι := nextι, cycle := cycle, decodeUsed := decodeUsed, regDone := regDone, maxDone := maxDone }
 
 /-- Compute gas cost for a basic block using the single-pass model.
     Returns `max(maxDone - 3, 1)`. -/
-def gasCostForBlockSinglePass (code bitmask : ByteArray) (startPC : Nat) : Nat :=
+def gasCostForBlockSinglePass (code bitmask : ByteArray) (startPC : Nat) (memCycles : Nat := 25) : Nat :=
   let initState : GasSimStateSP := {
     ι := some startPC
     cycle := 0
@@ -110,7 +110,7 @@ def gasCostForBlockSinglePass (code bitmask : ByteArray) (startPC : Nat) : Nat :
     regDone := #[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
     maxDone := 0
   }
-  let finalState := gasSimSinglePass code bitmask initState
+  let finalState := gasSimSinglePass code bitmask memCycles initState
   if finalState.maxDone > 3 then finalState.maxDone - 3 else 1
 
 end Jar.PVM

@@ -1080,7 +1080,10 @@ fn extract_branch_target_raw(code: &[u8], bitmask: &[u8], pc: usize) -> usize {
 
 /// Compute FastCost from raw register bytes (no Args enum needed).
 /// For branches, extracts target from raw code bytes.
-#[inline(always)]
+/// Default load/store latency (L2 cache hit baseline).
+pub const DEFAULT_MEM_CYCLES: u8 = 25;
+
+#[allow(clippy::too_many_arguments)]
 pub fn fast_cost_from_raw(
     opcode_byte: u8,
     ra: u8,
@@ -1089,6 +1092,7 @@ pub fn fast_cost_from_raw(
     pc: u32,
     code: &[u8],
     bitmask: &[u8],
+    mem_cycles: u8,
 ) -> FastCost {
     let r1 = |r: u8| reg_bit(r);
     let r2 = |a: u8, b: u8| reg_bit(a) | reg_bit(b);
@@ -1174,7 +1178,7 @@ pub fn fast_cost_from_raw(
 
         // Loads
         52..=58 => FastCost {
-            cycles: 25,
+            cycles: mem_cycles,
             decode_slots: 1,
             exec_unit: EU_LOAD,
             src_mask: r1(rb),
@@ -1183,7 +1187,7 @@ pub fn fast_cost_from_raw(
             is_move_reg: false,
         },
         124..=130 => FastCost {
-            cycles: 25,
+            cycles: mem_cycles,
             decode_slots: 1,
             exec_unit: EU_LOAD,
             src_mask: r1(rb),
@@ -1194,7 +1198,7 @@ pub fn fast_cost_from_raw(
 
         // Stores
         59..=62 => FastCost {
-            cycles: 25,
+            cycles: mem_cycles,
             decode_slots: 1,
             exec_unit: EU_STORE,
             src_mask: r2(ra, rb),
@@ -1203,7 +1207,7 @@ pub fn fast_cost_from_raw(
             is_move_reg: false,
         },
         120..=123 => FastCost {
-            cycles: 25,
+            cycles: mem_cycles,
             decode_slots: 1,
             exec_unit: EU_STORE,
             src_mask: r2(ra, rb),
@@ -1212,7 +1216,7 @@ pub fn fast_cost_from_raw(
             is_move_reg: false,
         },
         30..=33 => FastCost {
-            cycles: 25,
+            cycles: mem_cycles,
             decode_slots: 1,
             exec_unit: EU_STORE,
             src_mask: 0,
@@ -1221,7 +1225,7 @@ pub fn fast_cost_from_raw(
             is_move_reg: false,
         },
         70..=73 => FastCost {
-            cycles: 25,
+            cycles: mem_cycles,
             decode_slots: 1,
             exec_unit: EU_STORE,
             src_mask: r1(ra),
@@ -1632,6 +1636,7 @@ pub fn fast_cost_from_decoded(
     pc: u32,
     code: &[u8],
     bitmask: &[u8],
+    mem_cycles: u8,
 ) -> FastCost {
     use crate::args::Args;
 
@@ -1748,7 +1753,7 @@ pub fn fast_cost_from_decoded(
 
         // Loads
         52..=58 => FastCost {
-            cycles: 25,
+            cycles: mem_cycles,
             decode_slots: 1,
             exec_unit: EU_LOAD,
             src_mask: r1(rb),
@@ -1757,7 +1762,7 @@ pub fn fast_cost_from_decoded(
             is_move_reg: false,
         },
         124..=130 => FastCost {
-            cycles: 25,
+            cycles: mem_cycles,
             decode_slots: 1,
             exec_unit: EU_LOAD,
             src_mask: r1(rb),
@@ -1768,7 +1773,7 @@ pub fn fast_cost_from_decoded(
 
         // Stores
         59..=62 => FastCost {
-            cycles: 25,
+            cycles: mem_cycles,
             decode_slots: 1,
             exec_unit: EU_STORE,
             src_mask: r2(ra, rb),
@@ -1777,7 +1782,7 @@ pub fn fast_cost_from_decoded(
             is_move_reg: false,
         },
         120..=123 => FastCost {
-            cycles: 25,
+            cycles: mem_cycles,
             decode_slots: 1,
             exec_unit: EU_STORE,
             src_mask: r2(ra, rb),
@@ -1786,7 +1791,7 @@ pub fn fast_cost_from_decoded(
             is_move_reg: false,
         },
         30..=33 => FastCost {
-            cycles: 25,
+            cycles: mem_cycles,
             decode_slots: 1,
             exec_unit: EU_STORE,
             src_mask: 0,
@@ -1795,7 +1800,7 @@ pub fn fast_cost_from_decoded(
             is_move_reg: false,
         },
         70..=73 => FastCost {
-            cycles: 25,
+            cycles: mem_cycles,
             decode_slots: 1,
             exec_unit: EU_STORE,
             src_mask: r1(ra),
@@ -2470,6 +2475,7 @@ pub fn feed_gas_direct(
     rb: u8,
     rd: u8,
     gas_sim: &mut crate::gas_sim::GasSimulator,
+    mem_cycles: u8,
 ) -> (bool, bool) {
     let entry = &GAS_COST_LUT[opcode_byte as usize];
     let flags = entry.flags;
@@ -2492,7 +2498,13 @@ pub fn feed_gas_direct(
         } else {
             0xFF
         };
-        gas_sim.feed_direct(entry.cycles, entry.decode_slots, src1, src2, dst);
+        // Override cycles for load/store with tier-dependent mem_cycles
+        let cycles = if entry.exec_unit == EU_LOAD || entry.exec_unit == EU_STORE {
+            mem_cycles
+        } else {
+            entry.cycles
+        };
+        gas_sim.feed_direct(cycles, entry.decode_slots, src1, src2, dst);
         return (flags & F_TERM != 0, false);
     }
 
@@ -2509,6 +2521,7 @@ pub fn fast_cost_lut(
     pc: u32,
     code: &[u8],
     bitmask: &[u8],
+    mem_cycles: u8,
 ) -> FastCost {
     let pcu = pc as usize;
     let reg_byte1 = if pcu + 1 < code.len() {
@@ -2524,7 +2537,17 @@ pub fn fast_cost_lut(
         0xFF
     };
 
-    fast_cost_lut_inner(opcode_byte, args, pcu, code, bitmask, ra, rb, rd)
+    fast_cost_lut_inner(
+        opcode_byte,
+        args,
+        pcu,
+        code,
+        bitmask,
+        ra,
+        rb,
+        rd,
+        mem_cycles,
+    )
 }
 
 /// Like `fast_cost_lut` but takes pre-extracted register bytes to avoid
@@ -2540,8 +2563,9 @@ pub fn fast_cost_lut_regs(
     ra: u8,
     rb: u8,
     rd: u8,
+    mem_cycles: u8,
 ) -> FastCost {
-    fast_cost_lut_inner(opcode_byte, args, pc, code, bitmask, ra, rb, rd)
+    fast_cost_lut_inner(opcode_byte, args, pc, code, bitmask, ra, rb, rd, mem_cycles)
 }
 
 /// Inner implementation — separated to allow the compiler to inline the
@@ -2557,6 +2581,7 @@ fn fast_cost_lut_inner(
     ra: u8,
     rb: u8,
     rd: u8,
+    mem_cycles: u8,
 ) -> FastCost {
     use crate::args::Args;
 
@@ -2580,8 +2605,13 @@ fn fast_cost_lut_inner(
             _ => 0,
         };
         let dst_mask: u16 = if entry.dst_pat == 1 { ra_bit } else { 0 };
+        let cycles = if entry.exec_unit == EU_LOAD || entry.exec_unit == EU_STORE {
+            mem_cycles
+        } else {
+            entry.cycles
+        };
         return FastCost {
-            cycles: entry.cycles,
+            cycles,
             decode_slots: entry.decode_slots,
             exec_unit: entry.exec_unit,
             src_mask,
@@ -2614,6 +2644,8 @@ fn fast_cost_lut_inner(
             _ => pcu,
         };
         branch_cost(code, bitmask, branch_target) as u8
+    } else if entry.exec_unit == EU_LOAD || entry.exec_unit == EU_STORE {
+        mem_cycles
     } else {
         entry.cycles
     };
@@ -2736,8 +2768,16 @@ fn gas_sim_fast(
         // Phase 1: Decode as many instructions as possible this cycle
         while instr_idx < instrs.len() && decode_slots > 0 && (next_slot as usize) < 32 {
             let ii = &instrs[instr_idx];
-            let cost =
-                fast_cost_from_raw(ii.opcode as u8, ii.ra, ii.rb, ii.rd, ii.pc, _code, _bitmask);
+            let cost = fast_cost_from_raw(
+                ii.opcode as u8,
+                ii.ra,
+                ii.rb,
+                ii.rd,
+                ii.pc,
+                _code,
+                _bitmask,
+                DEFAULT_MEM_CYCLES,
+            );
 
             if cost.is_move_reg {
                 decode_slots = decode_slots.saturating_sub(cost.decode_slots);
@@ -2872,6 +2912,7 @@ mod tests {
                 pc as u32,
                 code,
                 bitmask,
+                DEFAULT_MEM_CYCLES,
             );
             sim.feed(&fc);
             if fc.is_terminator {

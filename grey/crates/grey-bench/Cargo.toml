@@ -26,7 +26,16 @@ build-pvm = { path = "../build-pvm" }
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 k256 = { version = "0.13", features = ["ecdsa"] }
+libc = "0.2"
 
 [[bench]]
 name = "pvm_bench"
+harness = false
+
+[[bench]]
+name = "mem_bench"
+harness = false
+
+[[bench]]
+name = "pagefault_bench"
 harness = false
