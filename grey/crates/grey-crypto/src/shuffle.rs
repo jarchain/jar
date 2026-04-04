@@ -28,22 +28,25 @@ pub fn fisher_yates_shuffle<T: Clone>(sequence: &mut [T], entropy: &[u32]) {
 /// Q_l: H → ⟦N_{2^32}⟧_l
 pub fn random_sequence_from_hash(hash: &Hash, length: usize) -> Vec<u32> {
     let mut result = Vec::with_capacity(length);
+    let mut input = [0u8; 36];
+    input[..32].copy_from_slice(&hash.0);
+    let mut prev_chunk = usize::MAX;
+    let mut derived = Hash([0u8; 32]);
     for i in 0..length {
         let chunk_index = i / 8;
         let within_chunk = (i % 8) * 4;
 
-        // Hash the original hash concatenated with the chunk index
-        let mut input = Vec::with_capacity(36);
-        input.extend_from_slice(&hash.0);
-        input.extend_from_slice(&(chunk_index as u32).to_le_bytes());
+        if chunk_index != prev_chunk {
+            input[32..].copy_from_slice(&(chunk_index as u32).to_le_bytes());
+            derived = crate::blake2b_256(&input);
+            prev_chunk = chunk_index;
+        }
 
-        let derived = crate::blake2b_256(&input);
-        let start = within_chunk % 32;
         let value = u32::from_le_bytes([
-            derived.0[start],
-            derived.0[start + 1],
-            derived.0[start + 2],
-            derived.0[start + 3],
+            derived.0[within_chunk],
+            derived.0[within_chunk + 1],
+            derived.0[within_chunk + 2],
+            derived.0[within_chunk + 3],
         ]);
         result.push(value);
     }
