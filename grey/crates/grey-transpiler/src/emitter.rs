@@ -237,6 +237,7 @@ pub fn build_v2_service_program(
             data_offset: 0,
             data_len: 0,
         });
+        next_page += heap_pages;
     }
 
     // Args DATA cap at IPC slot (0xFF) — kernel writes args here
