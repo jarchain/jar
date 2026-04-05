@@ -4,7 +4,7 @@ fn main() {
         return;
     }
 
-    let blob = build_javm::build(".", "javm-guest-tests");
+    let blob = build_javm::build_v2(".", "javm-guest-tests");
     let out_dir = std::env::var("OUT_DIR").unwrap();
     std::fs::write(
         format!("{out_dir}/guest_blob.rs"),

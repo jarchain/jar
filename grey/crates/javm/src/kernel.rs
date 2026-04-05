@@ -156,13 +156,32 @@ impl InvocationKernel {
             .ok_or(KernelError::CapTableFull)?;
         cap_table.set(untyped_slot, Cap::Untyped(Arc::clone(&kernel.untyped)));
 
-        // Create VM 0
-        let vm0 = VmInstance::new(
+        // Write arguments into args_cap DATA region and set φ[7]/φ[8]
+        let mut args_base: u64 = 0;
+        let args_len: u64 = _args.len() as u64;
+        if parsed.header.args_cap != 0xFF && !_args.is_empty() {
+            let args_cap_entry = parsed
+                .caps
+                .iter()
+                .find(|e| e.cap_index == parsed.header.args_cap);
+            if let Some(entry) = args_cap_entry {
+                args_base = entry.base_page as u64 * crate::PVM_PAGE_SIZE as u64;
+                if let Some(Cap::Data(d)) = cap_table.get(entry.cap_index) {
+                    kernel.backing.write_init_data(d.backing_offset, _args);
+                }
+            }
+        }
+
+        // Create VM 0 — kernel sets φ[0]=halt, φ[7]=args_base, φ[8]=args_len.
+        // Program sets SP in its preamble (transpiler emits load_imm_64 SP, stack_top).
+        let mut vm0 = VmInstance::new(
             invoke_code_id,
             0, // entry_index (set by caller via CALL)
             cap_table,
             remaining_gas,
         );
+        vm0.registers[7] = args_base;
+        vm0.registers[8] = args_len;
         kernel.vms.push(vm0);
 
         Ok(kernel)
@@ -1015,6 +1034,23 @@ impl InvocationKernel {
         unsafe {
             std::ptr::copy_nonoverlapping(
                 code_cap.window.base().add(addr),
+                buf.as_mut_ptr(),
+                len as usize,
+            );
+        }
+        Some(buf)
+    }
+
+    /// Read bytes directly from the active VM's CODE window by address.
+    /// Used for reading output from guest programs that return ptr+len in registers.
+    pub fn read_data_cap_window(&self, addr: u32, len: u32) -> Option<Vec<u8>> {
+        let vm = &self.vms[self.active_vm as usize];
+        let code_cap = &self.code_caps[vm.code_cap_id as usize];
+        let mut buf = vec![0u8; len as usize];
+        // SAFETY: addr is within the CODE window's 4GB mmap region.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                code_cap.window.base().add(addr as usize),
                 buf.as_mut_ptr(),
                 len as usize,
             );

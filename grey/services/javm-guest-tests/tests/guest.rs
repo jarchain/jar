@@ -1,13 +1,15 @@
-//! Three-way comparison tests: host vs interpreter vs recompiler.
+//! Two-way comparison tests: host vs kernel (v2 blob).
 //!
-//! Each test encodes `[test_id: u32 LE] [args...]`, runs on all three backends,
-//! and asserts output + gas match.
+//! Each test encodes `[test_id: u32 LE] [args...]`, runs on host and kernel,
+//! and asserts output matches.
 
 include!(concat!(env!("OUT_DIR"), "/guest_blob.rs"));
 
-/// Run a guest test on host, interpreter, and recompiler. Assert outputs match
-/// and interpreter/recompiler gas costs are equal.
+/// Run a guest test on host and v2 kernel. Assert outputs match.
 fn run_test(test_id: u32, args: &[u8]) {
+    use javm::kernel::{InvocationKernel, KernelResult};
+    use javm::vm_pool::VmState;
+
     // Encode input
     let mut input = test_id.to_le_bytes().to_vec();
     input.extend_from_slice(args);
@@ -15,63 +17,40 @@ fn run_test(test_id: u32, args: &[u8]) {
     // --- Host ---
     let host_output = javm_guest_tests::dispatch_to_vec(&input);
 
-    // --- Interpreter ---
+    // --- Kernel (v2 blob) ---
     let gas = 100_000_000_000u64;
-    let mut interp = javm::program::initialize_program(GUEST_TESTS_BLOB, &input, gas)
-        .expect("blob should be loadable");
-    loop {
-        match interp.run().0 {
-            javm::ExitReason::Halt => break,
-            javm::ExitReason::Panic => {
-                panic!("test {test_id}: interpreter panicked at PC={}", interp.pc)
-            }
-            javm::ExitReason::HostCall(_) => continue,
-            other => panic!("test {test_id}: interpreter unexpected exit: {other:?}"),
+    let mut kernel =
+        InvocationKernel::new(GUEST_TESTS_BLOB, &input, gas).expect("kernel should initialize");
+    let _ = kernel.vms[0].transition(VmState::Running);
+
+    let result = kernel.run();
+    let packed = kernel.vms[kernel.active_vm as usize].registers[7];
+    let kernel_ptr = (packed >> 32) as u32;
+    let kernel_len = (packed & 0xFFFFFFFF) as u32;
+
+    match result {
+        KernelResult::Halt(_) => {}
+        KernelResult::Panic => panic!("test {test_id}: kernel panicked"),
+        KernelResult::OutOfGas => panic!("test {test_id}: kernel OOG"),
+        KernelResult::PageFault(addr) => {
+            panic!("test {test_id}: kernel page fault at 0x{addr:08x}")
+        }
+        KernelResult::ProtocolCall { slot, .. } => {
+            panic!("test {test_id}: unexpected protocol call to slot {slot}")
         }
     }
-    let interp_gas = gas - interp.gas;
-    let packed = interp.registers[7];
-    let interp_ptr = (packed >> 32) as usize;
-    let interp_len = (packed & 0xFFFFFFFF) as usize;
-    assert!(
-        interp_ptr + interp_len <= interp.flat_mem.len(),
-        "test {test_id}: interpreter output out of bounds: ptr={interp_ptr:#x} len={interp_len}"
-    );
-    let interp_output = interp.flat_mem[interp_ptr..interp_ptr + interp_len].to_vec();
 
-    assert_eq!(
-        host_output, interp_output,
-        "test {test_id}: host vs interpreter output mismatch"
-    );
-
-    // --- Recompiler ---
-    let mut recomp = javm::recompiler::initialize_program_recompiled(GUEST_TESTS_BLOB, &input, gas)
-        .expect("recompiler should initialize");
-    loop {
-        match recomp.run() {
-            javm::ExitReason::Halt => break,
-            javm::ExitReason::Panic => panic!("test {test_id}: recompiler panicked"),
-            javm::ExitReason::HostCall(_) => continue,
-            other => panic!("test {test_id}: recompiler unexpected exit: {other:?}"),
-        }
-    }
-    let recomp_gas = gas - recomp.gas();
-    let packed = recomp.registers()[7];
-    let recomp_ptr = (packed >> 32) as u32;
-    let recomp_len = (packed & 0xFFFFFFFF) as u32;
-    let recomp_output = recomp
-        .read_bytes(recomp_ptr, recomp_len)
+    let kernel_output = kernel
+        .read_data_cap_window(kernel_ptr, kernel_len)
         .unwrap_or_else(|| {
-            panic!("test {test_id}: read_bytes failed at ptr=0x{recomp_ptr:X} len={recomp_len}")
+            panic!(
+                "test {test_id}: read failed at ptr=0x{kernel_ptr:X} len={kernel_len}"
+            )
         });
 
     assert_eq!(
-        host_output, recomp_output,
-        "test {test_id}: host vs recompiler output mismatch"
-    );
-    assert_eq!(
-        interp_gas, recomp_gas,
-        "test {test_id}: gas mismatch: interpreter={interp_gas} recompiler={recomp_gas}"
+        host_output, kernel_output,
+        "test {test_id}: host vs kernel output mismatch"
     );
 }
 
