@@ -240,20 +240,22 @@ pub fn link_elf_service(elf_data: &[u8]) -> Result<Vec<u8>, TranspileError> {
     ))
 }
 
-/// Emit a `load_imm_64 SP, stack_top` preamble (PVM opcode 20).
-/// Opcode 20 = load_imm_64: [20, reg_byte, imm0..imm7] = 10 bytes.
-/// reg_byte = rD (SP = register 1).
-fn emit_sp_preamble(code: &mut Vec<u8>, bitmask: &mut Vec<u8>, stack_top: u64) {
+/// Emit `load_imm_64 reg, value` (PVM opcode 20, 10 bytes).
+fn emit_load_imm_64(code: &mut Vec<u8>, bitmask: &mut Vec<u8>, reg: u8, value: u64) {
     let start = code.len();
     code.push(20); // load_imm_64 opcode
-    code.push(1); // rD = 1 (SP)
-    code.extend_from_slice(&stack_top.to_le_bytes()); // 8-byte immediate
-    // bitmask: instruction start at first byte, continuation for the rest
+    code.push(reg);
+    code.extend_from_slice(&value.to_le_bytes());
     bitmask.push(1);
     for _ in 0..9 {
         bitmask.push(0);
     }
     assert_eq!(code.len() - start, 10);
+}
+
+/// Emit a `load_imm_64 SP, stack_top` preamble.
+fn emit_sp_preamble(code: &mut Vec<u8>, bitmask: &mut Vec<u8>, stack_top: u64) {
+    emit_load_imm_64(code, bitmask, 1, stack_top); // SP = φ[1]
 }
 
 /// Transpile an rv64em ELF into a JAR v2 capability manifest PVM blob.
@@ -265,6 +267,21 @@ pub fn link_elf_v2(elf_data: &[u8]) -> Result<Vec<u8>, TranspileError> {
     let stack_pages = elf.stack_size / 4096;
     let stack_top = stack_pages as u64 * 4096;
     emit_sp_preamble(&mut ctx.code, &mut ctx.bitmask, stack_top);
+
+    // Emit heap base preamble: load_imm_64 S0 (φ[5]), heap_base
+    // Heap cap (68) is mapped after stack + ro + rw pages.
+    let ro_pages = if elf.ro_data.is_empty() {
+        0
+    } else {
+        (elf.ro_data.len() as u32).div_ceil(4096)
+    };
+    let rw_pages = if elf.rw_data.is_empty() {
+        0
+    } else {
+        (elf.rw_data.len() as u32).div_ceil(4096)
+    };
+    let heap_base = (stack_pages + ro_pages + rw_pages) as u64 * 4096;
+    emit_load_imm_64(&mut ctx.code, &mut ctx.bitmask, 5, heap_base); // φ[5] = S0
 
     for (_file_off, vaddr, data) in &elf.code_sections {
         translate_section_linked(&mut ctx, data, *vaddr, &elf)?;

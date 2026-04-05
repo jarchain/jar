@@ -480,6 +480,7 @@ fn accumulate_single_service(
         timeslot,
         entropy,
         &service_fetch_ctx,
+        service_id,
     );
 
     tracing::debug!(
@@ -626,6 +627,7 @@ fn run_accumulate_pvm_v2(
     timeslot: Timeslot,
     _entropy: &Hash,
     fetch_ctx: &FetchContext,
+    service_id: u32,
 ) -> (AccContext, Gas) {
     use javm::kernel::KernelResult;
 
@@ -686,6 +688,7 @@ fn run_accumulate_pvm_v2(
                     &mut exceptional,
                     timeslot,
                     fetch_ctx,
+                    service_id,
                 );
                 if !ok {
                     let gas_used = initial_gas - pvm.gas();
@@ -708,8 +711,11 @@ fn handle_v2_host_call(
     regular: &mut AccContext,
     exceptional: &mut AccContext,
     _timeslot: Timeslot,
-    _fetch_ctx: &FetchContext,
+    fetch_ctx: &FetchContext,
+    service_id: u32,
 ) -> bool {
+    const RESULT_NONE: u64 = u64::MAX;
+
     // v2 protocol cap slots match GP host call numbers (no grow_heap shift)
     match slot {
         0 => {
@@ -718,8 +724,100 @@ fn handle_v2_host_call(
             true
         }
         1 => {
-            // FETCH: not needed for no-op services. Stub for now.
-            pvm.kernel_resume(HOST_WHAT, 0);
+            // FETCH: φ[7]=mode, φ[8]=sub, φ[9]=out_off, φ[10]=max_len, φ[12]=data_cap
+            let mode = regs[7] as u32;
+            let sub = regs[8] as usize;
+            let out_off = regs[9] as u32;
+            let max_len = regs[10] as usize;
+            let cap_idx = regs[12] as u8;
+
+            let data: Option<&[u8]> = match mode {
+                0 => Some(&fetch_ctx.config_blob),
+                1 => Some(fetch_ctx.entropy.as_ref()),
+                14 => Some(&fetch_ctx.items_blob),
+                15 => fetch_ctx.items.get(sub).map(|v| v.as_slice()),
+                _ => None,
+            };
+            match data {
+                Some(d) => {
+                    let l = max_len.min(d.len());
+                    pvm.kernel_write_data(cap_idx, out_off, &d[..l]);
+                    pvm.kernel_resume(d.len() as u64, 0);
+                }
+                None => pvm.kernel_resume(RESULT_NONE, 0),
+            }
+            true
+        }
+        3 => {
+            // STORAGE_R: φ[7]=key_off, φ[8]=key_len, φ[9]=out_off, φ[10]=max_len, φ[12]=data_cap
+            let key_off = regs[7] as u32;
+            let key_len = regs[8] as u32;
+            let out_off = regs[9] as u32;
+            let max_len = regs[10] as usize;
+            let cap_idx = regs[12] as u8;
+
+            let key = match pvm.kernel_read_data(cap_idx, key_off, key_len) {
+                Some(k) => k,
+                None => {
+                    pvm.kernel_resume(RESULT_NONE, 0);
+                    return true;
+                }
+            };
+            // Look up in current service's storage
+            let value = regular
+                .accounts
+                .get(&service_id)
+                .and_then(|a| a.storage.get(&key));
+            match value {
+                Some(v) => {
+                    let l = max_len.min(v.len());
+                    pvm.kernel_write_data(cap_idx, out_off, &v[..l]);
+                    pvm.kernel_resume(v.len() as u64, 0);
+                }
+                None => pvm.kernel_resume(RESULT_NONE, 0),
+            }
+            true
+        }
+        4 => {
+            // STORAGE_W: φ[7]=key_off, φ[8]=key_len, φ[9]=val_off, φ[10]=val_len, φ[12]=data_cap
+            let key_off = regs[7] as u32;
+            let key_len = regs[8] as u32;
+            let val_off = regs[9] as u32;
+            let val_len = regs[10] as u32;
+            let cap_idx = regs[12] as u8;
+
+            let key = match pvm.kernel_read_data(cap_idx, key_off, key_len) {
+                Some(k) => k,
+                None => {
+                    pvm.kernel_resume(RESULT_NONE, 0);
+                    return true;
+                }
+            };
+            let value = match pvm.kernel_read_data(cap_idx, val_off, val_len) {
+                Some(v) => v,
+                None => {
+                    pvm.kernel_resume(RESULT_NONE, 0);
+                    return true;
+                }
+            };
+            // Get old value length for return
+            let account = match regular.accounts.get_mut(&service_id) {
+                Some(a) => a,
+                None => {
+                    pvm.kernel_resume(RESULT_NONE, 0);
+                    return true;
+                }
+            };
+            let old_len = account
+                .storage
+                .get(&key)
+                .map_or(RESULT_NONE, |v| v.len() as u64);
+            if val_len == 0 {
+                account.storage.remove(&key);
+            } else {
+                account.storage.insert(key, value);
+            }
+            pvm.kernel_resume(old_len, 0);
             true
         }
         17 => {
@@ -730,7 +828,6 @@ fn handle_v2_host_call(
         }
         25 => {
             // OUTPUT (yield in GP): set accumulation output hash
-            // In v2, the hash is read from the IPC DATA cap
             let hash_off = regs[7] as u32;
             let data_cap = regs[12] as u8;
             if let Some(hash_bytes) = pvm.kernel_read_data(data_cap, hash_off, 32) {
@@ -741,8 +838,6 @@ fn handle_v2_host_call(
             pvm.kernel_resume(0, 0);
             true
         }
-        // For now, other protocol calls return WHAT (unimplemented)
-        // These will be wired in as host call handlers are adapted for v2
         _ => {
             pvm.kernel_resume(HOST_WHAT, 0);
             true
