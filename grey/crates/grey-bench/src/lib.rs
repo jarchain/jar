@@ -35,9 +35,15 @@ pub fn run_kernel_with_backend(
     loop {
         match kernel.run() {
             javm::kernel::KernelResult::Halt(v) => return (v, gas - kernel.gas()),
-            javm::kernel::KernelResult::Panic => panic!("kernel panicked"),
+            javm::kernel::KernelResult::Panic => {
+                let vm = &kernel.vms[kernel.active_vm as usize];
+                panic!("kernel panicked at PC={} gas={}", vm.pc, vm.gas);
+            }
             javm::kernel::KernelResult::OutOfGas => panic!("kernel out of gas"),
-            javm::kernel::KernelResult::PageFault(a) => panic!("kernel page fault at {a:#x}"),
+            javm::kernel::KernelResult::PageFault(a) => {
+                let vm = &kernel.vms[kernel.active_vm as usize];
+                panic!("kernel page fault at {a:#x} PC={} gas={}", vm.pc, vm.gas);
+            }
             javm::kernel::KernelResult::ProtocolCall { .. } => continue,
         }
     }
@@ -242,11 +248,13 @@ pub fn grey_sort_blob(n: u32) -> Vec<u8> {
             m.push(0);
         }
     }
-    fn ecalli(c: &mut Vec<u8>, m: &mut Vec<u8>, imm: u8) {
+    fn ecalli(c: &mut Vec<u8>, m: &mut Vec<u8>, imm: u32) {
         c.push(10); // ecalli opcode
         m.push(1);
-        c.push(imm);
-        m.push(0);
+        for b in imm.to_le_bytes() {
+            c.push(b);
+            m.push(0);
+        }
     }
     fn branch_lt_u(c: &mut Vec<u8>, m: &mut Vec<u8>, ra: u8, rb: u8, offset: i32) {
         c.push(172);
@@ -273,6 +281,8 @@ pub fn grey_sort_blob(n: u32) -> Vec<u8> {
         }
     }
     // === INIT: set up array on stack ===
+    // Set SP to top of stack (v2: stack mapped at page 0, SP = stack_pages * 4096)
+    load_imm_64(&mut c, &mut m, SP, (stack_pages * 4096) as u64);
     load_imm_64(&mut c, &mut m, S1, n as u64);
     add_imm_64(&mut c, &mut m, SP, SP, -(array_bytes as i32));
     mov(&mut c, &mut m, S0, SP);
@@ -390,7 +400,45 @@ pub fn grey_sort_blob(n: u32) -> Vec<u8> {
     let offset = (insert_pc as i32) - (j_check_pc as i32);
     c[j_check_pc + 6..j_check_pc + 10].copy_from_slice(&offset.to_le_bytes());
 
-    grey_transpiler::emitter::build_standard_program(&[], &[], 0, 0, stack_pages, &c, &m, &[])
+    // Build v2 blob with CODE cap + stack DATA cap
+    use javm::cap::Access;
+    use javm::program_v2::{build_v2_blob, CapEntryType, CapManifestEntry};
+
+    // Code sub-blob: jump_len(4) + entry_size(1) + code_len(4) + code + packed_bitmask
+    let mut code_data = Vec::new();
+    code_data.extend_from_slice(&0u32.to_le_bytes()); // no jump table
+    code_data.push(1); // entry_size
+    code_data.extend_from_slice(&(c.len() as u32).to_le_bytes());
+    code_data.extend_from_slice(&c);
+    let packed_len = c.len().div_ceil(8);
+    let mut packed = vec![0u8; packed_len];
+    for (i, &b) in m.iter().enumerate() {
+        if b != 0 { packed[i / 8] |= 1 << (i % 8); }
+    }
+    code_data.extend_from_slice(&packed);
+
+    let caps = vec![
+        CapManifestEntry {
+            cap_index: 64,
+            cap_type: CapEntryType::Code,
+            base_page: 0,
+            page_count: 0,
+            init_access: Access::RO,
+            data_offset: 0,
+            data_len: code_data.len() as u32,
+        },
+        CapManifestEntry {
+            cap_index: 65,
+            cap_type: CapEntryType::Data,
+            base_page: 0,
+            page_count: stack_pages,
+            init_access: Access::RW,
+            data_offset: 0,
+            data_len: 0,
+        },
+    ];
+    let total_pages = stack_pages + 4; // stack + headroom
+    build_v2_blob(total_pages, 64, &caps, &code_data)
 }
 
 fn emit_branch_lt_u(asm: &mut Assembler, ra: Reg, rb: Reg, rel_offset: i32) {

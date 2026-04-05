@@ -994,6 +994,11 @@ impl InvocationKernel {
     }
 
     /// Execute one segment via the software interpreter backend.
+    ///
+    /// The interpreter uses a regular Vec<u8> for memory instead of the mmap'd
+    /// 4GB window (which would SIGSEGV on unmapped pages without the recompiler's
+    /// signal handler). Mapped DATA cap pages are copied in before execution and
+    /// written back after.
     fn run_interpreter_segment(&mut self, code_cap_id: usize) -> (u32, u32) {
         let code_cap = &self.code_caps[code_cap_id];
         let prog = match &code_cap.compiled {
@@ -1001,51 +1006,80 @@ impl InvocationKernel {
             #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
             _ => unreachable!(),
         };
+
+        // Determine memory size from mapped DATA caps. Find the highest mapped page.
+        let vm = &self.vms[self.active_vm as usize];
+        let mut max_addr: usize = 0;
+        for slot in 0..=255u8 {
+            if let Some(Cap::Data(d)) = vm.cap_table.get(slot) {
+                if let Some((base_page, _)) = d.mapped {
+                    let end = (base_page as usize + d.page_count as usize) * crate::PVM_PAGE_SIZE as usize;
+                    max_addr = max_addr.max(end);
+                }
+            }
+        }
+        // Allocate flat memory and copy in mapped pages from the CODE window
+        let mut flat_mem = vec![0u8; max_addr];
+        let window_base = code_cap.window.base();
+        for slot in 0..=255u8 {
+            if let Some(Cap::Data(d)) = vm.cap_table.get(slot) {
+                if let Some((base_page, _)) = d.mapped {
+                    let addr = base_page as usize * crate::PVM_PAGE_SIZE as usize;
+                    let len = d.page_count as usize * crate::PVM_PAGE_SIZE as usize;
+                    if addr + len <= flat_mem.len() {
+                        // SAFETY: these pages were mmap'd into the window by map_pages
+                        unsafe {
+                            std::ptr::copy_nonoverlapping(
+                                window_base.add(addr),
+                                flat_mem.as_mut_ptr().add(addr),
+                                len,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         let vm = &mut self.vms[self.active_vm as usize];
-
-        // Build a temporary interpreter from the pre-decoded program + VM state.
-        // The interpreter reads/writes the CODE window memory directly.
-        let mem_size = 1u64 << 32; // 4GB window
-        let flat_mem_ptr = code_cap.window.base();
-
-        // Create a mutable slice over the CODE window's 4GB region.
-        // SAFETY: CodeWindow allocates a 4GB MAP_NORESERVE region; mapped DATA
-        // cap pages are backed by the memfd. Unmapped pages will SIGSEGV if
-        // accessed — the interpreter's bounds-checked reads/writes will return
-        // PageFault before touching unmapped addresses.
-        let _flat_mem = unsafe {
-            std::slice::from_raw_parts_mut(flat_mem_ptr, mem_size as usize)
-        };
-
         let mut interp = crate::interpreter::Interpreter::new(
             prog.code.clone(),
             prog.bitmask.clone(),
             prog.jump_table.clone(),
             vm.registers,
-            Vec::new(), // flat_mem not owned — we use window memory via step()
+            flat_mem,
             vm.gas,
             prog.mem_cycles,
         );
         interp.pc = vm.pc;
 
-        // Override flat_mem to point at the CODE window (swap in the window slice)
-        // The interpreter's flat_mem is a Vec but we need it to use the window.
-        // For now, use the pre-decoded fast path which accesses self.flat_mem.
-        // TODO: refactor interpreter to accept &mut [u8] instead of Vec<u8>
-        interp.flat_mem = unsafe {
-            Vec::from_raw_parts(flat_mem_ptr, mem_size as usize, mem_size as usize)
-        };
-
         let (exit, _gas_used) = interp.run();
 
-        // Sync state back — but first, prevent Vec::drop from freeing the mmap'd memory
-        let _ = std::mem::ManuallyDrop::new(std::mem::take(&mut interp.flat_mem));
+        // Write back modified pages to the CODE window
+        let code_cap = &self.code_caps[code_cap_id];
+        let vm_ref = &self.vms[self.active_vm as usize];
+        for slot in 0..=255u8 {
+            if let Some(Cap::Data(d)) = vm_ref.cap_table.get(slot) {
+                if let Some((base_page, Access::RW)) = d.mapped {
+                    let addr = base_page as usize * crate::PVM_PAGE_SIZE as usize;
+                    let len = d.page_count as usize * crate::PVM_PAGE_SIZE as usize;
+                    if addr + len <= interp.flat_mem.len() {
+                        unsafe {
+                            std::ptr::copy_nonoverlapping(
+                                interp.flat_mem.as_ptr().add(addr),
+                                code_cap.window.base().add(addr),
+                                len,
+                            );
+                        }
+                    }
+                }
+            }
+        }
 
+        let vm = &mut self.vms[self.active_vm as usize];
         vm.registers = interp.registers;
         vm.gas = interp.gas;
         vm.pc = interp.pc;
 
-        // Convert ExitReason to (exit_code, exit_arg)
         match exit {
             crate::ExitReason::Halt => (0, 0),
             crate::ExitReason::Panic => (1, 0),
