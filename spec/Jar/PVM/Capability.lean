@@ -268,7 +268,6 @@ structure ProgramHeaderV2 where
   memoryPages : Nat
   capCount : Nat
   invokeCap : Nat
-  argsCap : Nat
   deriving Inhabited
 
 -- ============================================================================

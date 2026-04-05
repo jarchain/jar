@@ -162,17 +162,15 @@ impl InvocationKernel {
             .ok_or(KernelError::CapTableFull)?;
         cap_table.set(untyped_slot, Cap::Untyped(Arc::clone(&kernel.untyped)));
 
-        // Write arguments into args_cap DATA region and set φ[7]/φ[8]
+        // Write arguments into args cap (cap_index=0xFF = IPC slot)
         let mut args_base: u64 = 0;
         let args_len: u64 = _args.len() as u64;
-        if parsed.header.args_cap != 0xFF && !_args.is_empty() {
-            let args_cap_entry = parsed
-                .caps
-                .iter()
-                .find(|e| e.cap_index == parsed.header.args_cap);
+        if !_args.is_empty() {
+            // Find args cap by scanning for cap_index=0xFF
+            let args_cap_entry = parsed.caps.iter().find(|e| e.cap_index == 0xFF);
             if let Some(entry) = args_cap_entry {
                 args_base = entry.base_page as u64 * crate::PVM_PAGE_SIZE as u64;
-                if let Some(Cap::Data(d)) = cap_table.get(entry.cap_index) {
+                if let Some(Cap::Data(d)) = cap_table.get(0xFF) {
                     kernel.backing.write_init_data(d.backing_offset, _args);
                 }
             }
@@ -1272,7 +1270,7 @@ mod tests {
                 data_len: 0,
             },
         ];
-        build_v2_blob(memory_pages, 64, 65, &caps, &code_data)
+        build_v2_blob(memory_pages, 64, &caps, &code_data)
     }
 
     #[test]

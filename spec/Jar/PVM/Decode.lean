@@ -417,12 +417,11 @@ def INVOKE_OOG   : UInt64 := 4
 /-- JAR v2 magic value: 'J'=0x4A, 'A'=0x41, 'R'=0x52, 0x02. -/
 def jarV2Magic : Nat := decodeLEn ⟨#[0x4A, 0x41, 0x52, 0x02]⟩ 0 4
 
-/-- JAR v2 header (11 bytes). -/
+/-- JAR v2 header (10 bytes). -/
 structure JarV2Header where
   memoryPages : Nat
   capCount : Nat
   invokeCap : Nat
-  argsCap : Nat
 
 /-- JAR v2 capability entry (19 bytes). -/
 structure JarV2CapEntry where
@@ -436,15 +435,14 @@ structure JarV2CapEntry where
 
 /-- Parse a JAR v2 header (11 bytes). Returns header + offset after header. -/
 def parseJarV2Header (blob : ByteArray) : Option (JarV2Header × Nat) := do
-  if blob.size < 11 then none
+  if blob.size < 10 then none
   let magic := decodeLEn blob 0 4
   if magic != jarV2Magic then none
   some ({
     memoryPages := decodeLEn blob 4 4
     capCount := (blob.get! 8).toNat
     invokeCap := (blob.get! 9).toNat
-    argsCap := (blob.get! 10).toNat
-  }, 11)
+  }, 10)
 
 /-- Parse a JAR v2 capability entry (19 bytes) at the given offset. -/
 def parseJarV2CapEntry (blob : ByteArray) (offset : Nat) : Option (JarV2CapEntry × Nat) := do

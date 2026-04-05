@@ -34,8 +34,8 @@ use crate::cap::Access;
 /// JAR v2 magic: 'J','A','R', 0x02.
 pub const JAR_V2_MAGIC: u32 = u32::from_le_bytes([b'J', b'A', b'R', 0x02]);
 
-/// Header size: magic(4) + memory_pages(4) + cap_count(1) + invoke_cap(1) + args_cap(1) = 11.
-const HEADER_SIZE: usize = 11;
+/// Header size: magic(4) + memory_pages(4) + cap_count(1) + invoke_cap(1) = 10.
+const HEADER_SIZE: usize = 10;
 
 /// Per-cap entry size: cap_index(1) + cap_type(1) + base_page(4) + page_count(4)
 ///   + init_access(1) + data_offset(4) + data_len(4) = 19.
@@ -77,8 +77,6 @@ pub struct ProgramHeaderV2 {
     pub cap_count: u8,
     /// Cap index of the CODE cap to execute first.
     pub invoke_cap: u8,
-    /// Cap index of the DATA cap for arguments (0xFF = none).
-    pub args_cap: u8,
 }
 
 /// Parsed JAR v2 blob.
@@ -131,7 +129,6 @@ pub fn parse_v2_blob(blob: &[u8]) -> Option<ParsedBlobV2<'_>> {
     let memory_pages = read_u32_le(blob, &mut offset)?;
     let cap_count = read_u8(blob, &mut offset)?;
     let invoke_cap = read_u8(blob, &mut offset)?;
-    let args_cap = read_u8(blob, &mut offset)?;
 
     // Capability entries
     let entries_size = cap_count as usize * CAP_ENTRY_SIZE;
@@ -188,7 +185,6 @@ pub fn parse_v2_blob(blob: &[u8]) -> Option<ParsedBlobV2<'_>> {
             memory_pages,
             cap_count,
             invoke_cap,
-            args_cap,
         },
         caps,
         data_section,
@@ -267,7 +263,6 @@ fn unpack_bitmask(packed: &[u8], code_len: usize) -> Vec<u8> {
 pub fn build_v2_blob(
     memory_pages: u32,
     invoke_cap: u8,
-    args_cap: u8,
     caps: &[CapManifestEntry],
     data_section: &[u8],
 ) -> Vec<u8> {
@@ -276,12 +271,11 @@ pub fn build_v2_blob(
     let mut blob = vec![0u8; total_size];
     let mut offset = 0;
 
-    // Header
+    // Header (10 bytes: magic + memory_pages + cap_count + invoke_cap)
     write_u32_le(&mut blob, &mut offset, JAR_V2_MAGIC);
     write_u32_le(&mut blob, &mut offset, memory_pages);
     write_u8(&mut blob, &mut offset, cap_count);
     write_u8(&mut blob, &mut offset, invoke_cap);
-    write_u8(&mut blob, &mut offset, args_cap);
 
     // Cap entries
     for cap in caps {
@@ -370,13 +364,12 @@ mod tests {
             },
         ];
 
-        let blob = build_v2_blob(10, 64, 65, &caps, &data_section);
+        let blob = build_v2_blob(10, 64, &caps, &data_section);
         let parsed = parse_v2_blob(&blob).expect("parse failed");
 
         assert_eq!(parsed.header.memory_pages, 10);
         assert_eq!(parsed.header.cap_count, 3);
         assert_eq!(parsed.header.invoke_cap, 64);
-        assert_eq!(parsed.header.args_cap, 65);
         assert_eq!(parsed.caps.len(), 3);
 
         // CODE cap
@@ -406,7 +399,7 @@ mod tests {
 
     #[test]
     fn test_bad_magic() {
-        let blob = build_v2_blob(10, 64, 0xFF, &[], &[]);
+        let blob = build_v2_blob(10, 64, &[], &[]);
         let mut bad = blob.clone();
         bad[3] = 0x99; // corrupt version byte
         assert!(parse_v2_blob(&bad).is_none());
@@ -418,7 +411,7 @@ mod tests {
         assert!(parse_v2_blob(&[0; 5]).is_none());
 
         // Header says 1 cap but blob is too short
-        let blob = build_v2_blob(10, 64, 0xFF, &[], &[]);
+        let blob = build_v2_blob(10, 64, &[], &[]);
         let mut bad = blob;
         bad[8] = 1; // cap_count = 1 but no cap entries follow
         assert!(parse_v2_blob(&bad).is_none());
@@ -435,20 +428,19 @@ mod tests {
             data_offset: 0,
             data_len: 100, // references 100 bytes but data section is empty
         }];
-        let blob = build_v2_blob(10, 64, 0xFF, &caps, &[]);
+        let blob = build_v2_blob(10, 64, &caps, &[]);
         assert!(parse_v2_blob(&blob).is_none());
     }
 
     #[test]
     fn test_no_args_cap() {
-        let blob = build_v2_blob(5, 64, 0xFF, &[], &[]);
-        let parsed = parse_v2_blob(&blob).unwrap();
-        assert_eq!(parsed.header.args_cap, 0xFF);
+        let blob = build_v2_blob(5, 64, &[], &[]);
+        let _parsed = parse_v2_blob(&blob).unwrap();
     }
 
     #[test]
     fn test_empty_manifest() {
-        let blob = build_v2_blob(0, 0, 0xFF, &[], &[]);
+        let blob = build_v2_blob(0, 0, &[], &[]);
         let parsed = parse_v2_blob(&blob).unwrap();
         assert_eq!(parsed.caps.len(), 0);
         assert_eq!(parsed.data_section.len(), 0);

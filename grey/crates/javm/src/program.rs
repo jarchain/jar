@@ -521,11 +521,11 @@ pub fn convert_v1_to_v2(blob: &[u8], _args: &[u8]) -> Option<Vec<u8>> {
         next_page += heap_pages;
     }
 
-    // Args DATA at slot 69
+    // Args DATA at IPC slot (0xFF) — identifies args cap
     if !_args.is_empty() {
         let arg_pages = (_args.len() as u32).div_ceil(4096);
         caps.push(CapManifestEntry {
-            cap_index: 69,
+            cap_index: 0xFF, // IPC slot = args cap
             cap_type: CapEntryType::Data,
             base_page: next_page,
             page_count: arg_pages,
@@ -535,11 +535,10 @@ pub fn convert_v1_to_v2(blob: &[u8], _args: &[u8]) -> Option<Vec<u8>> {
         });
         next_page += arg_pages;
     }
-    let args_cap = if !_args.is_empty() { 69 } else { 0xFF };
 
     let memory_pages = parsed.header.max_heap_pages.max(next_page);
     Some(crate::program_v2::build_v2_blob(
-        memory_pages, 64, args_cap, &caps, &data_section,
+        memory_pages, 64, &caps, &data_section,
     ))
 }
 

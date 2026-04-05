@@ -313,15 +313,15 @@ def initV2 (blob : ByteArray) (args : ByteArray)
         if dataOff + cap.dataLen <= blob.size then
           let capData := blob.extract dataOff (dataOff + cap.dataLen)
           mem := copyToMem { mem with access } startAddr capData
-      -- Track args cap base address
-      if cap.capIndex == hdr.argsCap then
+      -- Track args cap base address (cap_index=255 = IPC slot = args)
+      if cap.capIndex == 255 then
         argsBase := startAddr
 
   -- Update memory access after all caps processed
   mem := { mem with access }
 
-  -- Write arguments into args_cap region
-  if hdr.argsCap != 255 && args.size > 0 then
+  -- Write arguments into args cap (cap_index=255 = IPC slot)
+  if argsBase > 0 && args.size > 0 then
     mem := copyToMem mem argsBase args
 
   -- Registers: φ[0]=halt, φ[7]=args_base, φ[8]=args_len

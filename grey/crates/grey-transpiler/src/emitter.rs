@@ -215,8 +215,20 @@ pub fn build_v2_service_program(
         });
     }
 
+    // Args DATA cap at IPC slot (0xFF) — kernel writes args here
+    caps.push(CapManifestEntry {
+        cap_index: 0xFF,
+        cap_type: CapEntryType::Data,
+        base_page: next_page,
+        page_count: 1, // 4KB for args
+        init_access: Access::RW,
+        data_offset: 0,
+        data_len: 0,
+    });
+    next_page += 1;
+
     let total = memory_pages.max(next_page + heap_pages);
-    build_v2_blob(total, 64, 65, &caps, &data_section)
+    build_v2_blob(total, 64, &caps, &data_section)
 }
 
 #[cfg(test)]
