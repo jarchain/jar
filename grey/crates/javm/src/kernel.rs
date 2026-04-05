@@ -79,6 +79,10 @@ pub struct InvocationKernel {
     next_code_id: u16,
     /// Backend selection for CODE cap compilation.
     pub backend: crate::backend::PvmBackend,
+    /// CODE cap ID for fast recompiler resume after ProtocolCall.
+    /// When set, the next `run()` call uses `run_recompiler_resume()` instead
+    /// of `run_recompiler_segment()`, avoiding a full JitContext rebuild.
+    recompiler_resume_cap: Option<usize>,
 }
 
 impl InvocationKernel {
@@ -113,6 +117,7 @@ impl InvocationKernel {
             mem_cycles,
             next_code_id: 0,
             backend,
+            recompiler_resume_cap: None,
         };
 
         // Build VM 0's cap table: protocol caps + manifest caps
@@ -897,6 +902,13 @@ impl InvocationKernel {
 
     /// Execute one segment via the JIT recompiler backend.
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    /// Execute via the JIT recompiler.
+    ///
+    /// For protocol cap ecalli (slots 0-27), this returns to the kernel's `run()`
+    /// loop which exits to the host. On re-entry, the JitContext is rebuilt from
+    /// VmInstance. To minimize the rebuild cost, `run()` uses `run_recompiler_resume()`
+    /// which only updates registers + gas + entry_pc instead of rebuilding all fields.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     fn run_recompiler_segment(&mut self, code_cap_id: usize) -> (u32, u32) {
         use crate::recompiler::{JitContext, signal};
 
@@ -935,6 +947,78 @@ impl InvocationKernel {
             });
         }
 
+        self.run_recompiler_inner(code_cap_id, ctx_raw)
+    }
+
+    /// Resume recompiler execution after a protocol call, reusing the existing
+    /// JitContext. Only updates registers, gas, and entry_pc — avoids rebuilding
+    /// jump table pointers, dispatch table, code base, etc.
+    /// Also skips signal state setup since it's unchanged for the same code cap.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn run_recompiler_resume(&mut self, code_cap_id: usize) -> (u32, u32) {
+        use crate::recompiler::{JitContext, signal};
+
+        let code_cap = &self.code_caps[code_cap_id];
+        let compiled = match &code_cap.compiled {
+            crate::backend::CompiledProgram::Recompiler(c) => c,
+            _ => unreachable!(),
+        };
+        let ctx_raw = code_cap.window.ctx_ptr() as *mut JitContext;
+        let vm = &self.vms[self.active_vm as usize];
+
+        // Only update the fields that changed since the last exit.
+        // After a ProtocolCall, kernel_resume() sets vm.registers[7] and [8].
+        // Gas and PC are unchanged (synced on exit, not modified by resume).
+        let ctx = unsafe { &mut *ctx_raw };
+        ctx.regs[7] = vm.registers[7];
+        ctx.regs[8] = vm.registers[8];
+        ctx.entry_pc = vm.pc;
+        ctx.exit_reason = 0;
+        ctx.exit_arg = 0;
+
+        // Signal state is already installed for this code cap from the previous
+        // segment. Just re-enter native code directly.
+        let entry = compiled.native_code.entry();
+        unsafe {
+            entry(ctx_raw);
+        }
+
+        // Read exit reason (don't tear down signal state — leave it for next resume)
+        let ctx = unsafe { &*ctx_raw };
+        let exit_reason = ctx.exit_reason;
+        let exit_arg = ctx.exit_arg;
+
+        // Sync registers and gas back to VM
+        let vm = &mut self.vms[self.active_vm as usize];
+        vm.registers = ctx.regs;
+        vm.gas = ctx.gas.max(0) as u64;
+        vm.pc = ctx.pc;
+
+        // If the next dispatch won't resume (e.g., halt/panic), clear signal state.
+        // Otherwise leave it installed for the next resume.
+        if exit_reason != 4 {
+            signal::SIGNAL_STATE.with(|cell| cell.set(std::ptr::null_mut()));
+        }
+
+        (exit_reason, exit_arg)
+    }
+
+    /// Shared recompiler execution: set up signal handler, enter native code,
+    /// sync state back on exit.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn run_recompiler_inner(
+        &mut self,
+        code_cap_id: usize,
+        ctx_raw: *mut crate::recompiler::JitContext,
+    ) -> (u32, u32) {
+        use crate::recompiler::signal;
+
+        let code_cap = &self.code_caps[code_cap_id];
+        let compiled = match &code_cap.compiled {
+            crate::backend::CompiledProgram::Recompiler(c) => c,
+            _ => unreachable!(),
+        };
+
         signal::ensure_installed();
         let mut signal_state = signal::SignalState {
             code_start: compiled.native_code.ptr as usize,
@@ -942,7 +1026,8 @@ impl InvocationKernel {
             exit_label_addr: compiled.native_code.ptr as usize
                 + compiled.exit_label_offset as usize,
             ctx_ptr: ctx_raw,
-            trap_table: compiled.trap_table.clone(),
+            trap_table_ptr: compiled.trap_table.as_ptr(),
+            trap_table_len: compiled.trap_table.len(),
         };
         signal::SIGNAL_STATE.with(|cell| cell.set(&mut signal_state as *mut _));
 
@@ -951,8 +1036,6 @@ impl InvocationKernel {
         unsafe {
             entry(ctx_raw);
         }
-
-        signal::SIGNAL_STATE.with(|cell| cell.set(std::ptr::null_mut()));
 
         let ctx = unsafe { &*ctx_raw };
         let exit_reason = ctx.exit_reason;
@@ -963,6 +1046,12 @@ impl InvocationKernel {
         vm.registers = ctx.regs;
         vm.gas = ctx.gas.max(0) as u64;
         vm.pc = ctx.pc;
+
+        // Clear signal state unless this is an ecalli (exit_reason=4) that might
+        // be resumed. The resume path will clear it when done.
+        if exit_reason != 4 {
+            signal::SIGNAL_STATE.with(|cell| cell.set(std::ptr::null_mut()));
+        }
 
         (exit_reason, exit_arg)
     }
@@ -1081,8 +1170,24 @@ impl InvocationKernel {
         loop {
             let code_cap_id = self.vms[self.active_vm as usize].code_cap_id as usize;
 
-            // Execute via the compiled backend, returning (exit_reason, exit_arg)
-            let (exit_reason, exit_arg) = self.run_one_segment(code_cap_id);
+            // Execute via the compiled backend.
+            // After a ProtocolCall, recompiler_resume_cap is set so we can resume
+            // with a cheap JitContext update instead of a full rebuild.
+            let (exit_reason, exit_arg) = if let Some(ccid) = self.recompiler_resume_cap.take() {
+                // Fast path: resume recompiler after protocol call.
+                // Only updates regs/gas/pc in the existing JitContext.
+                #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                {
+                    self.run_recompiler_resume(ccid)
+                }
+                #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+                {
+                    let _ = ccid;
+                    self.run_one_segment(code_cap_id)
+                }
+            } else {
+                self.run_one_segment(code_cap_id)
+            };
 
             // Dispatch on the exit reason (shared for both backends).
 
@@ -1090,8 +1195,35 @@ impl InvocationKernel {
                 4 => {
                     // HostCall(imm) — ecalli (pc already synced by backend)
                     match self.dispatch_ecalli(exit_arg) {
-                        DispatchResult::Continue => continue,
+                        DispatchResult::Continue => {
+                            // Internal dispatch (RETYPE, CREATE, CALL VM, management ops).
+                            // May have changed active_vm or registers — use resume if
+                            // still on the same recompiler code cap.
+                            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                            {
+                                let new_code_cap_id =
+                                    self.vms[self.active_vm as usize].code_cap_id as usize;
+                                if new_code_cap_id == code_cap_id
+                                    && matches!(
+                                        self.code_caps[code_cap_id].compiled,
+                                        crate::backend::CompiledProgram::Recompiler(_)
+                                    )
+                                {
+                                    self.recompiler_resume_cap = Some(code_cap_id);
+                                }
+                            }
+                            continue;
+                        }
                         DispatchResult::ProtocolCall { slot, regs, gas } => {
+                            // Mark for fast resume on next run() call.
+                            // Leave signal state installed for the resume path.
+                            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                            if matches!(
+                                self.code_caps[code_cap_id].compiled,
+                                crate::backend::CompiledProgram::Recompiler(_)
+                            ) {
+                                self.recompiler_resume_cap = Some(code_cap_id);
+                            }
                             return KernelResult::ProtocolCall { slot, regs, gas };
                         }
                         DispatchResult::RootHalt(v) => return KernelResult::Halt(v),

@@ -606,6 +606,8 @@ pub struct RecompiledPvm {
     flat_memory: Option<FlatMemory>,
     /// Signal-based bounds checking state.
     signal_state: Option<Box<signal::SignalState>>,
+    /// Trap table (owned, referenced by signal_state via raw pointer).
+    _trap_table: Vec<(u32, u32)>,
 }
 
 impl RecompiledPvm {
@@ -749,6 +751,7 @@ impl RecompiledPvm {
         let _t_native = _t3.elapsed();
 
         // Signal-based bounds checking: build trap table and install guard pages.
+        let trap_table = compile_result.trap_table;
         let signal_state = {
             signal::ensure_installed();
             let ss = Box::new(signal::SignalState {
@@ -757,10 +760,9 @@ impl RecompiledPvm {
                 exit_label_addr: native_code.ptr as usize
                     + compile_result.exit_label_offset as usize,
                 ctx_ptr: ctx_raw,
-                trap_table: compile_result.trap_table,
+                trap_table_ptr: trap_table.as_ptr(),
+                trap_table_len: trap_table.len(),
             });
-            // Guard pages installed later by initialize_program_recompiled
-            // after heap_top is set to its correct value.
             Some(ss)
         };
 
@@ -786,6 +788,7 @@ impl RecompiledPvm {
             debug,
             flat_memory: Some(flat_memory),
             signal_state,
+            _trap_table: trap_table,
         };
 
         // Set dispatch_table pointer (must point to the Vec's data in Self)
