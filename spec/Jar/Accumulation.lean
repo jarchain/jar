@@ -1525,8 +1525,19 @@ def accone (ps : PartialState) (serviceId : ServiceId)
           | .perInstruction => PVM.run
           | .basicBlockFull => PVM.runBlockGas
           | .basicBlockSinglePass => PVM.runBlockGasSinglePass
+        -- Entry PC and SP for accumulate:
+        -- v2: skip SP preamble (PC=15), set SP from first DATA cap's stack region
+        -- gp072: PC=5 (standard dispatch), SP already set by initStandard
+        let (accPC, regs) := if JamConfig.capabilityModel == .v2 then
+          -- SP = first writable region end (stack top). initV2 doesn't set SP
+          -- since the SP preamble at PC=0 does. But for accumulate (PC=15),
+          -- we skip the preamble, so set SP here.
+          let stackTop := mem.heapTop  -- conservative: use total mapped size
+          let regs := regs.set! 1 (UInt64.ofNat stackTop)
+          (15, regs)
+        else (5, regs)
         let (result, ctx') := PVM.runWithHostCalls AccContext
-          prog 5 regs mem (Int64.ofUInt64 totalGas)
+          prog accPC regs mem (Int64.ofUInt64 totalGas)
           (fun callId gas regs' mem' c =>
             handleHostCall callId gas regs' mem' c)
           ctx runFn
