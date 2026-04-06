@@ -297,21 +297,7 @@ impl Compiler {
                 // Fallthrough=1, Unlikely=2
                 let skip = crate::interpreter::skip_for_bitmask(bitmask, pc);
                 if is_gas_start {
-                    let label = Label(self.label_base + pc as u32);
-                    self.asm.bind_label(label);
-                    self.gas_block_pcs.push(pc as u32);
-                    self.invalidate_all_regs();
-                    if let Some((stub_label, block_pc, patch_offset)) = pending_gas.take() {
-                        let cost = gas_sim.flush_and_get_cost();
-                        self.asm.patch_i32(patch_offset, cost as i32);
-                        self.oog_stubs.push((stub_label, block_pc, cost));
-                    }
-                    gas_sim.reset();
-                    let stub_label = self.asm.new_label();
-                    self.asm.sub_mem64_imm32(CTX, CTX_GAS, 0);
-                    let patch_offset = self.asm.offset() - 4;
-                    self.asm.jcc_label(Cc::S, stub_label);
-                    pending_gas = Some((stub_label, pc as u32, patch_offset));
+                    self.emit_gas_block_start(pc, &mut pending_gas, &mut gas_sim);
                 }
                 gas_sim.feed(&crate::gas_cost::FastCost {
                     cycles: 2,
@@ -475,24 +461,7 @@ impl Compiler {
 
             // Gas block boundary: discovered inline via next_is_gas_start flag.
             if is_gas_start {
-                let label = Label(self.label_base + pc as u32);
-                self.asm.bind_label(label);
-                self.gas_block_pcs.push(pc as u32);
-                self.invalidate_all_regs();
-                self.last_add_cf = None; // gas check clobbers flags
-
-                if let Some((stub_label, block_pc, patch_offset)) = pending_gas.take() {
-                    let cost = gas_sim.flush_and_get_cost();
-                    self.asm.patch_i32(patch_offset, cost as i32);
-                    self.oog_stubs.push((stub_label, block_pc, cost));
-                }
-                gas_sim.reset();
-
-                let stub_label = self.asm.new_label();
-                self.asm.sub_mem64_imm32(CTX, CTX_GAS, 0);
-                let patch_offset = self.asm.offset() - 4;
-                self.asm.jcc_label(Cc::S, stub_label);
-                pending_gas = Some((stub_label, pc as u32, patch_offset));
+                self.emit_gas_block_start(pc, &mut pending_gas, &mut gas_sim);
             }
 
             let is_terminator = {
@@ -1094,6 +1063,38 @@ impl Compiler {
     fn invalidate_all_regs(&mut self) {
         self.reg_defs = [RegDef::Unknown; 13];
         self.reg_defs_active = 0;
+    }
+
+    /// Emit gas block boundary: bind label, flush previous block cost, emit new gas check.
+    ///
+    /// Called at every gas block start (PC=0 and post-terminator PCs) to:
+    /// 1. Bind the PC label for branch resolution
+    /// 2. Patch the previous block's gas cost (deferred until block end)
+    /// 3. Emit a new `sub [ctx+gas], cost; js oog_stub` sequence
+    fn emit_gas_block_start(
+        &mut self,
+        pc: usize,
+        pending_gas: &mut Option<(Label, u32, usize)>,
+        gas_sim: &mut GasSimulator,
+    ) {
+        let label = Label(self.label_base + pc as u32);
+        self.asm.bind_label(label);
+        self.gas_block_pcs.push(pc as u32);
+        self.invalidate_all_regs();
+        self.last_add_cf = None; // gas check clobbers flags
+
+        if let Some((stub_label, block_pc, patch_offset)) = pending_gas.take() {
+            let cost = gas_sim.flush_and_get_cost();
+            self.asm.patch_i32(patch_offset, cost as i32);
+            self.oog_stubs.push((stub_label, block_pc, cost));
+        }
+        gas_sim.reset();
+
+        let stub_label = self.asm.new_label();
+        self.asm.sub_mem64_imm32(CTX, CTX_GAS, 0);
+        let patch_offset = self.asm.offset() - 4;
+        self.asm.jcc_label(Cc::S, stub_label);
+        *pending_gas = Some((stub_label, pc as u32, patch_offset));
     }
 
     /// Update reg_defs after compiling an instruction.
