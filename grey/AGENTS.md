@@ -35,9 +35,9 @@ GREY_PVM=recompiler cargo test --workspace  # all tests (recompiler)
 ## Benchmarks
 
 ```bash
-cargo bench -p grey-bench --features javm/signals                        # full suite
-cargo bench -p grey-bench --features javm/signals -- 'fib/|sort/'        # skip ecrecover
-cargo bench -p grey-bench --features javm/signals -- ecrecover           # ecrecover only
+cargo bench -p grey-bench                        # full suite
+cargo bench -p grey-bench -- 'fib/|sort/'        # skip ecrecover
+cargo bench -p grey-bench -- ecrecover           # ecrecover only
 ```
 
 ## Integration Harness

@@ -61,30 +61,23 @@ impl PvmInstance {
     }
 
     pub fn gas(&self) -> Gas {
-        self.kernel
-            .vms
-            .get(self.kernel.active_vm as usize)
-            .map(|v| v.gas)
-            .unwrap_or(0)
+        self.kernel.active_gas()
     }
 
     pub fn set_gas(&mut self, gas: Gas) {
         if let Some(vm) = self.kernel.vms.get_mut(self.kernel.active_vm as usize) {
-            vm.gas = gas;
+            vm.set_gas(gas);
         }
     }
 
+    /// Read a register. Routes through live_ctx when the recompiler is active,
+    /// so it returns the current JitContext value (not stale VmInstance state).
     pub fn reg(&self, index: usize) -> u64 {
-        self.kernel
-            .vms
-            .get(self.kernel.active_vm as usize)
-            .map(|v| v.registers[index])
-            .unwrap_or(0)
+        self.kernel.active_reg(index)
     }
 
+    /// Write a register. Routes through live_ctx when the recompiler is active.
     pub fn set_reg(&mut self, index: usize, value: u64) {
-        if let Some(vm) = self.kernel.vms.get_mut(self.kernel.active_vm as usize) {
-            vm.registers[index] = value;
-        }
+        self.kernel.set_active_reg(index, value);
     }
 }

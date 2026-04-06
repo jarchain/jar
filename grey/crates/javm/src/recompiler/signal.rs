@@ -1,6 +1,6 @@
 //! SIGSEGV-based memory bounds checking for the recompiler.
 //!
-//! When the `signals` feature is enabled, memory accesses in JIT code skip
+//! Memory accesses in JIT code skip
 //! software bounds checks. Instead, guard pages (PROT_NONE) beyond heap_top
 //! trigger SIGSEGV, which this handler intercepts and redirects to the
 //! existing exit sequence via ucontext modification (no longjmp).
@@ -24,7 +24,9 @@ pub struct SignalState {
     /// Pointer to JitContext (for writing exit_reason/exit_arg/pc).
     pub ctx_ptr: *mut JitContext,
     /// Trap table: sorted by native_offset. (native_offset, pvm_pc).
-    pub trap_table: Vec<(u32, u32)>,
+    /// Points into the CompiledCode's trap_table (lives as long as the `Arc<CodeCap>`).
+    pub trap_table_ptr: *const (u32, u32),
+    pub trap_table_len: usize,
 }
 
 // SAFETY: SignalState is only accessed by the owning thread (set before JIT call,
@@ -151,11 +153,9 @@ unsafe extern "C" fn sigsegv_handler(
 
         // Binary search the trap table for this native offset.
         let native_offset = (pc - state.code_start) as u32;
-        let pvm_pc = match state
-            .trap_table
-            .binary_search_by_key(&native_offset, |&(off, _)| off)
-        {
-            Ok(idx) => state.trap_table[idx].1,
+        let trap_table = std::slice::from_raw_parts(state.trap_table_ptr, state.trap_table_len);
+        let pvm_pc = match trap_table.binary_search_by_key(&native_offset, |&(off, _)| off) {
+            Ok(idx) => trap_table[idx].1,
             Err(_) => {
                 // PC is in our code but not at a registered trap site — real bug.
                 delegate_to_previous(signum, _siginfo, ucontext);

@@ -30,15 +30,15 @@ pub fn run_kernel_with_backend(blob: &[u8], gas: u64, backend: javm::PvmBackend)
         .expect("kernel init failed");
     loop {
         match kernel.run() {
-            javm::kernel::KernelResult::Halt(v) => return (v, gas - kernel.gas()),
+            javm::kernel::KernelResult::Halt(v) => return (v, gas - kernel.active_gas()),
             javm::kernel::KernelResult::Panic => {
                 let vm = &kernel.vms[kernel.active_vm as usize];
-                panic!("kernel panicked at PC={} gas={}", vm.pc, vm.gas);
+                panic!("kernel panicked at PC={} gas={}", vm.pc, vm.gas());
             }
             javm::kernel::KernelResult::OutOfGas => panic!("kernel out of gas"),
             javm::kernel::KernelResult::PageFault(a) => {
                 let vm = &kernel.vms[kernel.active_vm as usize];
-                panic!("kernel page fault at {a:#x} PC={} gas={}", vm.pc, vm.gas);
+                panic!("kernel page fault at {a:#x} PC={} gas={}", vm.pc, vm.gas());
             }
             javm::kernel::KernelResult::ProtocolCall { .. } => continue,
         }
@@ -732,7 +732,7 @@ mod tests_sort {
             .expect("blob should be loadable");
         // In v2, the program dispatches on φ[7] (op code).
         // φ[7]=1 means accumulate. Set it before running.
-        kernel.vms[kernel.active_vm as usize].registers[7] = 1;
+        kernel.vms[kernel.active_vm as usize].set_reg(7, 1);
         let result = kernel.run();
         match result {
             javm::kernel::KernelResult::Halt(_)

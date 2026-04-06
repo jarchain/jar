@@ -115,13 +115,13 @@ Do NOT ask the user. Submit the review automatically, but apply these safety che
 
    b. Run baseline benchmark on current master:
    ```bash
-   cd grey && git stash && POLKAVM_ALLOW_EXPERIMENTAL=1 cargo bench -p grey-bench --features javm/signals 2>&1 | grep -E 'Benchmarking |time:   \[' | sed '/Benchmarking/{s/Benchmarking //;s/: .*//;h;d}; /time:/{G;s/\n/ /;s/^ */}' > /tmp/bench_baseline.txt
+   cd grey && git stash && POLKAVM_ALLOW_EXPERIMENTAL=1 cargo bench -p grey-bench 2>&1 | grep -E 'Benchmarking |time:   \[' | sed '/Benchmarking/{s/Benchmarking //;s/: .*//;h;d}; /time:/{G;s/\n/ /;s/^ */}' > /tmp/bench_baseline.txt
    ```
 
    c. Apply PR changes and re-run:
    ```bash
    gh pr checkout <PR_NUMBER> --force
-   POLKAVM_ALLOW_EXPERIMENTAL=1 cargo bench -p grey-bench --features javm/signals 2>&1 | grep -E 'Benchmarking |time:   \[' | sed '/Benchmarking/{s/Benchmarking //;s/: .*//;h;d}; /time:/{G;s/\n/ /;s/^ */}' > /tmp/bench_pr.txt
+   POLKAVM_ALLOW_EXPERIMENTAL=1 cargo bench -p grey-bench 2>&1 | grep -E 'Benchmarking |time:   \[' | sed '/Benchmarking/{s/Benchmarking //;s/: .*//;h;d}; /time:/{G;s/\n/ /;s/^ */}' > /tmp/bench_pr.txt
    git checkout master
    ```
 

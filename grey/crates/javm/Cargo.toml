@@ -9,7 +9,6 @@ description = "Join-Accumulate VM (JAVM)."
 [features]
 default = ["std"]
 std = ["libc", "memoffset"]
-signals = ["std"]
 
 [dependencies]
 libc = { version = "0.2", optional = true }

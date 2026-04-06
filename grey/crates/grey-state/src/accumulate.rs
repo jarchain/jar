@@ -640,23 +640,16 @@ fn run_accumulate_pvm(
 
     // Single entrypoint PC=0. Set φ[7]=1 for accumulate operation.
     // φ[8]=args_base and φ[9]=args_len are set by the kernel init.
-    if let Some(k) = pvm.kernel_mut()
-        && let Some(vm) = k.vms.get_mut(k.active_vm as usize)
-    {
-        vm.registers[7] = 1; // op = accumulate
-    }
+    // Set φ[7]=1 for accumulate operation (cold path, before execution)
+    pvm.set_reg(7, 1);
 
     let initial_gas = pvm.gas();
-    // Debug: log φ[7] to verify it's set correctly
-    if let Some(k) = pvm.kernel() {
-        let vm = &k.vms[k.active_vm as usize];
-        tracing::info!(
-            phi7 = vm.registers[7],
-            phi8 = vm.registers[8],
-            phi9 = vm.registers[9],
-            "accumulate start regs"
-        );
-    }
+    tracing::info!(
+        phi7 = pvm.reg(7),
+        phi8 = pvm.reg(8),
+        phi9 = pvm.reg(9),
+        "accumulate start regs"
+    );
 
     loop {
         let result = pvm.kernel_run();
@@ -683,9 +676,13 @@ fn run_accumulate_pvm(
                 let gas_used = initial_gas - pvm.gas();
                 return (exceptional, gas_used);
             }
-            KernelResult::ProtocolCall { slot, regs, gas: _ } => {
-                // Gas already charged by kernel (10 per ecalli in dispatch_ecalli)
-                // Dispatch by protocol cap slot number (matches GP host call IDs directly)
+            KernelResult::ProtocolCall { slot } => {
+                // Snapshot argument registers (φ[7]-φ[12]) for the handler.
+                // Only these are used by protocol call handlers.
+                let mut regs = [0u64; 13];
+                regs[7..=12].iter_mut().enumerate().for_each(|(j, r)| {
+                    *r = pvm.reg(7 + j);
+                });
                 let ok = handle_host_call(
                     config,
                     slot,

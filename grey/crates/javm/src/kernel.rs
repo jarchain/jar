@@ -49,13 +49,10 @@ pub enum KernelResult {
     /// Root VM page-faulted at address.
     PageFault(u32),
     /// A protocol cap was invoked. Host should handle and call `resume_protocol_call`.
+    /// Read registers/gas via kernel accessors (active_reg, gas).
     ProtocolCall {
         /// Protocol cap slot number.
         slot: u8,
-        /// VM registers at the time of the call.
-        regs: [u64; 13],
-        /// Gas remaining.
-        gas: u64,
     },
 }
 
@@ -79,6 +76,16 @@ pub struct InvocationKernel {
     next_code_id: u16,
     /// Backend selection for CODE cap compilation.
     pub backend: crate::backend::PvmBackend,
+    /// CODE cap ID for fast recompiler resume after ProtocolCall.
+    /// When set, the next `run()` call uses `run_recompiler_resume()` instead
+    /// of `run_recompiler_segment()`, avoiding a full JitContext rebuild.
+    recompiler_resume_cap: Option<usize>,
+    /// Live register/gas context during recompiler execution.
+    /// Points to the JitContext's regs/gas fields. When set, `active_reg` and
+    /// `active_gas` read/write this directly instead of VmInstance, eliminating
+    /// the JitContext ↔ VmInstance register copy on each ecalli.
+    #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+    live_ctx: Option<*mut crate::recompiler::JitContext>,
 }
 
 impl InvocationKernel {
@@ -113,6 +120,9 @@ impl InvocationKernel {
             mem_cycles,
             next_code_id: 0,
             backend,
+            recompiler_resume_cap: None,
+            #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+            live_ctx: None,
         };
 
         // Build VM 0's cap table: protocol caps + manifest caps
@@ -197,8 +207,8 @@ impl InvocationKernel {
             remaining_gas,
         );
         // φ[7]=op set by caller (refine/accumulate), φ[8]=args_base, φ[9]=args_len
-        vm0.registers[8] = args_base;
-        vm0.registers[9] = args_len;
+        vm0.set_reg(8, args_base);
+        vm0.set_reg(9, args_len);
         kernel.vms.push(vm0);
 
         Ok(kernel)
@@ -275,19 +285,34 @@ impl InvocationKernel {
     /// Dispatch an ecalli immediate from the active VM.
     ///
     /// Returns a `DispatchResult` indicating what the kernel should do next.
+    #[inline(always)]
     pub fn dispatch_ecalli(&mut self, imm: u32) -> DispatchResult {
         // Charge ecalli gas cost (10) — matches GP host call gas charge
         let ecalli_gas: u64 = 10;
-        let vm = &mut self.vms[self.active_vm as usize];
-        if vm.gas < ecalli_gas {
+        let current_gas = self.active_gas();
+        if current_gas < ecalli_gas {
             return DispatchResult::Fault(FaultType::OutOfGas);
         }
-        vm.gas -= ecalli_gas;
+        // Deduct gas via live_ctx if available, else VmInstance
+        #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+        if let Some(ctx) = self.live_ctx {
+            unsafe { (*ctx).gas -= ecalli_gas as i64 };
+        } else {
+            let g = self.vms[self.active_vm as usize].gas();
+            self.vms[self.active_vm as usize].set_gas(g - ecalli_gas);
+        }
+        #[cfg(not(all(feature = "std", target_os = "linux", target_arch = "x86_64")))]
+        {
+            let g = self.vms[self.active_vm as usize].gas();
+            self.vms[self.active_vm as usize].set_gas(g - ecalli_gas);
+        }
 
         if imm < CALL_RANGE_END {
             // CALL cap[N]
             let cap_idx = imm as u8;
             if cap_idx == IPC_SLOT {
+                #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+                self.flush_live_ctx();
                 return self.handle_reply();
             }
             self.handle_call(cap_idx)
@@ -295,11 +320,14 @@ impl InvocationKernel {
             // Management op: high byte = op, low byte = cap index
             let op = imm >> 8;
             let cap_idx = (imm & 0xFF) as u8;
+            #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+            self.flush_live_ctx();
             self.handle_management_op(op, cap_idx)
         }
     }
 
     /// Handle CALL on a cap slot.
+    #[inline(always)]
     fn handle_call(&mut self, cap_idx: u8) -> DispatchResult {
         let vm = &self.vms[self.active_vm as usize];
         let cap = match vm.cap_table.get(cap_idx) {
@@ -314,20 +342,30 @@ impl InvocationKernel {
         match cap {
             Cap::Protocol(p) => {
                 let slot = p.id;
-                let regs = self.vms[self.active_vm as usize].registers;
-                let gas = self.vms[self.active_vm as usize].gas;
-                DispatchResult::ProtocolCall { slot, regs, gas }
+                DispatchResult::ProtocolCall { slot }
             }
-            Cap::Untyped(_) => self.handle_call_untyped(),
-            Cap::Code(_) => self.handle_call_code(),
+            Cap::Untyped(_) => {
+                #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+                self.flush_live_ctx();
+                self.handle_call_untyped()
+            }
+            Cap::Code(_) => {
+                #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+                self.flush_live_ctx();
+                self.handle_call_code()
+            }
             Cap::Handle(h) => {
                 let target_vm = h.vm_id;
                 let max_gas = h.max_gas;
+                #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+                self.flush_live_ctx();
                 self.handle_call_vm(target_vm, max_gas)
             }
             Cap::Callable(c) => {
                 let target_vm = c.vm_id;
                 let max_gas = c.max_gas;
+                #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+                self.flush_live_ctx();
                 self.handle_call_vm(target_vm, max_gas)
             }
             Cap::Data(_) => {
@@ -344,10 +382,10 @@ impl InvocationKernel {
         let gas_cost = 10 + n_pages as u64 * GAS_PER_PAGE;
 
         let vm = &mut self.vms[self.active_vm as usize];
-        if vm.gas < gas_cost {
+        if vm.gas() < gas_cost {
             return DispatchResult::Fault(FaultType::OutOfGas);
         }
-        vm.gas -= gas_cost;
+        vm.set_gas(vm.gas() - gas_cost);
 
         // Get the UNTYPED cap (it's an Arc, so we can clone the reference)
         let untyped = match vm.cap_table.get(
@@ -458,16 +496,16 @@ impl InvocationKernel {
         // Determine gas budget for callee
         let caller_vm = &mut self.vms[self.active_vm as usize];
         let call_overhead = 10u64;
-        if caller_vm.gas < call_overhead {
+        if caller_vm.gas() < call_overhead {
             return DispatchResult::Fault(FaultType::OutOfGas);
         }
-        caller_vm.gas -= call_overhead;
+        caller_vm.set_gas(caller_vm.gas() - call_overhead);
 
         let callee_gas = match max_gas {
-            Some(limit) => caller_vm.gas.min(limit),
-            None => caller_vm.gas,
+            Some(limit) => caller_vm.gas().min(limit),
+            None => caller_vm.gas(),
         };
-        caller_vm.gas -= callee_gas;
+        caller_vm.set_gas(caller_vm.gas() - callee_gas);
 
         // Save caller state
         let caller_id = self.active_vm;
@@ -502,16 +540,16 @@ impl InvocationKernel {
         });
 
         // Pass args: caller's φ[7]..φ[10] → callee's φ[7]..φ[10]
-        let caller_regs = self.vms[caller_id as usize].registers;
+        let caller_regs = *self.vms[caller_id as usize].regs();
 
         // Set up callee
         let callee = &mut self.vms[target_vm_id as usize];
-        callee.gas = callee_gas;
+        callee.set_gas(callee_gas);
         callee.caller = Some(caller_id);
-        callee.registers[7] = caller_regs[7];
-        callee.registers[8] = caller_regs[8];
-        callee.registers[9] = caller_regs[9];
-        callee.registers[10] = caller_regs[10];
+        callee.set_reg(7, caller_regs[7]);
+        callee.set_reg(8, caller_regs[8]);
+        callee.set_reg(9, caller_regs[9]);
+        callee.set_reg(10, caller_regs[10]);
 
         let _ = callee.transition(VmState::Running);
         self.active_vm = target_vm_id;
@@ -537,9 +575,10 @@ impl InvocationKernel {
         let _ = self.vms[callee_id as usize].transition(VmState::Idle);
 
         // Return unused gas to caller
-        let unused_gas = self.vms[callee_id as usize].gas;
-        self.vms[caller_id as usize].gas += unused_gas;
-        self.vms[callee_id as usize].gas = 0;
+        let unused_gas = self.vms[callee_id as usize].gas();
+        let cg = self.vms[caller_id as usize].gas();
+        self.vms[caller_id as usize].set_gas(cg + unused_gas);
+        self.vms[callee_id as usize].set_gas(0);
 
         // Return IPC cap
         if let Some(caller_slot) = frame.ipc_cap_idx
@@ -555,9 +594,9 @@ impl InvocationKernel {
         }
 
         // Pass results: callee's φ[7], φ[8] → caller's φ[7], φ[8]
-        let callee_regs = self.vms[callee_id as usize].registers;
-        self.vms[caller_id as usize].registers[7] = callee_regs[7];
-        self.vms[caller_id as usize].registers[8] = callee_regs[8];
+        let callee_regs = *self.vms[callee_id as usize].regs();
+        self.vms[caller_id as usize].set_reg(7, callee_regs[7]);
+        self.vms[caller_id as usize].set_reg(8, callee_regs[8]);
 
         // Caller → Running
         let _ = self.vms[caller_id as usize].transition(VmState::Running);
@@ -873,19 +912,45 @@ impl InvocationKernel {
         DispatchResult::Continue
     }
 
-    // --- Register helpers ---
-
-    fn active_reg(&self, idx: usize) -> u64 {
-        self.vms[self.active_vm as usize].registers[idx]
+    /// Flush live JitContext state to VmInstance. Must be called before
+    /// switching active VM or any operation that reads VmInstance directly.
+    #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+    fn flush_live_ctx(&mut self) {
+        if let Some(ctx) = self.live_ctx.take() {
+            let ctx = unsafe { &*ctx };
+            let vm = &mut self.vms[self.active_vm as usize];
+            vm.set_regs(ctx.regs);
+            vm.set_gas(ctx.gas.max(0) as u64);
+            vm.pc = ctx.pc;
+        }
     }
 
-    fn set_active_reg(&mut self, idx: usize, val: u64) {
-        self.vms[self.active_vm as usize].registers[idx] = val;
+    // --- Register helpers ---
+
+    pub fn active_reg(&self, idx: usize) -> u64 {
+        #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+        if let Some(ctx) = self.live_ctx {
+            return unsafe { (*ctx).regs[idx] };
+        }
+        self.vms[self.active_vm as usize].reg(idx)
+    }
+
+    pub fn set_active_reg(&mut self, idx: usize, val: u64) {
+        #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+        if let Some(ctx) = self.live_ctx {
+            unsafe { (*ctx).regs[idx] = val };
+            return;
+        }
+        self.vms[self.active_vm as usize].set_reg(idx, val);
     }
 
     /// Get the active VM's remaining gas.
-    pub fn gas(&self) -> u64 {
-        self.vms[self.active_vm as usize].gas
+    pub fn active_gas(&self) -> u64 {
+        #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+        if let Some(ctx) = self.live_ctx {
+            return unsafe { (*ctx).gas.max(0) as u64 };
+        }
+        self.vms[self.active_vm as usize].gas()
     }
 
     /// Resume after a protocol call was handled by the host.
@@ -897,8 +962,15 @@ impl InvocationKernel {
 
     /// Execute one segment via the JIT recompiler backend.
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    /// Execute via the JIT recompiler.
+    ///
+    /// For protocol cap ecalli (slots 0-27), this returns to the kernel's `run()`
+    /// loop which exits to the host. On re-entry, the JitContext is rebuilt from
+    /// VmInstance. To minimize the rebuild cost, `run()` uses `run_recompiler_resume()`
+    /// which only updates registers + gas + entry_pc instead of rebuilding all fields.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     fn run_recompiler_segment(&mut self, code_cap_id: usize) -> (u32, u32) {
-        use crate::recompiler::{JitContext, signal};
+        use crate::recompiler::JitContext;
 
         let code_cap = &self.code_caps[code_cap_id];
         let compiled = match &code_cap.compiled {
@@ -910,8 +982,8 @@ impl InvocationKernel {
         // SAFETY: ctx_ptr() returns a writable page allocated by CodeWindow::new().
         unsafe {
             ctx_raw.write(JitContext {
-                regs: vm.registers,
-                gas: vm.gas as i64,
+                regs: *vm.regs(),
+                gas: vm.gas() as i64,
                 exit_reason: 0,
                 exit_arg: 0,
                 heap_base: 0,
@@ -935,6 +1007,79 @@ impl InvocationKernel {
             });
         }
 
+        self.run_recompiler_inner(code_cap_id, ctx_raw)
+    }
+
+    /// Resume recompiler execution after a protocol call, reusing the existing
+    /// JitContext. Only updates registers, gas, and entry_pc — avoids rebuilding
+    /// jump table pointers, dispatch table, code base, etc.
+    /// Also skips signal state setup since it's unchanged for the same code cap.
+    /// Resume recompiler after a protocol call. The JitContext is still live —
+    /// only update the result registers that kernel_resume() changed, then
+    /// re-enter native code. No full register sync needed.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[inline(always)]
+    fn run_recompiler_resume(&mut self, code_cap_id: usize) -> (u32, u32) {
+        use crate::recompiler::JitContext;
+
+        let code_cap = &self.code_caps[code_cap_id];
+        let compiled = match &code_cap.compiled {
+            crate::backend::CompiledProgram::Recompiler(c) => c,
+            _ => unreachable!(),
+        };
+        let ctx_raw = code_cap.window.ctx_ptr() as *mut JitContext;
+
+        // The live_ctx was set on the previous ecalli exit. kernel_resume()
+        // wrote result regs via set_active_reg which updated JitContext directly.
+        // Just set entry_pc and re-enter.
+        let ctx = unsafe { &mut *ctx_raw };
+        ctx.entry_pc = self.vms[self.active_vm as usize].pc;
+        ctx.exit_reason = 0;
+        ctx.exit_arg = 0;
+
+        // Signal state is already installed. Re-enter native.
+        let entry = compiled.native_code.entry();
+        unsafe {
+            entry(ctx_raw);
+        }
+
+        let ctx = unsafe { &*ctx_raw };
+        let exit_reason = ctx.exit_reason;
+        let exit_arg = ctx.exit_arg;
+
+        if exit_reason == 4 {
+            // ecalli: keep live_ctx, sync only pc
+            self.vms[self.active_vm as usize].pc = ctx.pc;
+            self.live_ctx = Some(ctx_raw);
+        } else {
+            // Non-ecalli: full sync, clear live_ctx
+            let vm = &mut self.vms[self.active_vm as usize];
+            vm.set_regs(ctx.regs);
+            vm.set_gas(ctx.gas.max(0) as u64);
+            vm.pc = ctx.pc;
+            self.live_ctx = None;
+            crate::recompiler::signal::SIGNAL_STATE.with(|cell| cell.set(std::ptr::null_mut()));
+        }
+
+        (exit_reason, exit_arg)
+    }
+
+    /// Shared recompiler execution: set up signal handler, enter native code,
+    /// sync state back on exit.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn run_recompiler_inner(
+        &mut self,
+        code_cap_id: usize,
+        ctx_raw: *mut crate::recompiler::JitContext,
+    ) -> (u32, u32) {
+        use crate::recompiler::signal;
+
+        let code_cap = &self.code_caps[code_cap_id];
+        let compiled = match &code_cap.compiled {
+            crate::backend::CompiledProgram::Recompiler(c) => c,
+            _ => unreachable!(),
+        };
+
         signal::ensure_installed();
         let mut signal_state = signal::SignalState {
             code_start: compiled.native_code.ptr as usize,
@@ -942,7 +1087,8 @@ impl InvocationKernel {
             exit_label_addr: compiled.native_code.ptr as usize
                 + compiled.exit_label_offset as usize,
             ctx_ptr: ctx_raw,
-            trap_table: compiled.trap_table.clone(),
+            trap_table_ptr: compiled.trap_table.as_ptr(),
+            trap_table_len: compiled.trap_table.len(),
         };
         signal::SIGNAL_STATE.with(|cell| cell.set(&mut signal_state as *mut _));
 
@@ -952,17 +1098,24 @@ impl InvocationKernel {
             entry(ctx_raw);
         }
 
-        signal::SIGNAL_STATE.with(|cell| cell.set(std::ptr::null_mut()));
-
         let ctx = unsafe { &*ctx_raw };
         let exit_reason = ctx.exit_reason;
         let exit_arg = ctx.exit_arg;
 
-        // Sync registers and gas back to VM
-        let vm = &mut self.vms[self.active_vm as usize];
-        vm.registers = ctx.regs;
-        vm.gas = ctx.gas.max(0) as u64;
-        vm.pc = ctx.pc;
+        if exit_reason == 4 {
+            // ecalli: set live_ctx so dispatch reads JitContext directly.
+            // Sync only pc to VmInstance (needed for ProtocolCall metadata).
+            self.vms[self.active_vm as usize].pc = ctx.pc;
+            self.live_ctx = Some(ctx_raw);
+        } else {
+            // Non-ecalli: full sync to VmInstance, clear live_ctx.
+            let vm = &mut self.vms[self.active_vm as usize];
+            vm.set_regs(ctx.regs);
+            vm.set_gas(ctx.gas.max(0) as u64);
+            vm.pc = ctx.pc;
+            self.live_ctx = None;
+            signal::SIGNAL_STATE.with(|cell| cell.set(std::ptr::null_mut()));
+        }
 
         (exit_reason, exit_arg)
     }
@@ -1019,9 +1172,9 @@ impl InvocationKernel {
             prog.code.clone(),
             prog.bitmask.clone(),
             prog.jump_table.clone(),
-            vm.registers,
+            *vm.regs(),
             flat_mem,
-            vm.gas,
+            vm.gas(),
             prog.mem_cycles,
         );
         interp.pc = vm.pc;
@@ -1050,8 +1203,8 @@ impl InvocationKernel {
         }
 
         let vm = &mut self.vms[self.active_vm as usize];
-        vm.registers = interp.registers;
-        vm.gas = interp.gas;
+        vm.set_regs(interp.registers);
+        vm.set_gas(interp.gas);
         vm.pc = interp.pc;
 
         match exit {
@@ -1081,8 +1234,24 @@ impl InvocationKernel {
         loop {
             let code_cap_id = self.vms[self.active_vm as usize].code_cap_id as usize;
 
-            // Execute via the compiled backend, returning (exit_reason, exit_arg)
-            let (exit_reason, exit_arg) = self.run_one_segment(code_cap_id);
+            // Execute via the compiled backend.
+            // After a ProtocolCall, recompiler_resume_cap is set so we can resume
+            // with a cheap JitContext update instead of a full rebuild.
+            let (exit_reason, exit_arg) = if let Some(ccid) = self.recompiler_resume_cap.take() {
+                // Fast path: resume recompiler after protocol call.
+                // Only updates regs/gas/pc in the existing JitContext.
+                #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                {
+                    self.run_recompiler_resume(ccid)
+                }
+                #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+                {
+                    let _ = ccid;
+                    self.run_one_segment(code_cap_id)
+                }
+            } else {
+                self.run_one_segment(code_cap_id)
+            };
 
             // Dispatch on the exit reason (shared for both backends).
 
@@ -1090,9 +1259,36 @@ impl InvocationKernel {
                 4 => {
                     // HostCall(imm) — ecalli (pc already synced by backend)
                     match self.dispatch_ecalli(exit_arg) {
-                        DispatchResult::Continue => continue,
-                        DispatchResult::ProtocolCall { slot, regs, gas } => {
-                            return KernelResult::ProtocolCall { slot, regs, gas };
+                        DispatchResult::Continue => {
+                            // Internal dispatch (RETYPE, CREATE, CALL VM, management ops).
+                            // May have changed active_vm or registers — use resume if
+                            // still on the same recompiler code cap.
+                            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                            {
+                                let new_code_cap_id =
+                                    self.vms[self.active_vm as usize].code_cap_id as usize;
+                                if new_code_cap_id == code_cap_id
+                                    && matches!(
+                                        self.code_caps[code_cap_id].compiled,
+                                        crate::backend::CompiledProgram::Recompiler(_)
+                                    )
+                                {
+                                    self.recompiler_resume_cap = Some(code_cap_id);
+                                }
+                            }
+                            continue;
+                        }
+                        DispatchResult::ProtocolCall { slot } => {
+                            // Mark for fast resume on next run() call.
+                            // Leave signal state installed for the resume path.
+                            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                            if matches!(
+                                self.code_caps[code_cap_id].compiled,
+                                crate::backend::CompiledProgram::Recompiler(_)
+                            ) {
+                                self.recompiler_resume_cap = Some(code_cap_id);
+                            }
+                            return KernelResult::ProtocolCall { slot };
                         }
                         DispatchResult::RootHalt(v) => return KernelResult::Halt(v),
                         DispatchResult::RootPanic => return KernelResult::Panic,
@@ -1103,7 +1299,7 @@ impl InvocationKernel {
                 }
                 0 => {
                     // Halt
-                    let value = self.vms[self.active_vm as usize].registers[7];
+                    let value = self.vms[self.active_vm as usize].reg(7);
                     match self.handle_vm_halt(value) {
                         DispatchResult::RootHalt(v) => return KernelResult::Halt(v),
                         DispatchResult::Continue => continue,
@@ -1231,8 +1427,9 @@ impl InvocationKernel {
                 let caller_id = frame.caller_vm_id;
 
                 // Return unused gas
-                let unused_gas = self.vms[callee_id as usize].gas;
-                self.vms[caller_id as usize].gas += unused_gas;
+                let unused_gas = self.vms[callee_id as usize].gas();
+                let cg = self.vms[caller_id as usize].gas();
+                self.vms[caller_id as usize].set_gas(cg + unused_gas);
 
                 // Return IPC cap
                 if let Some(caller_slot) = frame.ipc_cap_idx
@@ -1247,7 +1444,7 @@ impl InvocationKernel {
                 }
 
                 // Return result
-                self.vms[caller_id as usize].registers[7] = exit_value;
+                self.vms[caller_id as usize].set_reg(7, exit_value);
 
                 let _ = self.vms[caller_id as usize].transition(VmState::Running);
                 self.active_vm = caller_id;
@@ -1270,12 +1467,13 @@ impl InvocationKernel {
                 let caller_id = frame.caller_vm_id;
 
                 // Return unused gas
-                let unused_gas = self.vms[callee_id as usize].gas;
-                self.vms[caller_id as usize].gas += unused_gas;
+                let unused_gas = self.vms[callee_id as usize].gas();
+                let cg = self.vms[caller_id as usize].gas();
+                self.vms[caller_id as usize].set_gas(cg + unused_gas);
 
                 // IPC cap is lost (callee faulted)
                 // Set error status in caller registers
-                self.vms[caller_id as usize].registers[7] = RESULT_WHAT;
+                self.vms[caller_id as usize].set_reg(7, RESULT_WHAT);
 
                 let _ = self.vms[caller_id as usize].transition(VmState::Running);
                 self.active_vm = caller_id;
@@ -1299,7 +1497,7 @@ pub enum DispatchResult {
     /// Continue execution of the active VM.
     Continue,
     /// A protocol cap was called — host should handle.
-    ProtocolCall { slot: u8, regs: [u64; 13], gas: u64 },
+    ProtocolCall { slot: u8 },
     /// Root VM halted normally.
     RootHalt(u64),
     /// Root VM panicked.
@@ -1557,16 +1755,16 @@ mod tests {
         kernel.dispatch_ecalli((MGMT_SET_MAX_GAS << 8) | handle_idx as u32);
 
         // CALL child — gas should be capped at 5000
-        let parent_gas_before = kernel.vms[0].gas;
+        let parent_gas_before = kernel.vms[0].gas();
         kernel.set_active_reg(7, 0);
         kernel.set_active_reg(12, 0xFF);
         kernel.dispatch_ecalli(handle_idx as u32);
 
         assert_eq!(kernel.active_vm, 1);
-        assert_eq!(kernel.vms[1].gas, 5000);
+        assert_eq!(kernel.vms[1].gas(), 5000);
 
         // Parent lost 10 (ecalli) + 10 (call overhead) + 5000 (transfer)
-        assert_eq!(kernel.vms[0].gas, parent_gas_before - 5020);
+        assert_eq!(kernel.vms[0].gas(), parent_gas_before - 5020);
     }
 
     #[test]
@@ -1584,9 +1782,10 @@ mod tests {
         kernel.set_active_reg(7, 123);
         let result = kernel.dispatch_ecalli(0);
         match result {
-            DispatchResult::ProtocolCall { slot, regs, .. } => {
+            DispatchResult::ProtocolCall { slot } => {
                 assert_eq!(slot, 0);
-                assert_eq!(regs[7], 123);
+                // Registers accessible via kernel.active_reg(7)
+                assert_eq!(kernel.active_reg(7), 123);
             }
             _ => panic!("expected ProtocolCall"),
         }

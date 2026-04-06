@@ -10,7 +10,7 @@ Grey's RISC-V recompiler vs PolkaVM's compiler backend, measured on 8 workloads 
 
 **Benchmark fairness:**
 - Both VMs compile from the same source (Rust, compiled to RISC-V, transpiled to PVM for Grey / compiled to PolkaVM format for PolkaVM)
-- Grey recompiler uses `mprotect`-based bounds checking (`--features javm/signals`)
+- Grey recompiler uses mprotect-based bounds checking (always enabled on x86-64 Linux)
 - PolkaVM uses generic sandbox with `POLKAVM_ALLOW_EXPERIMENTAL=1`
 - Criterion statistical framework, 100 samples per benchmark (10 for ecrecover)
 - Same host machine, same gas limit, same workload parameters
@@ -18,7 +18,7 @@ Grey's RISC-V recompiler vs PolkaVM's compiler backend, measured on 8 workloads 
 **Reproduction:**
 ```bash
 POLKAVM_ALLOW_EXPERIMENTAL=1 POLKAVM_DEFAULT_COST_MODEL=full-l1-hit \
-  cargo bench -p grey-bench --features javm/signals
+  cargo bench -p grey-bench
 ```
 
 ## Results: Compile + Execute (full pipeline)
@@ -88,7 +88,7 @@ Grey's interpreter wins 6 of 8. PolkaVM wins ed25519 (1.6x) and ecrecover (1.1x)
 ## Environment
 
 - Date: 2026-03-30
-- Grey: javm recompiler with `signals` feature
+- Grey: javm recompiler (mprotect bounds checking)
 - PolkaVM: v0.32.0, generic sandbox, `full-l1-hit` cost model
 - Rust: 1.94.1, release mode
 - Hardware: Intel Core i9-13900K

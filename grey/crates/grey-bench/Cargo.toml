@@ -10,9 +10,7 @@ default = ["polkavm-generic-sandbox"]
 polkavm-generic-sandbox = ["polkavm/generic-sandbox"]
 
 [dependencies]
-# Don't enable javm/signals here — Cargo feature unification would activate it
 # for the entire workspace, preventing `cargo test --workspace` from testing
-# the non-signals recompiler path. Pass --features javm/signals explicitly
 # when running benchmarks.
 javm = { workspace = true }
 grey-transpiler = { workspace = true }

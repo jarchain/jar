@@ -5,7 +5,7 @@
 //!   - `mem_seq`: sequential sweep (prefetch-friendly, best case)
 //!   - `mem_rand`: pseudo-random stride (cache-hostile, worst case)
 //!
-//! Run: `cargo bench -p grey-bench --features javm/signals --bench mem_bench`
+//! Run: `cargo bench -p grey-bench --bench mem_bench`
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use grey_bench::mem::*;

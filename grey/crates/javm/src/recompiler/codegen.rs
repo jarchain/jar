@@ -937,7 +937,7 @@ impl Compiler {
 
     /// Emit memory read with bounds check (cold fault path).
     /// Hot path: cmp + jae + load (2 instructions, no extra stores).
-    /// With `signals` feature: no bounds check, just the load (SIGSEGV handles OOB).
+    /// No bounds check — SIGSEGV handler catches OOB.
     fn emit_mem_read_sized(&mut self, dst: Reg, fn_addr: u64, width_bytes: u32, pvm_pc: u32) {
         let w = if width_bytes > 0 {
             width_bytes
@@ -964,7 +964,7 @@ impl Compiler {
     }
 
     /// Emit memory write with bounds check (cold fault path).
-    /// With `signals` feature: no bounds check, just the store.
+    /// No bounds check — SIGSEGV handler catches OOB.
     fn emit_mem_write(&mut self, _addr_in_scratch: bool, val_reg: Reg, fn_addr: u64, pvm_pc: u32) {
         let w = if fn_addr == self.helpers.mem_write_u8 {
             1u32
@@ -989,8 +989,8 @@ impl Compiler {
     }
 
     /// Emit store-immediate-indirect: store an immediate value to memory.
-    /// With `signals` feature: inline SIB store (no function call needed).
-    /// Without `signals`: falls back to helper function call.
+    /// Inline SIB store (no function call needed).
+    ///
     fn emit_store_imm_ind(
         &mut self,
         opcode: Opcode,
