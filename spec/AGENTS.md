@@ -92,7 +92,15 @@ Each has a `lean_exe` (e.g., `safrolejsontest`) that loads vectors, runs the tra
 ### Bless mode (regenerate expected outputs)
 ```bash
 lake build jarstf
-.lake/build/bin/jarstf --bless safrole tests/vectors/safrole/tiny
+.lake/build/bin/jarstf --variant jar1 --bless accumulate tests/vectors/accumulate
+.lake/build/bin/jarstf --variant gp072_tiny --bless safrole tests/vectors/safrole
+```
+
+To rebuild PVM blobs referenced by accumulate vectors (after changing service source):
+```bash
+cd ../grey
+cargo build --release -p spec-tests
+cargo run --release -p spec-tests -- bless ../spec/tests/vectors/accumulate/blobs
 ```
 
 ### Property-based tests
