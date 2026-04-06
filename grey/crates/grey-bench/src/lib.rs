@@ -656,75 +656,119 @@ pub fn grey_fib_recur_blob() -> Vec<u8> {
 
     // PC 10: move_reg S0, A0 (2 bytes) — save N
     push_inst(&mut code, &mut bitmask, 100);
-    push_data(&mut code, &mut bitmask, (Reg::S0 as u8) | ((Reg::A0 as u8) << 4));
+    push_data(
+        &mut code,
+        &mut bitmask,
+        (Reg::S0 as u8) | ((Reg::A0 as u8) << 4),
+    );
 
     // CREATE child1: φ[7]=bitmask(1<<32), φ[12]=dst_slot(64)
     // PC 12: load_imm_64 A0, 1<<32 (10 bytes) — bitmask: bit 32 = CODE cap
     push_inst(&mut code, &mut bitmask, 20);
     push_data(&mut code, &mut bitmask, Reg::A0 as u8);
-    for i in 0..8 { push_data(&mut code, &mut bitmask, ((1u64 << 32) >> (i * 8)) as u8); }
+    for i in 0..8 {
+        push_data(&mut code, &mut bitmask, ((1u64 << 32) >> (i * 8)) as u8);
+    }
 
     // PC 22: load_imm A5, 64 (6 bytes) — dst_slot = 64 for HANDLE
     push_inst(&mut code, &mut bitmask, 51);
     push_data(&mut code, &mut bitmask, Reg::A5 as u8);
-    for &b in &64i32.to_le_bytes() { push_data(&mut code, &mut bitmask, b); }
+    for &b in &64i32.to_le_bytes() {
+        push_data(&mut code, &mut bitmask, b);
+    }
 
     // PC 28: ecalli(32) (5 bytes) — CREATE child1 → handle at slot 64
     push_inst(&mut code, &mut bitmask, 10);
-    for &b in &32u32.to_le_bytes() { push_data(&mut code, &mut bitmask, b); }
+    for &b in &32u32.to_le_bytes() {
+        push_data(&mut code, &mut bitmask, b);
+    }
 
     // CREATE child2: φ[7]=bitmask(1<<32), φ[12]=dst_slot(65)
     // PC 33: load_imm_64 A0, 1<<32 (10 bytes) — bitmask
     push_inst(&mut code, &mut bitmask, 20);
     push_data(&mut code, &mut bitmask, Reg::A0 as u8);
-    for i in 0..8 { push_data(&mut code, &mut bitmask, ((1u64 << 32) >> (i * 8)) as u8); }
+    for i in 0..8 {
+        push_data(&mut code, &mut bitmask, ((1u64 << 32) >> (i * 8)) as u8);
+    }
 
     // PC 43: load_imm A5, 65 (6 bytes) — dst_slot = 65 for HANDLE
     push_inst(&mut code, &mut bitmask, 51);
     push_data(&mut code, &mut bitmask, Reg::A5 as u8);
-    for &b in &65i32.to_le_bytes() { push_data(&mut code, &mut bitmask, b); }
+    for &b in &65i32.to_le_bytes() {
+        push_data(&mut code, &mut bitmask, b);
+    }
 
     // PC 49: ecalli(32) (5 bytes) — CREATE child2 → handle at slot 65
     push_inst(&mut code, &mut bitmask, 10);
-    for &b in &32u32.to_le_bytes() { push_data(&mut code, &mut bitmask, b); }
+    for &b in &32u32.to_le_bytes() {
+        push_data(&mut code, &mut bitmask, b);
+    }
 
     // CALL child1 with N-1: φ[7]=N-1, φ[12]=0 (no IPC cap)
     // PC 54: add_imm_64 A0, S0, -1 (6 bytes) — A0 = N-1
     push_inst(&mut code, &mut bitmask, 149);
-    push_data(&mut code, &mut bitmask, (Reg::A0 as u8) | ((Reg::S0 as u8) << 4));
-    for &b in &(-1i32).to_le_bytes() { push_data(&mut code, &mut bitmask, b); }
+    push_data(
+        &mut code,
+        &mut bitmask,
+        (Reg::A0 as u8) | ((Reg::S0 as u8) << 4),
+    );
+    for &b in &(-1i32).to_le_bytes() {
+        push_data(&mut code, &mut bitmask, b);
+    }
 
     // PC 60: load_imm A5, 0 (6 bytes) — φ[12] = 0 (no IPC cap, slot 0 = IPC itself)
     push_inst(&mut code, &mut bitmask, 51);
     push_data(&mut code, &mut bitmask, Reg::A5 as u8);
-    for &b in &0i32.to_le_bytes() { push_data(&mut code, &mut bitmask, b); }
+    for &b in &0i32.to_le_bytes() {
+        push_data(&mut code, &mut bitmask, b);
+    }
 
     // PC 66: ecalli(64) (5 bytes) — CALL child1 with N-1
     push_inst(&mut code, &mut bitmask, 10);
-    for &b in &64u32.to_le_bytes() { push_data(&mut code, &mut bitmask, b); }
+    for &b in &64u32.to_le_bytes() {
+        push_data(&mut code, &mut bitmask, b);
+    }
 
     // PC 71: move_reg S1, A0 (2 bytes) — save fib(N-1)
     push_inst(&mut code, &mut bitmask, 100);
-    push_data(&mut code, &mut bitmask, (Reg::S1 as u8) | ((Reg::A0 as u8) << 4));
+    push_data(
+        &mut code,
+        &mut bitmask,
+        (Reg::S1 as u8) | ((Reg::A0 as u8) << 4),
+    );
 
     // CALL child2 with N-2: φ[7]=N-2, φ[12]=0 (no IPC cap)
     // PC 73: add_imm_64 A0, S0, -2 (6 bytes) — A0 = N-2
     push_inst(&mut code, &mut bitmask, 149);
-    push_data(&mut code, &mut bitmask, (Reg::A0 as u8) | ((Reg::S0 as u8) << 4));
-    for &b in &(-2i32).to_le_bytes() { push_data(&mut code, &mut bitmask, b); }
+    push_data(
+        &mut code,
+        &mut bitmask,
+        (Reg::A0 as u8) | ((Reg::S0 as u8) << 4),
+    );
+    for &b in &(-2i32).to_le_bytes() {
+        push_data(&mut code, &mut bitmask, b);
+    }
 
     // PC 79: load_imm A5, 0 (6 bytes) — φ[12] = 0 (no IPC cap)
     push_inst(&mut code, &mut bitmask, 51);
     push_data(&mut code, &mut bitmask, Reg::A5 as u8);
-    for &b in &0i32.to_le_bytes() { push_data(&mut code, &mut bitmask, b); }
+    for &b in &0i32.to_le_bytes() {
+        push_data(&mut code, &mut bitmask, b);
+    }
 
     // PC 85: ecalli(65) (5 bytes) — CALL child2 with N-2
     push_inst(&mut code, &mut bitmask, 10);
-    for &b in &65u32.to_le_bytes() { push_data(&mut code, &mut bitmask, b); }
+    for &b in &65u32.to_le_bytes() {
+        push_data(&mut code, &mut bitmask, b);
+    }
 
     // PC 90: add_64 A0, S1, A0 (3 bytes) — fib(N-1) + fib(N-2)
     push_inst(&mut code, &mut bitmask, 200);
-    push_data(&mut code, &mut bitmask, (Reg::S1 as u8) | ((Reg::A0 as u8) << 4));
+    push_data(
+        &mut code,
+        &mut bitmask,
+        (Reg::S1 as u8) | ((Reg::A0 as u8) << 4),
+    );
     push_data(&mut code, &mut bitmask, Reg::A0 as u8);
 
     // PC 93: fallthrough (1 byte) — terminator so PC 94 is a gas block start
@@ -732,7 +776,9 @@ pub fn grey_fib_recur_blob() -> Vec<u8> {
 
     // PC 94: ecalli(0x00) (5 bytes) — REPLY(A0) (IPC slot 0)
     push_inst(&mut code, &mut bitmask, 10);
-    for &b in &0x00u32.to_le_bytes() { push_data(&mut code, &mut bitmask, b); }
+    for &b in &0x00u32.to_le_bytes() {
+        push_data(&mut code, &mut bitmask, b);
+    }
 
     // PC 99: trap (1 byte) — sentinel for recompiler (never reached)
     push_inst(&mut code, &mut bitmask, 0);

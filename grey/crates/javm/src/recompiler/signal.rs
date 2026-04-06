@@ -162,11 +162,7 @@ unsafe extern "C" fn sigsegv_handler(
                 // PC is in JIT code but not at a registered trap site.
                 // Use the nearest preceding trap entry's PVM PC as a best-effort
                 // location, or 0 if no preceding entry exists.
-                if idx > 0 {
-                    trap_table[idx - 1].1
-                } else {
-                    0
-                }
+                if idx > 0 { trap_table[idx - 1].1 } else { 0 }
             }
         };
 
