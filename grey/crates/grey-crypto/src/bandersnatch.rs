@@ -283,6 +283,15 @@ pub fn vrf_output_hash(signature: &[u8]) -> Option<[u8; 32]> {
 
 use grey_types::signing_contexts;
 
+/// Build the VRF input for ticket operations: X_T ⌢ η₂ ⌢ E₁(attempt) (eq 6.29).
+pub fn build_ticket_vrf_input(eta2: &[u8; 32], attempt: u8) -> Vec<u8> {
+    let mut input = Vec::with_capacity(48);
+    input.extend_from_slice(signing_contexts::TICKET_SEAL);
+    input.extend_from_slice(eta2);
+    input.push(attempt);
+    input
+}
+
 /// Verify a ticket Ring VRF proof and return the ticket ID.
 ///
 /// Constructs the VRF input as: X_T ⌢ η₂ ⌢ E₁(attempt) (eq 6.29).
@@ -293,10 +302,7 @@ pub fn verify_ticket(
     attempt: u8,
     proof: &[u8],
 ) -> Option<[u8; 32]> {
-    let mut vrf_input = Vec::with_capacity(48);
-    vrf_input.extend_from_slice(signing_contexts::TICKET_SEAL);
-    vrf_input.extend_from_slice(eta2);
-    vrf_input.push(attempt);
+    let vrf_input = build_ticket_vrf_input(eta2, attempt);
     ring_vrf_verify(ring_size, ring_commitment, &vrf_input, &[], proof)
 }
 
@@ -395,10 +401,7 @@ mod tests {
         let eta2 = [0u8; 32];
         let attempt = 0u8;
 
-        let mut vrf_input = Vec::new();
-        vrf_input.extend_from_slice(signing_contexts::TICKET_SEAL);
-        vrf_input.extend_from_slice(&eta2);
-        vrf_input.push(attempt);
+        let vrf_input = build_ticket_vrf_input(&eta2, attempt);
 
         let proof = keypairs[prover_idx]
             .ring_vrf_sign(&ring_keys, prover_idx, &vrf_input, &[])
@@ -431,10 +434,7 @@ mod tests {
         let eta2 = [7u8; 32];
 
         // Compute ticket IDs for validator 3, attempt 0
-        let mut vrf_input = Vec::new();
-        vrf_input.extend_from_slice(signing_contexts::TICKET_SEAL);
-        vrf_input.extend_from_slice(&eta2);
-        vrf_input.push(0);
+        let vrf_input = build_ticket_vrf_input(&eta2, 0);
 
         let ticket_id = keypairs[3].vrf_output_for_input(&vrf_input).unwrap();
 

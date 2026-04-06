@@ -76,10 +76,7 @@ pub fn is_slot_author_with_keypair(
 
             // For each attempt (0..N), compute VRF output and check against ticket ID
             for attempt in 0..config.tickets_per_validator as u8 {
-                let mut vrf_input = Vec::with_capacity(48);
-                vrf_input.extend_from_slice(signing_contexts::TICKET_SEAL);
-                vrf_input.extend_from_slice(&eta2.0);
-                vrf_input.push(attempt);
+                let vrf_input = grey_crypto::bandersnatch::build_ticket_vrf_input(&eta2.0, attempt);
 
                 if let Some(ticket_id) = kp.vrf_output_for_input(&vrf_input)
                     && ticket_id == ticket.id.0
@@ -333,10 +330,7 @@ mod tests {
 
         for (vi, s) in secrets.iter().enumerate() {
             for attempt in 0..config.tickets_per_validator as u8 {
-                let mut vrf_input = Vec::with_capacity(48);
-                vrf_input.extend_from_slice(signing_contexts::TICKET_SEAL);
-                vrf_input.extend_from_slice(&eta2.0);
-                vrf_input.push(attempt);
+                let vrf_input = grey_crypto::bandersnatch::build_ticket_vrf_input(&eta2.0, attempt);
 
                 if let Some(ticket_id) = s.bandersnatch.vrf_output_for_input(&vrf_input) {
                     all_tickets.push((
