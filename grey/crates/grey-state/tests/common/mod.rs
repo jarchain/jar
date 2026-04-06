@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 use grey_types::config::Config;
+use grey_types::state::PendingReport;
 use grey_types::validator::ValidatorKey;
 use grey_types::work::{AvailabilitySpec, RefinementContext, WorkDigest, WorkReport, WorkResult};
 use grey_types::{
@@ -287,4 +288,23 @@ pub fn parse_validator(v: &serde_json::Value) -> ValidatorKey {
         bls: BlsPublicKey(bls),
         metadata,
     }
+}
+
+/// Parse a pending reports array (ρ) from JSON.
+/// Each element is either null (empty slot) or a report with timeout.
+pub fn parse_pending_reports(json: &serde_json::Value) -> Vec<Option<PendingReport>> {
+    json.as_array()
+        .unwrap()
+        .iter()
+        .map(|v| {
+            if v.is_null() {
+                None
+            } else {
+                Some(PendingReport {
+                    report: parse_work_report(&v["report"]),
+                    timeslot: v["timeout"].as_u64().unwrap() as u32,
+                })
+            }
+        })
+        .collect()
 }
