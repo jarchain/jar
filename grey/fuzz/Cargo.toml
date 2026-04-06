@@ -11,6 +11,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 grey-codec = { path = "../crates/grey-codec" }
 grey-types = { path = "../crates/grey-types" }
+grey-erasure = { path = "../crates/grey-erasure" }
 
 # Prevent this from interfering with workspaces
 [workspace]
@@ -29,4 +30,9 @@ doc = false
 [[bin]]
 name = "fuzz_work_package_decode"
 path = "fuzz_targets/fuzz_work_package_decode.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_erasure_recover"
+path = "fuzz_targets/fuzz_erasure_recover.rs"
 doc = false
