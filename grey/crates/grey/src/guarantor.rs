@@ -20,6 +20,16 @@ use grey_types::{Ed25519Signature, Hash, signing_contexts};
 use scale::Encode;
 use std::collections::{BTreeMap, HashSet};
 
+/// Sign a guarantee message: X_G ⌢ report_hash.
+///
+/// Constructs the signing payload per GP Section 11 and signs with Ed25519.
+pub fn sign_guarantee(report_hash: &Hash, secrets: &ValidatorSecrets) -> Ed25519Signature {
+    let mut message = Vec::with_capacity(13 + 32);
+    message.extend_from_slice(signing_contexts::GUARANTEE);
+    message.extend_from_slice(&report_hash.0);
+    secrets.ed25519.sign(&message)
+}
+
 /// Tracks pending guarantees and chunks for availability.
 #[derive(Default)]
 pub struct GuarantorState {
@@ -173,10 +183,7 @@ pub fn process_work_package(
     );
 
     // 5. Sign the guarantee
-    let mut message = Vec::with_capacity(13 + 32);
-    message.extend_from_slice(signing_contexts::GUARANTEE);
-    message.extend_from_slice(&report_hash.0);
-    let signature = secrets.ed25519.sign(&message);
+    let signature = sign_guarantee(&report_hash, secrets);
 
     let guarantee = Guarantee {
         report,

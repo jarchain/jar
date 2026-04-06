@@ -22,7 +22,7 @@ use grey_store::Store;
 use grey_types::config::Config;
 use grey_types::header::{Assurance, Block};
 use grey_types::state::State;
-use grey_types::{BandersnatchPublicKey, Hash, Timeslot, signing_contexts};
+use grey_types::{BandersnatchPublicKey, Hash, Timeslot};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Maximum number of out-of-order blocks to buffer. Prevents memory
@@ -473,10 +473,7 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                                     // Add a second guarantor co-signature (minimum 2 required)
                                     let co_signer_idx = if config.validator_index == 0 { 1u16 } else { 0 };
                                     let co_secrets = &all_secrets[co_signer_idx as usize];
-                                    let mut msg = Vec::with_capacity(13 + 32);
-                                    msg.extend_from_slice(signing_contexts::GUARANTEE);
-                                    msg.extend_from_slice(&report_hash.0);
-                                    let co_sig = co_secrets.ed25519.sign(&msg);
+                                    let co_sig = crate::guarantor::sign_guarantee(&report_hash, co_secrets);
                                     // Only co-sign the newly created guarantee (the last one),
                                     // not all pending guarantees — they have different report hashes.
                                     if let Some(g) = guarantor_state.pending_guarantees.last_mut() {
@@ -1313,10 +1310,7 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                                             // Co-sign with a second validator (testnet only)
                                             let co_idx = if config.validator_index == 0 { 1u16 } else { 0 };
                                             let co_secrets = &all_secrets[co_idx as usize];
-                                            let mut msg = Vec::with_capacity(13 + 32);
-                                            msg.extend_from_slice(signing_contexts::GUARANTEE);
-                                            msg.extend_from_slice(&report_hash.0);
-                                            let co_sig = co_secrets.ed25519.sign(&msg);
+                                            let co_sig = crate::guarantor::sign_guarantee(&report_hash, co_secrets);
                                             // Only co-sign the newly created guarantee (the last one),
                                             // not all pending guarantees — they have different report hashes.
                                             if let Some(g) = guarantor_state.pending_guarantees.last_mut() {
