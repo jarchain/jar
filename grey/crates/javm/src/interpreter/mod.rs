@@ -430,6 +430,14 @@ impl Interpreter {
                 self.pc = next_pc;
             }
 
+            // === A.5.1b: Ecall (management ops, no immediate) ===
+            Opcode::Ecall => {
+                // Advance PC to next instruction before returning
+                self.pc = next_pc;
+                // Exit with special ecall marker. Kernel reads φ[11]=op, φ[12]=subject|object.
+                return Some(ExitReason::Ecall);
+            }
+
             // === A.5.2: One immediate ===
             Opcode::Ecalli => {
                 if let Args::Imm { imm } = args {
@@ -1627,6 +1635,10 @@ impl Interpreter {
                     exit = Some(ExitReason::Panic);
                 }
                 Opcode::Fallthrough | Opcode::Unlikely => {}
+                Opcode::Ecall => {
+                    self.pc = next_pc;
+                    return (ExitReason::Ecall, initial_gas - self.gas);
+                }
 
                 // === One immediate ===
                 Opcode::Ecalli => {

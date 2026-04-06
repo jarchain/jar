@@ -42,8 +42,10 @@ pub enum ExitReason {
     OutOfGas,
     /// ×: Page fault at the given page address.
     PageFault(u32),
-    /// h̵: Host-call with the given identifier.
+    /// h̵: Host-call with the given identifier (ecalli).
     HostCall(u32),
+    /// Management op or dynamic CALL (ecall). φ[11]=op, φ[12]=subject|object.
+    Ecall,
 }
 
 // --- PVM constants (Gray Paper Appendix A / I.4.4) ---

@@ -100,6 +100,7 @@ impl VmInstance {
                 | (Running, Halted) // halt
                 | (Running, Faulted) // panic/OOG/page fault
                 | (WaitingForReply, Running) // callee replied, caller resumes
+                | (Faulted, Running) // RESUME: parent restarts faulted VM
         );
         if !valid {
             return Err(VmStateError {

@@ -608,7 +608,56 @@ impl InvocationKernel {
         DispatchResult::Continue
     }
 
-    /// Handle a management op.
+    /// Dispatch an ecall (management ops + dynamic CALL).
+    /// φ[11] = op code, φ[12] = subject (low u32) | object (high u32).
+    pub fn dispatch_ecall(&mut self, op: u32) -> DispatchResult {
+        // Charge ecall gas (same as ecalli)
+        let ecall_gas: u64 = 10;
+        let current_gas = self.active_gas();
+        if current_gas < ecall_gas {
+            return DispatchResult::Fault(FaultType::OutOfGas);
+        }
+        let g = self.vms[self.active_vm as usize].gas();
+        self.vms[self.active_vm as usize].set_gas(g - ecall_gas);
+
+        let phi12 = self.active_reg(12);
+        let subject_ref = (phi12 & 0xFFFFFFFF) as u32;
+        let _object_ref = (phi12 >> 32) as u32;
+
+        // For now, delegate to existing management ops using the subject as local cap idx.
+        // Full indirection support will come in a later step.
+        let cap_idx = (subject_ref & 0xFF) as u8;
+
+        match op {
+            0x00 => {
+                // Dynamic CALL — same as ecalli but subject from register
+                self.handle_call(cap_idx)
+            }
+            0x02 => self.mgmt_map(cap_idx),
+            0x03 => self.mgmt_unmap(cap_idx),
+            0x04 => self.mgmt_split(cap_idx),
+            0x05 => self.mgmt_drop(cap_idx),
+            0x06 => self.mgmt_move(cap_idx),
+            0x07 => self.mgmt_copy(cap_idx),
+            0x0A => self.mgmt_downgrade(cap_idx),
+            0x0B => self.mgmt_set_max_gas(cap_idx),
+            0x0C => {
+                // DIRTY — TODO
+                self.set_active_reg(7, RESULT_WHAT);
+                DispatchResult::Continue
+            }
+            0x0D => {
+                // RESUME — restart a FAULTED VM
+                self.handle_resume(cap_idx)
+            }
+            _ => {
+                self.set_active_reg(7, RESULT_WHAT);
+                DispatchResult::Continue
+            }
+        }
+    }
+
+    /// Handle a management op (legacy ecalli encoding, will be removed).
     fn handle_management_op(&mut self, op: u32, cap_idx: u8) -> DispatchResult {
         match op {
             MGMT_MAP => self.mgmt_map(cap_idx),
@@ -913,6 +962,63 @@ impl InvocationKernel {
                 self.set_active_reg(7, RESULT_WHAT);
             }
         }
+        DispatchResult::Continue
+    }
+
+    /// RESUME a FAULTED VM. Same gas model as CALL.
+    fn handle_resume(&mut self, handle_idx: u8) -> DispatchResult {
+        let vm = &self.vms[self.active_vm as usize];
+        let (target_vm_id, max_gas) = match vm.cap_table.get(handle_idx) {
+            Some(Cap::Handle(h)) => (h.vm_id, h.max_gas),
+            _ => {
+                self.set_active_reg(7, RESULT_WHAT);
+                return DispatchResult::Continue;
+            }
+        };
+
+        if target_vm_id as usize >= self.vms.len() {
+            self.set_active_reg(7, RESULT_WHAT);
+            return DispatchResult::Continue;
+        }
+
+        // Target must be FAULTED
+        if self.vms[target_vm_id as usize].state != VmState::Faulted {
+            self.set_active_reg(7, RESULT_WHAT);
+            return DispatchResult::Continue;
+        }
+
+        // Gas transfer (same as CALL)
+        let caller_vm = &mut self.vms[self.active_vm as usize];
+        let call_overhead = 10u64;
+        if caller_vm.gas() < call_overhead {
+            return DispatchResult::Fault(FaultType::OutOfGas);
+        }
+        caller_vm.set_gas(caller_vm.gas() - call_overhead);
+
+        let callee_gas = match max_gas {
+            Some(limit) => caller_vm.gas().min(limit),
+            None => caller_vm.gas(),
+        };
+        caller_vm.set_gas(caller_vm.gas() - callee_gas);
+
+        // Save caller state
+        let caller_id = self.active_vm;
+        let _ = self.vms[caller_id as usize].transition(VmState::WaitingForReply);
+
+        // Push call frame (no IPC cap for RESUME)
+        self.call_stack.push(CallFrame {
+            caller_vm_id: caller_id,
+            ipc_cap_idx: None,
+            ipc_was_mapped: None,
+        });
+
+        // Resume callee: FAULTED → RUNNING, registers/PC preserved
+        let callee = &mut self.vms[target_vm_id as usize];
+        callee.set_gas(callee_gas);
+        callee.caller = Some(caller_id);
+        let _ = callee.transition(VmState::Running);
+        self.active_vm = target_vm_id;
+
         DispatchResult::Continue
     }
 
@@ -1221,6 +1327,7 @@ impl InvocationKernel {
             crate::ExitReason::OutOfGas => (2, 0),
             crate::ExitReason::PageFault(addr) => (3, addr),
             crate::ExitReason::HostCall(id) => (4, id),
+            crate::ExitReason::Ecall => (6, 0),
         }
     }
 
@@ -1358,6 +1465,24 @@ impl InvocationKernel {
                         DispatchResult::RootPanic => return KernelResult::Panic,
                         DispatchResult::Continue => continue,
                         _ => return KernelResult::Panic,
+                    }
+                }
+                6 => {
+                    // Ecall — management ops / dynamic CALL.
+                    // Read φ[11]=op, φ[12]=subject|object from active VM.
+                    let op = self.active_reg(11) as u32;
+                    #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+                    self.flush_live_ctx();
+                    match self.dispatch_ecall(op) {
+                        DispatchResult::Continue => continue,
+                        DispatchResult::ProtocolCall { slot } => {
+                            return KernelResult::ProtocolCall { slot };
+                        }
+                        DispatchResult::RootHalt(v) => return KernelResult::Halt(v),
+                        DispatchResult::RootPanic => return KernelResult::Panic,
+                        DispatchResult::RootOutOfGas => return KernelResult::OutOfGas,
+                        DispatchResult::RootPageFault(a) => return KernelResult::PageFault(a),
+                        DispatchResult::Fault(_) => continue,
                     }
                 }
                 _ => return KernelResult::Panic,

@@ -109,6 +109,7 @@ pub const EXIT_PANIC: u32 = 1;
 pub const EXIT_OOG: u32 = 2;
 pub const EXIT_PAGE_FAULT: u32 = 3;
 pub const EXIT_HOST_CALL: u32 = 4;
+pub const EXIT_ECALL: u32 = 6;
 
 /// Result of compilation.
 pub struct CompileResult {
@@ -1218,6 +1219,12 @@ impl Compiler {
             Opcode::Fallthrough | Opcode::Unlikely => {
                 // Just fall through to next instruction.
                 // Note: gas is already charged at basic block start above.
+            }
+
+            // === A.5.1b: Ecall (management ops, no immediate) ===
+            Opcode::Ecall => {
+                self.asm.mov_store32_imm(CTX, CTX_PC, next_pc as i32);
+                self.emit_exit(EXIT_ECALL, 0);
             }
 
             // === A.5.2: One immediate ===

@@ -12,6 +12,8 @@ pub enum Opcode {
     Trap = 0,
     Fallthrough = 1,
     Unlikely = 2,
+    /// Management ops + dynamic CALL. φ[11]=op, φ[12]=subject|object.
+    Ecall = 3,
 
     // A.5.2: One immediate
     Ecalli = 10,
@@ -179,7 +181,7 @@ pub enum Opcode {
 static OPCODE_TABLE: [u8; 256] = {
     let mut t = [0u8; 256];
     let valid: &[u8] = &[
-        0, 1, 2, 10, 20, 30, 31, 32, 33, 40, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62,
+        0, 1, 2, 3, 10, 20, 30, 31, 32, 33, 40, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62,
         70, 71, 72, 73, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 100, 101, 102, 103, 104, 105,
         106, 107, 108, 109, 110, 111, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131,
         132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149,
@@ -212,7 +214,7 @@ impl Opcode {
     pub fn category(self) -> InstructionCategory {
         let b = self as u8;
         match b {
-            0..=2 => InstructionCategory::NoArgs,
+            0..=3 => InstructionCategory::NoArgs,
             10 => InstructionCategory::OneImm,
             20 => InstructionCategory::OneRegExtImm,
             30..=33 => InstructionCategory::TwoImm,
@@ -241,6 +243,7 @@ impl Opcode {
             Opcode::Trap
                 | Opcode::Fallthrough
                 | Opcode::Unlikely
+                | Opcode::Ecall
                 | Opcode::Ecalli
                 | Opcode::Jump
                 | Opcode::JumpInd
