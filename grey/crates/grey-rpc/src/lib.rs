@@ -634,42 +634,40 @@ impl JamRpcServer for RpcImpl {
     }
 }
 
+/// Accept a subscription and forward notifications from a broadcast channel
+/// until the client disconnects.
+async fn forward_subscription(
+    pending: jsonrpsee::PendingSubscriptionSink,
+    channel: &tokio::sync::broadcast::Sender<serde_json::Value>,
+) -> jsonrpsee::core::SubscriptionResult {
+    let sink = pending.accept().await?;
+    let mut rx = channel.subscribe();
+    tokio::spawn(async move {
+        while let Ok(notification) = rx.recv().await {
+            let msg =
+                jsonrpsee::SubscriptionMessage::from_json(&notification).expect("valid JSON");
+            if sink.send(msg).await.is_err() {
+                break; // client disconnected
+            }
+        }
+    });
+    Ok(())
+}
+
 #[async_trait]
 impl JamSubscriptionsServer for RpcImpl {
     async fn subscribe_new_blocks(
         &self,
         pending: jsonrpsee::PendingSubscriptionSink,
     ) -> jsonrpsee::core::SubscriptionResult {
-        let sink = pending.accept().await?;
-        let mut rx = self.state.block_notifications.subscribe();
-        tokio::spawn(async move {
-            while let Ok(notification) = rx.recv().await {
-                let msg =
-                    jsonrpsee::SubscriptionMessage::from_json(&notification).expect("valid JSON");
-                if sink.send(msg).await.is_err() {
-                    break; // client disconnected
-                }
-            }
-        });
-        Ok(())
+        forward_subscription(pending, &self.state.block_notifications).await
     }
 
     async fn subscribe_finalized(
         &self,
         pending: jsonrpsee::PendingSubscriptionSink,
     ) -> jsonrpsee::core::SubscriptionResult {
-        let sink = pending.accept().await?;
-        let mut rx = self.state.finality_notifications.subscribe();
-        tokio::spawn(async move {
-            while let Ok(notification) = rx.recv().await {
-                let msg =
-                    jsonrpsee::SubscriptionMessage::from_json(&notification).expect("valid JSON");
-                if sink.send(msg).await.is_err() {
-                    break; // client disconnected
-                }
-            }
-        });
-        Ok(())
+        forward_subscription(pending, &self.state.finality_notifications).await
     }
 }
 
