@@ -255,16 +255,16 @@ impl Assembler {
     fn grow(&mut self, additional: usize) {
         match &mut self.code_buf {
             CodeBuf::Vec(code) => {
-                // SAFETY: write_pos <= code.capacity() (maintained by emission guards).
-                // We set_len to the actual written bytes before reserve() so it
-                // copies existing data, then reset to 0 since we track length via
-                // write_pos (not Vec::len).
+                // SAFETY: write_pos <= code.capacity() is maintained by ensure_capacity().
+                // set_len(write_pos) exposes the bytes we've written so reserve() copies them.
                 unsafe {
                     code.set_len(self.write_pos);
                 }
                 code.reserve(additional);
                 self.buf = code.as_mut_ptr();
                 self.capacity = code.capacity();
+                // SAFETY: Reset len to 0 — we track the actual length via write_pos,
+                // not Vec::len. The data is preserved in the backing allocation.
                 unsafe {
                     code.set_len(0);
                 }
@@ -355,6 +355,8 @@ impl Assembler {
     #[inline(always)]
     fn emit(&mut self, b: u8) {
         debug_assert!(self.write_pos < self.capacity);
+        // SAFETY: write_pos < capacity is asserted above; buf points to a valid
+        // allocation of at least `capacity` bytes (Vec or mmap).
         unsafe {
             *self.buf.add(self.write_pos) = b;
         }
@@ -365,6 +367,8 @@ impl Assembler {
     #[inline(always)]
     fn emit3(&mut self, a: u8, b: u8, c: u8) {
         debug_assert!(self.write_pos + 3 <= self.capacity);
+        // SAFETY: write_pos + 3 <= capacity is asserted above; buf is a valid
+        // allocation. Individual byte writes are in-bounds.
         unsafe {
             let p = self.buf.add(self.write_pos);
             *p = a;
@@ -379,11 +383,12 @@ impl Assembler {
     fn flush_instbuf(&mut self, ib: InstBuf) {
         let len = ib.len();
         debug_assert!(self.write_pos + len <= self.capacity);
+        // SAFETY: write_pos + len <= capacity is asserted above. We always
+        // write both 8-byte halves (16 bytes total) even if len < 16 — this
+        // is safe because ensure_capacity(512) guarantees ample slack beyond
+        // the actual instruction bytes.
         unsafe {
             let p = self.buf.add(self.write_pos);
-            // Always write both halves — the second write may go past the
-            // instruction boundary but the buffer has ample capacity (ensured
-            // by ensure_capacity(512)). Eliminates a branch per emission.
             std::ptr::write_unaligned(p as *mut u64, ib.out as u64);
             std::ptr::write_unaligned(p.add(8) as *mut u64, (ib.out >> 64) as u64);
         }
@@ -393,6 +398,8 @@ impl Assembler {
     #[inline(always)]
     fn emit_u32(&mut self, v: u32) {
         debug_assert!(self.write_pos + 4 <= self.capacity);
+        // SAFETY: write_pos + 4 <= capacity asserted; unaligned write is valid
+        // for any byte-aligned pointer within the buffer.
         unsafe {
             std::ptr::write_unaligned(self.buf.add(self.write_pos) as *mut u32, v.to_le());
         }
@@ -403,6 +410,7 @@ impl Assembler {
     #[allow(dead_code)]
     fn emit_u64(&mut self, v: u64) {
         debug_assert!(self.write_pos + 8 <= self.capacity);
+        // SAFETY: write_pos + 8 <= capacity asserted; unaligned write is valid.
         unsafe {
             std::ptr::write_unaligned(self.buf.add(self.write_pos) as *mut u64, v.to_le());
         }
@@ -412,6 +420,8 @@ impl Assembler {
     #[inline(always)]
     fn emit_i32(&mut self, v: i32) {
         debug_assert!(self.write_pos + 4 <= self.capacity);
+        // SAFETY: write_pos + 4 <= capacity asserted; unaligned write is valid.
+        // The cast chain converts i32 → LE bytes → u32 for write_unaligned.
         unsafe {
             std::ptr::write_unaligned(
                 self.buf.add(self.write_pos) as *mut u32,
