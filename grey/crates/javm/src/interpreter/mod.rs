@@ -82,6 +82,10 @@ pub struct Interpreter {
     pub(crate) decoded_insts: Vec<DecodedInst>,
     /// Mapping from PC byte offset → instruction index. u32::MAX = invalid.
     pub(crate) pc_to_idx: Vec<u32>,
+    /// Pre-computed skip distances: skip_distances[k] = distance from position k
+    /// to the next instruction start (bitmask=1) at or after k, capped at 25.
+    /// Enables O(1) skip lookups instead of O(25) linear scans.
+    skip_distances: Vec<u8>,
 }
 
 impl Interpreter {
@@ -99,12 +103,14 @@ impl Interpreter {
         let gas_block_starts = compute_gas_block_starts(&code, &bitmask);
         let block_gas_costs =
             compute_block_gas_costs(&code, &bitmask, &gas_block_starts, mem_cycles);
+        let skip_distances = precompute_skip_distances(&bitmask);
         let (decoded_insts, pc_to_idx) = predecode_instructions(
             &code,
             &bitmask,
             &basic_block_starts,
             &gas_block_starts,
             &block_gas_costs,
+            &skip_distances,
         );
         Self {
             gas,
@@ -125,6 +131,7 @@ impl Interpreter {
             pc_trace: Vec::new(),
             decoded_insts,
             pc_to_idx,
+            skip_distances,
         }
     }
 
@@ -140,12 +147,14 @@ impl Interpreter {
         let basic_block_starts = compute_basic_block_starts(code, bitmask);
         let gas_block_starts = compute_gas_block_starts(code, bitmask);
         let block_gas_costs = compute_block_gas_costs(code, bitmask, &gas_block_starts, mem_cycles);
+        let skip_distances = precompute_skip_distances(bitmask);
         let (decoded_insts, pc_to_idx) = predecode_instructions(
             code,
             bitmask,
             &basic_block_starts,
             &gas_block_starts,
             &block_gas_costs,
+            &skip_distances,
         );
         crate::backend::InterpreterProgram {
             decoded_insts,
@@ -306,20 +315,9 @@ impl Interpreter {
     }
 
     /// Compute skip(i) — distance to next instruction minus one (eq A.3).
+    /// Uses pre-computed skip distance table for O(1) lookup.
     fn skip(&self, i: usize) -> usize {
-        // skip(i) = min(24, first j where (k ++ [1,1,...])_{i+1+j} = 1)
-        for j in 0..25 {
-            let idx = i + 1 + j;
-            let bit = if idx < self.bitmask.len() {
-                self.bitmask[idx]
-            } else {
-                1 // infinite 1s appended
-            };
-            if bit == 1 {
-                return j;
-            }
-        }
-        24
+        (self.skip_distances[i + 1] as usize).min(24)
     }
 
     /// Read from ζ (code with implicit zero extension, eq A.4).
@@ -2861,6 +2859,25 @@ fn flatten_args(args: &Args) -> (u8, u8, u8, u64, u64) {
     }
 }
 
+/// Pre-compute the distance from each position to the next instruction start.
+///
+/// For each index k, `result[k]` is the number of positions from k to the
+/// nearest bitmask=1 entry at or after k (0 if bitmask[k] is itself 1).
+/// Capped at 25 since PVM instructions are at most 1 + 24 bytes.
+/// Past-end positions are treated as instruction starts (distance 0).
+fn precompute_skip_distances(bitmask: &[u8]) -> Vec<u8> {
+    let len = bitmask.len();
+    let mut dist = vec![0u8; len + 1]; // +1: past-end is a virtual instruction start
+    for k in (0..len).rev() {
+        dist[k] = if bitmask[k] == 1 {
+            0
+        } else {
+            (dist[k + 1] + 1).min(25)
+        };
+    }
+    dist
+}
+
 /// Pre-decode all instructions into a flat array for fast execution.
 ///
 /// Returns (decoded_insts, pc_to_idx) where:
@@ -2872,28 +2889,19 @@ fn predecode_instructions(
     basic_block_starts: &[bool],
     gas_block_starts: &[bool],
     block_gas_costs: &[u64],
+    skip_distances: &[u8],
 ) -> (Vec<DecodedInst>, Vec<u32>) {
     let len = code.len();
     let mut insts = Vec::new();
     let mut pc_to_idx = vec![u32::MAX; len + 1]; // +1 for sentinel
-
-    let skip_at = |i: usize| -> usize {
-        for j in 0..25 {
-            let idx = i + 1 + j;
-            let bit = if idx < bitmask.len() { bitmask[idx] } else { 1 };
-            if bit == 1 {
-                return j;
-            }
-        }
-        24
-    };
 
     let mut pc = 0;
     while pc < len {
         #[allow(clippy::collapsible_if)] // let-chain requires Rust 2024
         if pc < bitmask.len() && bitmask[pc] == 1 {
             if let Some(opcode) = Opcode::from_byte(code[pc]) {
-                let skip = skip_at(pc);
+                // O(1) skip lookup from pre-computed table
+                let skip = (skip_distances[pc + 1] as usize).min(24);
                 let next_pc = (pc + 1 + skip) as u32;
                 let category = opcode.category();
                 let args = args::decode_args(code, pc, skip, category);
