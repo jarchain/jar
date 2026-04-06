@@ -189,10 +189,22 @@ fn not_found(msg: impl Into<String>) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(-32001, msg.into(), None::<()>)
 }
 
+/// Extension trait for converting any `Result<T, E: Display>` into an
+/// RPC internal error, replacing the repeated
+/// `.map_internal_err()` pattern.
+trait MapInternalErr<T> {
+    fn map_internal_err(self) -> Result<T, ErrorObjectOwned>;
+}
+
+impl<T, E: core::fmt::Display> MapInternalErr<T> for Result<T, E> {
+    fn map_internal_err(self) -> Result<T, ErrorObjectOwned> {
+        self.map_err(|e| internal_error(e.to_string()))
+    }
+}
+
 /// Parse a hex-encoded 32-byte hash, stripping optional "0x" prefix.
 fn parse_hash_hex(hex_str: &str) -> Result<Hash, ErrorObjectOwned> {
-    let bytes =
-        hex::decode(hex_str.trim_start_matches("0x")).map_err(|e| internal_error(e.to_string()))?;
+    let bytes = hex::decode(hex_str.trim_start_matches("0x")).map_internal_err()?;
     if bytes.len() != 32 {
         return Err(internal_error("hash must be 32 bytes"));
     }
@@ -206,7 +218,7 @@ impl JamRpcServer for RpcImpl {
     async fn get_status(&self) -> Result<serde_json::Value, ErrorObjectOwned> {
         self.track_request("jam_getStatus");
         let status = self.state.status.read().await;
-        serde_json::to_value(&*status).map_err(|e| internal_error(e.to_string()))
+        serde_json::to_value(&*status).map_internal_err()
     }
 
     async fn get_head(&self) -> Result<serde_json::Value, ErrorObjectOwned> {
@@ -322,11 +334,7 @@ impl JamRpcServer for RpcImpl {
         key_hex: String,
     ) -> Result<serde_json::Value, ErrorObjectOwned> {
         self.track_request("jam_readStorage");
-        let (head_hash, head_slot) = self
-            .state
-            .store
-            .get_head()
-            .map_err(|e| internal_error(e.to_string()))?;
+        let (head_hash, head_slot) = self.state.store.get_head().map_internal_err()?;
 
         let key_bytes = hex::decode(key_hex.trim_start_matches("0x"))
             .map_err(|e| internal_error(format!("invalid hex key: {}", e)))?;
@@ -337,7 +345,7 @@ impl JamRpcServer for RpcImpl {
             .state
             .store
             .get_service_storage(&head_hash, service_id, &key_bytes)
-            .map_err(|e| internal_error(e.to_string()))?
+            .map_internal_err()?
         {
             Some(value) => Ok(serde_json::json!({
                 "service_id": service_id,
@@ -358,18 +366,10 @@ impl JamRpcServer for RpcImpl {
 
     async fn get_context(&self, service_id: u32) -> Result<serde_json::Value, ErrorObjectOwned> {
         self.track_request("jam_getContext");
-        let (head_hash, head_slot) = self
-            .state
-            .store
-            .get_head()
-            .map_err(|e| internal_error(e.to_string()))?;
+        let (head_hash, head_slot) = self.state.store.get_head().map_internal_err()?;
 
         // Get block header for state_root
-        let block = self
-            .state
-            .store
-            .get_block(&head_hash)
-            .map_err(|e| internal_error(e.to_string()))?;
+        let block = self.state.store.get_block(&head_hash).map_internal_err()?;
 
         let anchor = hex::encode(head_hash.0);
         let state_root = hex::encode(block.header.state_root.0);
@@ -377,7 +377,7 @@ impl JamRpcServer for RpcImpl {
             .state
             .store
             .get_accumulation_root(&head_hash, &head_hash)
-            .map_err(|e| internal_error(e.to_string()))?
+            .map_internal_err()?
             .map(|h| hex::encode(h.0))
             .unwrap_or_else(|| hex::encode([0u8; 32]));
 
@@ -386,7 +386,7 @@ impl JamRpcServer for RpcImpl {
             .state
             .store
             .get_service_code_hash(&head_hash, service_id)
-            .map_err(|e| internal_error(e.to_string()))?
+            .map_internal_err()?
             .map(|h| hex::encode(h.0));
 
         Ok(serde_json::json!({
@@ -403,17 +403,13 @@ impl JamRpcServer for RpcImpl {
         service_id: u32,
     ) -> Result<serde_json::Value, ErrorObjectOwned> {
         self.track_request("jam_getServiceAccount");
-        let (head_hash, head_slot) = self
-            .state
-            .store
-            .get_head()
-            .map_err(|e| internal_error(e.to_string()))?;
+        let (head_hash, head_slot) = self.state.store.get_head().map_internal_err()?;
 
         match self
             .state
             .store
             .get_service_metadata(&head_hash, service_id)
-            .map_err(|e| internal_error(e.to_string()))?
+            .map_internal_err()?
         {
             Some(meta) => Ok(serde_json::json!({
                 "service_id": service_id,
@@ -469,32 +465,21 @@ impl JamRpcServer for RpcImpl {
         let (block_hash, slot) = if let Some(hex) = block_hash_hex {
             let hash = parse_hash_hex(&hex)?;
             // Look up the block to get the slot
-            let block = self
-                .state
-                .store
-                .get_block(&hash)
-                .map_err(|e| internal_error(e.to_string()))?;
+            let block = self.state.store.get_block(&hash).map_internal_err()?;
             (hash, block.header.timeslot)
         } else {
-            self.state
-                .store
-                .get_head()
-                .map_err(|e| internal_error(e.to_string()))?
+            self.state.store.get_head().map_internal_err()?
         };
 
         // Get block header for state_root
-        let block = self
-            .state
-            .store
-            .get_block(&block_hash)
-            .map_err(|e| internal_error(e.to_string()))?;
+        let block = self.state.store.get_block(&block_hash).map_internal_err()?;
 
         // Read entropy: C(6) = 4 × 32 raw bytes
         let entropy_raw = self
             .state
             .store
             .get_state_kv(&block_hash, &grey_merkle::state_key_from_index(6))
-            .map_err(|e| internal_error(e.to_string()))?
+            .map_internal_err()?
             .unwrap_or_default();
         let entropy: Vec<String> = (0..4)
             .map(|i| {
@@ -511,7 +496,7 @@ impl JamRpcServer for RpcImpl {
             .state
             .store
             .get_state_kv(&block_hash, &grey_merkle::state_key_from_index(8))
-            .map_err(|e| internal_error(e.to_string()))?
+            .map_internal_err()?
             .unwrap_or_default();
         let validator_count = validators_raw.len() / 336;
 
@@ -546,11 +531,7 @@ impl JamRpcServer for RpcImpl {
             }
         };
 
-        let (head_hash, head_slot) = self
-            .state
-            .store
-            .get_head()
-            .map_err(|e| internal_error(e.to_string()))?;
+        let (head_hash, head_slot) = self.state.store.get_head().map_internal_err()?;
 
         let raw = self
             .state
@@ -559,7 +540,7 @@ impl JamRpcServer for RpcImpl {
                 &head_hash,
                 &grey_merkle::state_key_from_index(component_index),
             )
-            .map_err(|e| internal_error(e.to_string()))?
+            .map_internal_err()?
             .unwrap_or_default();
 
         // Decode validators using scale (u32 count prefix + ValidatorKey entries)
