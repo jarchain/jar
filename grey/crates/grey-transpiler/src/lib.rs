@@ -183,143 +183,141 @@ pub fn peephole_fuse_load_imm_alu(
         if op == 51 && next_i < len && bitmask[next_i] == 1 && !targets.contains(&next_i) {
             let alu_op = code[next_i];
             let alu_s = skip_for(bitmask, next_i);
-            if let Some(imm_op) = imm_opcode(alu_op) {
+
+            // Check if the following instruction is a ThreeReg ALU we can fuse with.
+            // Covers: commutative ops (add, mul, shift, logic), sub_64, set_lt.
+            let is_fusable_alu =
+                imm_opcode(alu_op).is_some() || alu_op == 201 || alu_op == 216 || alu_op == 217;
+
+            if is_fusable_alu && i + 1 < len && next_i + 2 < len {
                 // Parse load_imm: [51, reg_byte, imm...] — OneRegOneImm
-                // lx = skip - 1 (from bitmask)
-                if i + 1 < len {
-                    let load_reg_byte = code[i + 1];
-                    let load_rd = load_reg_byte & 0x0F;
-                    let lx = s.saturating_sub(1);
-                    let load_val = parse_signed_imm(code, i + 2, lx);
+                let load_reg_byte = code[i + 1];
+                let load_rd = load_reg_byte & 0x0F;
+                let lx = s.saturating_sub(1);
+                let load_val = parse_signed_imm(code, i + 2, lx);
 
-                    // Parse ThreeReg ALU: [op, ra|(rb<<4), rd]
-                    if next_i + 2 < len {
-                        let alu_reg1 = code[next_i + 1];
-                        let alu_ra = alu_reg1 & 0x0F;
-                        let alu_rb = (alu_reg1 >> 4) & 0x0F;
-                        let alu_rd = code[next_i + 2].min(12);
+                // Parse ThreeReg ALU: [op, ra|(rb<<4), rd]
+                let alu_reg1 = code[next_i + 1];
+                let alu_ra = alu_reg1 & 0x0F;
+                let alu_rb = (alu_reg1 >> 4) & 0x0F;
+                let alu_rd = code[next_i + 2].min(12);
 
-                        // Fusable if: load_rd == alu_rd, load_val fits i32,
-                        // and load_rd matches one of the ALU sources
-                        let fits_i32 = load_val >= i32::MIN as i64 && load_val <= i32::MAX as i64;
-                        let matches_ra = load_rd == alu_ra;
-                        let matches_rb = load_rd == alu_rb;
+                let fits_i32 = load_val >= i32::MIN as i64 && load_val <= i32::MAX as i64;
+                let matches_ra = load_rd == alu_ra;
+                let matches_rb = load_rd == alu_rb;
+                let end_of_pair = next_i + 1 + alu_s;
 
-                        // Non-commutative: set_lt_u (216) and set_lt_s (217).
-                        // rd = ra < rb: constant as rb → set_lt_imm, constant as ra → set_gt_imm
-                        if (alu_op == 216 || alu_op == 217)
-                            && fits_i32
-                            && load_rd == alu_rd
-                            && (matches_ra != matches_rb)
-                        {
-                            let (cmp_imm_op, base) = if matches_rb {
-                                // rd = ra < K → set_lt_imm(rd, ra, K)
-                                let op = if alu_op == 216 { 136u8 } else { 137u8 };
-                                (op, alu_ra)
-                            } else {
-                                // rd = K < rb → rb > K → set_gt_imm(rd, rb, K)
-                                let op = if alu_op == 216 { 142u8 } else { 143u8 };
-                                (op, alu_rb)
-                            };
-                            let imm32 = load_val as i32;
-                            let end_of_pair = next_i + 1 + alu_s;
-                            if end_of_pair >= i + 6 {
-                                code[i] = cmp_imm_op;
-                                code[i + 1] = (alu_rd & 0x0F) | ((base & 0x0F) << 4);
-                                let imm_bytes = imm32.to_le_bytes();
-                                code[i + 2] = imm_bytes[0];
-                                code[i + 3] = imm_bytes[1];
-                                code[i + 4] = imm_bytes[2];
-                                code[i + 5] = imm_bytes[3];
-                                for k in 6..(end_of_pair - i) {
-                                    code[i + k] = 0;
-                                }
-                                for b in &mut bitmask[(i + 1)..end_of_pair] {
-                                    *b = 0;
-                                }
-                                fused += 1;
-                                i = end_of_pair;
-                                continue;
-                            }
+                /// Write a fused TwoRegOneImm instruction in-place.
+                /// `reg_byte` is `rd | (base << 4)`.
+                fn emit_fused(
+                    code: &mut [u8],
+                    bitmask: &mut [u8],
+                    i: usize,
+                    end: usize,
+                    fused_op: u8,
+                    reg_byte: u8,
+                    imm: i32,
+                ) -> bool {
+                    if end >= i + 6 {
+                        code[i] = fused_op;
+                        code[i + 1] = reg_byte;
+                        let imm_bytes = imm.to_le_bytes();
+                        code[i + 2] = imm_bytes[0];
+                        code[i + 3] = imm_bytes[1];
+                        code[i + 4] = imm_bytes[2];
+                        code[i + 5] = imm_bytes[3];
+                        for k in 6..(end - i) {
+                            code[i + k] = 0;
                         }
-
-                        // Special case: sub_64 (201) is non-commutative.
-                        // load_imm rd, K; sub_64 rd, ra, rb (rd = ra - rb):
-                        //   rd==rb (constant subtrahend): rd = ra - K → add_imm_64(rd, ra, -K)
-                        //   rd==ra (constant minuend):    rd = K - rb → neg_add_imm_64(rd, rb, K)
-                        if alu_op == 201
-                            && fits_i32
-                            && load_rd == alu_rd
-                            && (matches_ra != matches_rb)
-                        {
-                            let (sub_imm_op, base, imm32) = if matches_rb {
-                                // rd = ra - K → add_imm_64(rd, ra, -K)
-                                let neg_k = -(load_val as i32) as i64;
-                                if neg_k < i32::MIN as i64 || neg_k > i32::MAX as i64 {
-                                    i += 1 + s;
-                                    continue;
-                                }
-                                (149u8, alu_ra, neg_k as i32) // add_imm_64
-                            } else {
-                                // rd = K - rb → neg_add_imm_64(rd, rb, K)
-                                (154u8, alu_rb, load_val as i32) // neg_add_imm_64
-                            };
-
-                            let end_of_pair = next_i + 1 + alu_s;
-                            if end_of_pair >= i + 6 {
-                                code[i] = sub_imm_op;
-                                code[i + 1] = (alu_rd & 0x0F) | ((base & 0x0F) << 4);
-                                let imm_bytes = imm32.to_le_bytes();
-                                code[i + 2] = imm_bytes[0];
-                                code[i + 3] = imm_bytes[1];
-                                code[i + 4] = imm_bytes[2];
-                                code[i + 5] = imm_bytes[3];
-                                for k in 6..(end_of_pair - i) {
-                                    code[i + k] = 0;
-                                }
-                                for b in &mut bitmask[(i + 1)..end_of_pair] {
-                                    *b = 0;
-                                }
-                                fused += 1;
-                                i = end_of_pair;
-                                continue;
-                            }
+                        for b in &mut bitmask[(i + 1)..end] {
+                            *b = 0;
                         }
+                        true
+                    } else {
+                        false
+                    }
+                }
 
-                        if fits_i32 && load_rd == alu_rd && (matches_ra || matches_rb) {
-                            // The "base" register is whichever ALU source is NOT load_rd
-                            let base = if matches_ra { alu_rb } else { alu_ra };
-                            let imm32 = load_val as i32;
+                // Non-commutative: set_lt_u (216) and set_lt_s (217).
+                // rd = ra < rb: constant as rb → set_lt_imm, constant as ra → set_gt_imm
+                if (alu_op == 216 || alu_op == 217)
+                    && fits_i32
+                    && load_rd == alu_rd
+                    && (matches_ra != matches_rb)
+                {
+                    let (cmp_imm_op, base) = if matches_rb {
+                        let op = if alu_op == 216 { 136u8 } else { 137u8 };
+                        (op, alu_ra)
+                    } else {
+                        let op = if alu_op == 216 { 142u8 } else { 143u8 };
+                        (op, alu_rb)
+                    };
+                    if emit_fused(
+                        code,
+                        bitmask,
+                        i,
+                        end_of_pair,
+                        cmp_imm_op,
+                        alu_rd | (base << 4),
+                        load_val as i32,
+                    ) {
+                        fused += 1;
+                        i = end_of_pair;
+                        continue;
+                    }
+                }
 
-                            // Write fused TwoRegOneImm: [imm_op, alu_rd|(base<<4), imm0..imm3]
-                            // alu_rd goes in rA position (dest), base goes in rB position
-                            let end_of_pair = next_i + 1 + alu_s;
-
-                            // Need at least 6 bytes for opcode + reg + 4-byte imm
-                            if end_of_pair >= i + 6 {
-                                code[i] = imm_op;
-                                code[i + 1] = (alu_rd & 0x0F) | ((base & 0x0F) << 4);
-                                let imm_bytes = imm32.to_le_bytes();
-                                code[i + 2] = imm_bytes[0];
-                                code[i + 3] = imm_bytes[1];
-                                code[i + 4] = imm_bytes[2];
-                                code[i + 5] = imm_bytes[3];
-
-                                // Zero out remaining bytes and clear bitmask
-                                for k in 6..(end_of_pair - i) {
-                                    code[i + k] = 0;
-                                }
-                                // bitmask[i] stays 1 (instruction start)
-                                // Clear bitmask for all continuation bytes including old ALU start
-                                for b in &mut bitmask[(i + 1)..end_of_pair] {
-                                    *b = 0;
-                                }
-
-                                fused += 1;
-                                i = end_of_pair;
-                                continue;
-                            }
+                // Special case: sub_64 (201) is non-commutative.
+                // load_imm rd, K; sub_64 rd, ra, rb (rd = ra - rb):
+                //   rd==rb (constant subtrahend): rd = ra - K → add_imm_64(rd, ra, -K)
+                //   rd==ra (constant minuend):    rd = K - rb → neg_add_imm_64(rd, rb, K)
+                if alu_op == 201 && fits_i32 && load_rd == alu_rd && (matches_ra != matches_rb) {
+                    let result = if matches_rb {
+                        let neg_k = -(load_val as i32) as i64;
+                        if neg_k >= i32::MIN as i64 && neg_k <= i32::MAX as i64 {
+                            Some((149u8, alu_ra, neg_k as i32))
+                        } else {
+                            None
                         }
+                    } else {
+                        Some((154u8, alu_rb, load_val as i32))
+                    };
+                    if let Some((sub_imm_op, base, imm32)) = result
+                        && emit_fused(
+                            code,
+                            bitmask,
+                            i,
+                            end_of_pair,
+                            sub_imm_op,
+                            alu_rd | (base << 4),
+                            imm32,
+                        )
+                    {
+                        fused += 1;
+                        i = end_of_pair;
+                        continue;
+                    }
+                }
+
+                // General commutative ALU ops with immediate form
+                if let Some(imm_op) = imm_opcode(alu_op)
+                    && fits_i32
+                    && load_rd == alu_rd
+                    && (matches_ra || matches_rb)
+                {
+                    let base = if matches_ra { alu_rb } else { alu_ra };
+                    if emit_fused(
+                        code,
+                        bitmask,
+                        i,
+                        end_of_pair,
+                        imm_op,
+                        alu_rd | (base << 4),
+                        load_val as i32,
+                    ) {
+                        fused += 1;
+                        i = end_of_pair;
+                        continue;
                     }
                 }
             }
@@ -844,4 +842,185 @@ pub fn ensure_branch_targets_are_block_starts(
 
     *code = new_code;
     *bitmask = new_bitmask;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // === peephole_fuse_load_imm_alu tests ===
+
+    #[test]
+    fn test_fuse_load_imm_add64() {
+        // load_imm φ[2], 42 (rd=2, imm=42)
+        // add_64 φ[2] = φ[0] + φ[2] (ra=0, rb=2, rd=2)
+        // → add_imm_64 φ[2] = φ[0] + 42
+        let mut code = vec![
+            51, 2, 42, // load_imm rd=2, imm=42 (skip=1)
+            200, 0x20, 2, // add_64 ra=0, rb=2, rd=2
+        ];
+        let mut bitmask = vec![1, 0, 0, 1, 0, 0];
+
+        let fused = peephole_fuse_load_imm_alu(&mut code, &mut bitmask, &[]);
+        assert_eq!(fused, 1);
+        assert_eq!(code[0], 149); // add_imm_64
+        assert_eq!(code[1] & 0x0F, 2); // rd=2
+        assert_eq!(code[1] >> 4, 0); // base=0
+        assert_eq!(code[2], 42); // imm low byte
+        assert_eq!(bitmask[0], 1);
+        assert_eq!(bitmask[3], 0); // old ALU start cleared
+    }
+
+    #[test]
+    fn test_fuse_load_imm_mul64() {
+        // load_imm φ[3], 7 → mul_64 φ[3] = φ[1] * φ[3]
+        // → mul_imm_64 φ[3] = φ[1] * 7
+        let mut code = vec![
+            51, 3, 7, // load_imm rd=3, imm=7
+            202, 0x31, 3, // mul_64 ra=1, rb=3, rd=3
+        ];
+        let mut bitmask = vec![1, 0, 0, 1, 0, 0];
+
+        let fused = peephole_fuse_load_imm_alu(&mut code, &mut bitmask, &[]);
+        assert_eq!(fused, 1);
+        assert_eq!(code[0], 150); // mul_imm_64
+    }
+
+    #[test]
+    fn test_fuse_skips_branch_target() {
+        // Same pattern but ALU is a branch target → should NOT fuse
+        let mut code = vec![
+            51, 2, 42, 200, 0x20, 2, 40, 253, 255, 255,
+            255, // jump -3 (targets offset 3 = the add_64)
+        ];
+        let mut bitmask = vec![1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0];
+
+        let fused = peephole_fuse_load_imm_alu(&mut code, &mut bitmask, &[]);
+        assert_eq!(fused, 0, "should not fuse when ALU is a branch target");
+    }
+
+    #[test]
+    fn test_fuse_no_match_different_rd() {
+        // load_imm writes to rd=2 but ALU rd=3 → should NOT fuse
+        let mut code = vec![
+            51, 2, 42, // load_imm rd=2
+            200, 0x20, 3, // add_64 rd=3 (not 2)
+        ];
+        let mut bitmask = vec![1, 0, 0, 1, 0, 0];
+
+        let fused = peephole_fuse_load_imm_alu(&mut code, &mut bitmask, &[]);
+        assert_eq!(fused, 0);
+    }
+
+    #[test]
+    fn test_fuse_sub64_constant_subtrahend() {
+        // load_imm φ[2], 5; sub_64 φ[2] = φ[0] - φ[2]
+        // → add_imm_64 φ[2] = φ[0] + (-5)
+        let mut code = vec![
+            51, 2, 5, // load_imm rd=2, imm=5
+            201, 0x20, 2, // sub_64 ra=0, rb=2, rd=2
+        ];
+        let mut bitmask = vec![1, 0, 0, 1, 0, 0];
+
+        let fused = peephole_fuse_load_imm_alu(&mut code, &mut bitmask, &[]);
+        assert_eq!(fused, 1);
+        assert_eq!(code[0], 149); // add_imm_64
+        // imm should be -5 as i32 LE
+        let imm = i32::from_le_bytes([code[2], code[3], code[4], code[5]]);
+        assert_eq!(imm, -5);
+    }
+
+    // === peephole_eliminate_dead_load_imm tests ===
+
+    #[test]
+    fn test_eliminate_dead_load_imm() {
+        // load_imm φ[2], 99 (dead — immediately overwritten)
+        // load_imm φ[2], 42
+        let mut code = vec![
+            51, 2, 99, // dead load_imm rd=2
+            51, 2, 42, // overwrites rd=2
+        ];
+        let mut bitmask = vec![1, 0, 0, 1, 0, 0];
+
+        let eliminated = peephole_eliminate_dead_load_imm(&mut code, &mut bitmask, &[]);
+        assert_eq!(eliminated, 1);
+        assert_eq!(bitmask[0], 0, "dead instruction bitmask cleared");
+        assert_eq!(code[0], 0, "dead instruction bytes zeroed");
+        assert_eq!(code[3], 51, "second load_imm preserved");
+    }
+
+    #[test]
+    fn test_eliminate_dead_load_imm_branch_target() {
+        // load_imm φ[2], 99; load_imm φ[2], 42
+        // BUT second is a branch target → should NOT eliminate
+        let mut code = vec![
+            51, 2, 99, 51, 2, 42, 40, 253, 255, 255, 255, // jump -3 (targets offset 3)
+        ];
+        let mut bitmask = vec![1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0];
+
+        let eliminated = peephole_eliminate_dead_load_imm(&mut code, &mut bitmask, &[]);
+        assert_eq!(
+            eliminated, 0,
+            "should not eliminate when next is branch target"
+        );
+    }
+
+    #[test]
+    fn test_eliminate_dead_load_imm_different_reg() {
+        // load_imm φ[2], 99; load_imm φ[3], 42 → NOT dead (different registers)
+        let mut code = vec![
+            51, 2, 99, // rd=2
+            51, 3, 42, // rd=3
+        ];
+        let mut bitmask = vec![1, 0, 0, 1, 0, 0];
+
+        let eliminated = peephole_eliminate_dead_load_imm(&mut code, &mut bitmask, &[]);
+        assert_eq!(eliminated, 0);
+    }
+
+    // === peephole_fuse_load_imm_memory tests ===
+
+    #[test]
+    fn test_fuse_load_imm_load_ind() {
+        // load_imm φ[3], 0x100; load_ind_u32 φ[2], φ[3], 4
+        // → NOP; load_u32 φ[2], 0x104
+        // load_ind_u32 format: [128, rd|(ra<<4), offset_bytes]
+        // rd=2 (dest), ra=3 (base). reg byte = 2 | (3<<4) = 0x32.
+        let mut code = vec![
+            51, 3, 0, 1, // load_imm rd=3, imm=0x100 (skip=2: reg+2 imm bytes)
+            128, 0x32, 4, 0, 0, 0, // load_ind_u32 rd=2, ra=3, offset=4
+        ];
+        let mut bitmask = vec![1, 0, 0, 0, 1, 0, 0, 0, 0, 0];
+
+        let fused = peephole_fuse_load_imm_memory(&mut code, &mut bitmask, &[]);
+        assert_eq!(fused, 1);
+        // load_imm is NOP'd (bitmask[0]=0), memory op rewritten in-place
+        assert_eq!(bitmask[0], 0, "load_imm should be NOP'd");
+        assert_eq!(code[4], 56, "load_ind_u32(128) → load_u32(56)");
+        assert_eq!(code[5], 2, "dest register preserved");
+        // Combined address: 0x100 + 4 = 0x104
+        let addr = u32::from_le_bytes([code[6], code[7], code[8], code[9]]);
+        assert_eq!(addr, 0x104);
+    }
+
+    // === parse_signed_imm tests ===
+
+    #[test]
+    fn test_parse_signed_imm_positive() {
+        let code = [42, 0];
+        assert_eq!(parse_signed_imm(&code, 0, 2), 42);
+    }
+
+    #[test]
+    fn test_parse_signed_imm_negative() {
+        // -1 in 1 byte = 0xFF, sign-extended
+        let code = [0xFF];
+        assert_eq!(parse_signed_imm(&code, 0, 1), -1);
+    }
+
+    #[test]
+    fn test_parse_signed_imm_zero_length() {
+        let code = [42];
+        assert_eq!(parse_signed_imm(&code, 0, 0), 0);
+    }
 }
