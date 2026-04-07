@@ -139,7 +139,13 @@ Do NOT ask the user. Submit the review automatically, but apply these safety che
 
    If anything is unclear or suspicious, verdict `notMerge` with an explanation.
 
-5. **Submit immediately** after producing the ranking — do not wait for user confirmation.
+5. **File issues for problems discovered during review.** In auto mode, if during the review process you:
+   - Discover a pre-existing issue in the codebase (not introduced by the PR) — file a GitHub issue describing the problem.
+   - Decide the verdict is `merge` but notice small issues in the PR (e.g., minor UB, missing edge case handling, suboptimal patterns that don't block merge) — file a GitHub issue for each concern so it gets tracked, and reference the issue number(s) in your review comment.
+
+   Use `gh issue create --repo jarchain/jar --title "<title>" --body "<description>"` to file issues. Include enough context (file paths, code snippets, root cause analysis) for someone to act on the issue without re-reading the entire PR.
+
+6. **Submit immediately** after producing the ranking — do not wait for user confirmation.
 
 ### 4. Submit the review
 
