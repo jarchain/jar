@@ -1722,8 +1722,10 @@ impl InvocationKernel {
                 max_addr = max_addr.max(end);
             }
         }
-        // Allocate flat memory and copy in mapped pages from the window
+        // Allocate flat memory and copy in mapped pages from the CODE window (Linux)
+        // or directly from the backing store (non-Linux, where window is not used).
         let mut flat_mem = vec![0u8; max_addr];
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         let window_base = self.active_window_base();
         for slot in 0..=255u8 {
             if let Some(Cap::Data(d)) = vm.cap_table.get(slot)
@@ -1733,8 +1735,7 @@ impl InvocationKernel {
                 let addr = base_page as usize * crate::PVM_PAGE_SIZE as usize;
                 let len = d.page_count as usize * crate::PVM_PAGE_SIZE as usize;
                 if addr + len <= flat_mem.len() {
-                    // SAFETY: window_base is valid (active window); addr+len
-                    // is within both the window and flat_mem (checked above).
+                    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
                     unsafe {
                         std::ptr::copy_nonoverlapping(
                             window_base.add(addr),
@@ -1742,6 +1743,10 @@ impl InvocationKernel {
                             len,
                         );
                     }
+                    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+                    flat_mem[addr..addr + len].copy_from_slice(
+                        self.backing.read_page_slice(d.backing_offset, d.page_count),
+                    );
                 }
             }
         }
@@ -1760,28 +1765,63 @@ impl InvocationKernel {
 
         let (exit, _gas_used) = interp.run();
 
-        // Write back modified pages to the window
-        let vm_ref = &self.vm_arena.vm(self.active_vm);
-        let wb = self.active_window_base();
-        for slot in 0..=255u8 {
-            if let Some(Cap::Data(d)) = vm_ref.cap_table.get(slot)
-                && d.has_any_mapped()
-                && d.access == Some(Access::RW)
-                && let Some(base_page) = d.base_offset
-            {
-                let addr = base_page as usize * crate::PVM_PAGE_SIZE as usize;
-                let len = d.page_count as usize * crate::PVM_PAGE_SIZE as usize;
-                if addr + len <= interp.flat_mem.len() {
-                    // SAFETY: wb is the active window base; addr+len is within
-                    // both interp.flat_mem and the window (checked above).
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            interp.flat_mem.as_ptr().add(addr),
-                            wb.add(addr),
-                            len,
-                        );
+        // Write back modified pages to the CODE window (Linux) / backing store (non-Linux)
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            let vm_ref = &self.vm_arena.vm(self.active_vm);
+            let wb = self.active_window_base();
+            for slot in 0..=255u8 {
+                if let Some(Cap::Data(d)) = vm_ref.cap_table.get(slot)
+                    && d.has_any_mapped()
+                    && d.access == Some(Access::RW)
+                    && let Some(base_page) = d.base_offset
+                {
+                    let addr = base_page as usize * crate::PVM_PAGE_SIZE as usize;
+                    let len = d.page_count as usize * crate::PVM_PAGE_SIZE as usize;
+                    if addr + len <= interp.flat_mem.len() {
+                        // SAFETY: wb is the active window base; addr+len is within
+                        // both interp.flat_mem and the window (checked above).
+                        unsafe {
+                            std::ptr::copy_nonoverlapping(
+                                interp.flat_mem.as_ptr().add(addr),
+                                wb.add(addr),
+                                len,
+                            );
+                        }
                     }
                 }
+            }
+        }
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        {
+            // Collect write-back info first so we can drop the vm borrow before
+            // taking &mut self.backing.
+            let writebacks: Vec<(usize, u32, u32)> = {
+                let vm_ref = &self.vms[self.active_vm as usize];
+                (0..=255u8)
+                    .filter_map(|slot| {
+                        let d = if let Some(Cap::Data(d)) = vm_ref.cap_table.get(slot) {
+                            d
+                        } else {
+                            return None;
+                        };
+                        if !d.has_any_mapped() || d.access != Some(Access::RW) {
+                            return None;
+                        }
+                        let base_page = d.base_offset?;
+                        let addr = base_page as usize * crate::PVM_PAGE_SIZE as usize;
+                        let len = d.page_count as usize * crate::PVM_PAGE_SIZE as usize;
+                        if addr + len > interp.flat_mem.len() {
+                            return None;
+                        }
+                        Some((addr, d.backing_offset, d.page_count))
+                    })
+                    .collect()
+            };
+            for (addr, backing_offset, page_count) in writebacks {
+                let len = page_count as usize * crate::PVM_PAGE_SIZE as usize;
+                self.backing
+                    .write_page_slice(backing_offset, &interp.flat_mem[addr..addr + len]);
             }
         }
 
@@ -1997,13 +2037,42 @@ impl InvocationKernel {
     /// Read bytes directly from the active VM's window by address.
     /// Used for reading output from guest programs that return ptr+len in registers.
     pub fn read_data_cap_window(&self, addr: u32, len: u32) -> Option<Vec<u8>> {
-        let wb = self.active_window_base();
-        let mut buf = vec![0u8; len as usize];
-        // SAFETY: addr is within the window's 4GB mmap region.
-        unsafe {
-            std::ptr::copy_nonoverlapping(wb.add(addr as usize), buf.as_mut_ptr(), len as usize);
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            let wb = self.active_window_base();
+            let mut buf = vec![0u8; len as usize];
+            // SAFETY: addr is within the window's 4GB mmap region.
+            unsafe {
+                std::ptr::copy_nonoverlapping(wb.add(addr as usize), buf.as_mut_ptr(), len as usize);
+            }
+            Some(buf)
         }
-        Some(buf)
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        {
+            // On non-Linux the window is not backed by physical pages.
+            // Find the DataCap covering addr and read from the backing store.
+            let vm = &self.vm_arena.vm(self.active_vm);
+            let addr_page = addr / crate::PVM_PAGE_SIZE;
+            let offset_in_page = (addr % crate::PVM_PAGE_SIZE) as usize;
+            for slot in 0..=255u8 {
+                if let Some(Cap::Data(d)) = vm.cap_table.get(slot)
+                    && let Some(base_page) = d.base_offset
+                    && d.has_any_mapped()
+                    && addr_page >= base_page
+                    && addr_page < base_page + d.page_count
+                {
+                    let page_in_cap = (addr_page - base_page) as usize;
+                    let byte_off = (d.backing_offset as usize + page_in_cap)
+                        * crate::PVM_PAGE_SIZE as usize
+                        + offset_in_page;
+                    return self
+                        .backing
+                        .read_bytes_at(byte_off, len as usize)
+                        .map(|s| s.to_vec());
+                }
+            }
+            None
+        }
     }
 
     /// Write bytes into a DATA cap's mapped region in the active VM's window.

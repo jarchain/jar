@@ -186,53 +186,32 @@ impl BackingStore {
         self.total_pages
     }
 
-    /// Copy pages from the pool into the CodeWindow buffer.
+    /// No-op on non-Linux: the window is not used by the interpreter.
+    /// The interpreter reads backing pages directly via `read_page_slice`.
     ///
     /// # Safety
-    /// `window_base` must point to a buffer of at least
-    /// `(base_page + page_count) * PVM_PAGE_SIZE` bytes.
+    /// No preconditions on non-Linux (function is a no-op).
     pub unsafe fn map_pages(
         &self,
-        window_base: *mut u8,
-        base_page: u32,
-        backing_offset: u32,
-        page_count: u32,
+        _window_base: *mut u8,
+        _base_page: u32,
+        _backing_offset: u32,
+        _page_count: u32,
         _access: Access,
     ) -> bool {
-        let src_start = backing_offset as usize * PVM_PAGE_SIZE as usize;
-        let dst_start = base_page as usize * PVM_PAGE_SIZE as usize;
-        let len = page_count as usize * PVM_PAGE_SIZE as usize;
-        if src_start + len > self.data.len() {
-            return false;
-        }
-        // SAFETY: caller ensures window_base has sufficient capacity.
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                self.data.as_ptr().add(src_start),
-                window_base.add(dst_start),
-                len,
-            );
-        }
         true
     }
 
-    /// Zero out pages in the CodeWindow buffer.
+    /// No-op on non-Linux: the window is not used by the interpreter.
     ///
     /// # Safety
-    /// `window_base` must point to a buffer of at least
-    /// `(base_page + page_count) * PVM_PAGE_SIZE` bytes.
-    pub unsafe fn unmap_pages(window_base: *mut u8, base_page: u32, page_count: u32) -> bool {
-        let dst_start = base_page as usize * PVM_PAGE_SIZE as usize;
-        let len = page_count as usize * PVM_PAGE_SIZE as usize;
-        // SAFETY: caller ensures window_base is valid.
-        unsafe {
-            std::ptr::write_bytes(window_base.add(dst_start), 0, len);
-        }
+    /// No preconditions on non-Linux (function is a no-op).
+    pub unsafe fn unmap_pages(_window_base: *mut u8, _base_page: u32, _page_count: u32) -> bool {
         true
     }
 
     /// Write initial data directly into the pool.
-    pub fn write_init_data(&self, backing_offset: u32, data: &[u8]) -> bool {
+    pub fn write_init_data(&mut self, backing_offset: u32, data: &[u8]) -> bool {
         if data.is_empty() {
             return true;
         }
@@ -240,15 +219,31 @@ impl BackingStore {
         if start + data.len() > self.data.len() {
             return false;
         }
-        // SAFETY: bounds checked above; cast away the shared ref to write init data.
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                data.as_ptr(),
-                self.data.as_ptr().add(start) as *mut u8,
-                data.len(),
-            );
-        }
+        self.data[start..start + data.len()].copy_from_slice(data);
         true
+    }
+
+    /// Return a slice of backing pages (used by interpreter copy-in).
+    pub fn read_page_slice(&self, backing_offset: u32, page_count: u32) -> &[u8] {
+        let start = backing_offset as usize * PVM_PAGE_SIZE as usize;
+        let len = page_count as usize * PVM_PAGE_SIZE as usize;
+        &self.data[start..start + len]
+    }
+
+    /// Write a slice into backing pages (used by interpreter write-back).
+    pub fn write_page_slice(&mut self, backing_offset: u32, src: &[u8]) {
+        let start = backing_offset as usize * PVM_PAGE_SIZE as usize;
+        self.data[start..start + src.len()].copy_from_slice(src);
+    }
+
+    /// Read bytes from the backing store at a raw byte offset.
+    /// Used by `read_data_cap_window` on non-Linux.
+    pub fn read_bytes_at(&self, byte_offset: usize, len: usize) -> Option<&[u8]> {
+        if byte_offset + len <= self.data.len() {
+            Some(&self.data[byte_offset..byte_offset + len])
+        } else {
+            None
+        }
     }
 }
 
@@ -417,6 +412,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     fn test_write_init_data() {
         let store = BackingStore::new(2).expect("BackingStore::new failed");
         let window = CodeWindow::new(2).expect("CodeWindow::new failed");
@@ -430,6 +426,60 @@ mod tests {
             std::ptr::copy_nonoverlapping(window.base(), buf.as_mut_ptr(), 8);
             assert_eq!(buf, [1, 2, 3, 4, 5, 6, 7, 8]);
             assert!(BackingStore::unmap_pages(window.base(), 0, 1));
+        }
+    }
+
+    #[test]
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    fn test_write_init_data() {
+        let mut store = BackingStore::new(2).expect("BackingStore::new failed");
+        let init_data = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        assert!(store.write_init_data(0, &init_data));
+        assert_eq!(&store.read_page_slice(0, 1)[..8], &init_data);
+    }
+
+    #[test]
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn test_map_remap_different_address() {
+        let store = BackingStore::new(4).expect("BackingStore::new failed");
+        let window = CodeWindow::new(4).expect("CodeWindow::new failed");
+
+        unsafe {
+            assert!(store.map_pages(window.base(), 0, 0, 1, Access::RW));
+            let ptr = window.base();
+            *ptr = 0x42;
+        }
+
+        unsafe { assert!(BackingStore::unmap_pages(window.base(), 0, 1)) };
+
+        unsafe {
+            assert!(store.map_pages(window.base(), 5, 0, 1, Access::RW));
+            let ptr = window.base().add(5 * PVM_PAGE_SIZE as usize);
+            assert_eq!(*ptr, 0x42); // Same physical data via shared memfd pages.
+        }
+
+        unsafe { assert!(BackingStore::unmap_pages(window.base(), 5, 1)) };
+    }
+
+    #[test]
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn test_two_windows_same_backing() {
+        let store = BackingStore::new(2).expect("BackingStore::new failed");
+        let win_a = CodeWindow::new(2).expect("CodeWindow::new failed");
+        let win_b = CodeWindow::new(2).expect("CodeWindow::new failed");
+
+        unsafe {
+            assert!(store.map_pages(win_a.base(), 0, 0, 1, Access::RW));
+            assert!(store.map_pages(win_b.base(), 3, 0, 1, Access::RW));
+
+            *win_a.base() = 0xAB;
+
+            // Same physical page via shared memfd — visible in win_b.
+            let val = *win_b.base().add(3 * PVM_PAGE_SIZE as usize);
+            assert_eq!(val, 0xAB);
+
+            assert!(BackingStore::unmap_pages(win_a.base(), 0, 1));
+            assert!(BackingStore::unmap_pages(win_b.base(), 3, 1));
         }
     }
 }

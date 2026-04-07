@@ -8,6 +8,8 @@ include!(concat!(env!("OUT_DIR"), "/guest_blob.rs"));
 /// Result from running a guest test on a kernel backend.
 struct KernelRun {
     output: Vec<u8>,
+    // Only compared on Linux x86-64 (where the recompiler is available).
+    #[allow(dead_code)]
     gas_used: u64,
 }
 
@@ -52,29 +54,33 @@ fn run_kernel(backend: javm::PvmBackend, input: &[u8], test_id: u32) -> KernelRu
     KernelRun { output, gas_used }
 }
 
-/// Run a guest test on native host, interpreter, and recompiler.
-/// Assert all outputs match AND interpreter/recompiler consume identical gas.
+/// Run a guest test on native host and interpreter (all platforms), plus recompiler
+/// on Linux x86-64. Asserts outputs match and (on Linux) gas is identical.
 fn run_test(test_id: u32, args: &[u8]) {
     let mut input = test_id.to_le_bytes().to_vec();
     input.extend_from_slice(args);
 
     let host_output = javm_guest_tests::dispatch_to_vec(&input);
     let interp = run_kernel(javm::PvmBackend::ForceInterpreter, &input, test_id);
-    let recomp = run_kernel(javm::PvmBackend::ForceRecompiler, &input, test_id);
 
     assert_eq!(
         host_output, interp.output,
         "test {test_id}: host vs interpreter output mismatch"
     );
-    assert_eq!(
-        host_output, recomp.output,
-        "test {test_id}: host vs recompiler output mismatch"
-    );
-    assert_eq!(
-        interp.gas_used, recomp.gas_used,
-        "test {test_id}: gas mismatch: interpreter={} recompiler={}",
-        interp.gas_used, recomp.gas_used
-    );
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        let recomp = run_kernel(javm::PvmBackend::ForceRecompiler, &input, test_id);
+        assert_eq!(
+            host_output, recomp.output,
+            "test {test_id}: host vs recompiler output mismatch"
+        );
+        assert_eq!(
+            interp.gas_used, recomp.gas_used,
+            "test {test_id}: gas mismatch: interpreter={} recompiler={}",
+            interp.gas_used, recomp.gas_used
+        );
+    }
 }
 
 // -- Helpers ------------------------------------------------------------------
