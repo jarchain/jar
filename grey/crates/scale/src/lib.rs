@@ -156,12 +156,18 @@ impl<const N: usize> Decode for [u8; N] {
 // Vec<T> — u32 LE count prefix + elements
 // ============================================================================
 
-impl<T: Encode> Encode for Vec<T> {
+impl<T: Encode> Encode for [T] {
     fn encode_to(&self, buf: &mut Vec<u8>) {
         (self.len() as u32).encode_to(buf);
         for item in self {
             item.encode_to(buf);
         }
+    }
+}
+
+impl<T: Encode> Encode for Vec<T> {
+    fn encode_to(&self, buf: &mut Vec<u8>) {
+        self.as_slice().encode_to(buf);
     }
 }
 

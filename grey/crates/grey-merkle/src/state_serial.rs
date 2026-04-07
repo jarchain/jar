@@ -237,7 +237,7 @@ fn serialize_entropy(entropy: &[Hash; 4]) -> Vec<u8> {
 
 /// C(16): θ accumulation_outputs — ↕ sorted (E_4(service_id), hash) pairs.
 fn serialize_accumulation_outputs(outputs: &[(ServiceId, Hash)]) -> Vec<u8> {
-    scale::Encode::encode(&outputs.to_vec())
+    scale::Encode::encode(outputs)
 }
 
 /// E(0, a_c, E_8(a_b, a_g, a_m, a_o, a_f), E_4(a_i, a_r, a_a, a_p))
