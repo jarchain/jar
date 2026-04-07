@@ -457,6 +457,92 @@ def handleCopy (state : KernelState) (sVm : Nat) (sSlot : Nat) (oVm : Nat) (oSlo
       | none => (state.setActiveReg 7 RESULT_WHAT, .continue_)
     | none => (state.setActiveReg 7 RESULT_WHAT, .continue_)
 
+/-- DOWNGRADE HANDLE → CALLABLE. Subject=HANDLE, object=dst slot. -/
+def handleDowngrade (state : KernelState) (sVm : Nat) (sSlot : Nat) (oVm : Nat) (oSlot : Nat)
+    : KernelState × DispatchResult :=
+  match state.vms[sVm]!.capTable.get sSlot with
+  | some (.handle h) =>
+    if !state.vms[oVm]!.capTable.isEmpty oSlot then
+      (state.setActiveReg 7 RESULT_WHAT, .continue_)
+    else
+      let callable : CallableCap := { vmId := h.vmId, maxGas := h.maxGas }
+      let state := state.updateVm oVm fun vm =>
+        { vm with capTable := vm.capTable.set oSlot (.callable callable) }
+      (state, .continue_)
+  | _ => (state.setActiveReg 7 RESULT_WHAT, .continue_)
+
+/-- SET_MAX_GAS on a HANDLE. φ[7]=gas_limit. -/
+def handleSetMaxGas (state : KernelState) (vmIdx : Nat) (slot : Nat)
+    : KernelState × DispatchResult :=
+  let gasLimit := (state.getActiveReg 7).toNat
+  let state := state.updateVm vmIdx fun vm =>
+    let newTable := match vm.capTable.get slot with
+      | some (.handle h) => vm.capTable.set slot (.handle { h with maxGas := some gasLimit })
+      | _ => vm.capTable
+    { vm with capTable := newTable }
+  (state, .continue_)
+
+/-- RESUME a FAULTED VM. Same gas model as CALL. -/
+def handleResume (state : KernelState) (vmIdx : Nat) (slot : Nat)
+    : KernelState × DispatchResult :=
+  -- Must be called from the active VM's local cap table
+  if vmIdx != state.activeVm then
+    (state.setActiveReg 7 RESULT_WHAT, .continue_)
+  else
+    match state.vms[vmIdx]!.capTable.get slot with
+    | some (.handle h) =>
+      let targetVmId := h.vmId
+      if targetVmId >= state.vms.size then
+        (state.setActiveReg 7 RESULT_WHAT, .continue_)
+      else if state.vms[targetVmId]!.state != .faulted then
+        (state.setActiveReg 7 RESULT_WHAT, .continue_)
+      else
+        -- Gas transfer (same as CALL)
+        let callerGas := state.vms[state.activeVm]!.gas
+        if callerGas < callOverheadGas then (state, .rootOutOfGas)
+        else
+          let afterOverhead := callerGas - callOverheadGas
+          let calleeGas := match h.maxGas with
+            | some limit => min afterOverhead limit
+            | none => afterOverhead
+          let callerIdx := state.activeVm
+          let state := state.updateVm callerIdx fun vm =>
+            { vm with state := .waitingForReply, gas := afterOverhead - calleeGas }
+          let frame : CallFrame := { callerVmId := callerIdx, ipcCapIdx := none, ipcWasMapped := none }
+          let state := { state with callStack := state.callStack.push frame }
+          -- FAULTED → RUNNING, registers/PC preserved, new gas
+          let state := state.updateVm targetVmId fun vm =>
+            { vm with state := .running, gas := calleeGas, caller := some callerIdx }
+          ({ state with activeVm := targetVmId }, .continue_)
+    | _ => (state.setActiveReg 7 RESULT_WHAT, .continue_)
+
+/-- CALL(DATA) = memcpy between two DATA caps via backing store.
+    φ[7]=src_offset, φ[8]=len, φ[9]=dst_offset, φ[12]=dst DATA cap ref. -/
+def handleCallData (state : KernelState) (srcVm : Nat) (srcSlot : Nat)
+    : KernelState × DispatchResult :=
+  let srcOffset := (state.getActiveReg 7).toNat
+  let len := (state.getActiveReg 8).toNat
+  let dstOffset := (state.getActiveReg 9).toNat
+  let dstRef := UInt32.ofNat (state.getActiveReg 12).toNat
+  if dstRef.toNat == 0 then
+    (state.setActiveReg 7 RESULT_WHAT, .continue_)
+  else
+    match resolveCapRef state dstRef with
+    | none => (state.setActiveReg 7 RESULT_WHAT, .continue_)
+    | some (dstVm, dstSlot) =>
+      match state.vms[srcVm]!.capTable.get srcSlot, state.vms[dstVm]!.capTable.get dstSlot with
+      | some (.data src), some (.data dst) =>
+        let srcSize := src.pageCount * pageSize
+        let dstSize := dst.pageCount * pageSize
+        if srcOffset + len > srcSize || dstOffset + len > dstSize || len == 0 then
+          (state.setActiveReg 7 RESULT_WHAT, .continue_)
+        else
+          -- Copy via backing store
+          let srcData := state.backing.read src.backingOffset srcOffset len
+          let state := { state with backing := state.backing.write dst.backingOffset dstOffset srcData }
+          (state.setActiveReg 7 (UInt64.ofNat len), .continue_)
+      | _, _ => (state.setActiveReg 7 RESULT_WHAT, .continue_)
+
 /-- ecall dispatch: φ[11]=op, φ[12]=subject|object. -/
 def dispatchEcall (state : KernelState) : KernelState × DispatchResult :=
   match state.chargeGas ecalliGasCost with
@@ -500,12 +586,18 @@ def dispatchEcall (state : KernelState) : KernelState × DispatchResult :=
       match resolveCapRef state subjectRef, resolveCapRef state objectRef with
       | some (sv, ss), some (ov, os) => handleCopy state sv ss ov os
       | _, _ => (state.setActiveReg 7 RESULT_WHAT, .continue_)
-    | 0x0A => -- DOWNGRADE: TODO (PR C)
-      (state.setActiveReg 7 RESULT_WHAT, .continue_)
-    | 0x0B => -- SET_MAX_GAS: TODO (PR C)
-      (state.setActiveReg 7 RESULT_WHAT, .continue_)
-    | 0x0D => -- RESUME: TODO (PR C)
-      (state.setActiveReg 7 RESULT_WHAT, .continue_)
+    | 0x0A => -- DOWNGRADE
+      match resolveCapRef state subjectRef, resolveCapRef state objectRef with
+      | some (sv, ss), some (ov, os) => handleDowngrade state sv ss ov os
+      | _, _ => (state.setActiveReg 7 RESULT_WHAT, .continue_)
+    | 0x0B => -- SET_MAX_GAS
+      match resolveCapRef state subjectRef with
+      | some (vmIdx, slot) => handleSetMaxGas state vmIdx slot
+      | none => (state.setActiveReg 7 RESULT_WHAT, .continue_)
+    | 0x0D => -- RESUME
+      match resolveCapRef state subjectRef with
+      | some (vmIdx, slot) => handleResume state vmIdx slot
+      | none => (state.setActiveReg 7 RESULT_WHAT, .continue_)
     | _ => (state.setActiveReg 7 RESULT_WHAT, .continue_)
 
 -- ============================================================================
@@ -529,9 +621,7 @@ def dispatchEcalli (state : KernelState) (imm : UInt32) : KernelState × Dispatc
         | some (.callable c) => handleCallVm state c.vmId c.maxGas
         | some (.untyped _) => handleRetype state
         | some (.code c) => handleCreate state c.id vmIdx
-        | some (.data _) =>
-          -- CALL(DATA) memcpy: TODO (PR C)
-          (state.setActiveReg 7 RESULT_WHAT, .continue_)
+        | some (.data _) => handleCallData state vmIdx slot
         | none =>
           (state.setActiveReg 7 RESULT_WHAT, .continue_)
 
