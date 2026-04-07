@@ -96,6 +96,55 @@ mod tests {
         assert!(seq.is_empty());
     }
 
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            /// Shuffling preserves all elements (is a permutation).
+            #[test]
+            fn shuffle_is_permutation(hash in any::<[u8; 32]>(), n in 0usize..200) {
+                let mut seq: Vec<usize> = (0..n).collect();
+                shuffle_with_hash(&mut seq, &Hash(hash));
+                let mut sorted = seq.clone();
+                sorted.sort();
+                prop_assert_eq!(sorted, (0..n).collect::<Vec<_>>());
+            }
+
+            /// Same input + same hash always produces the same output.
+            #[test]
+            fn shuffle_deterministic(hash in any::<[u8; 32]>(), n in 0usize..100) {
+                let mut a: Vec<usize> = (0..n).collect();
+                let mut b: Vec<usize> = (0..n).collect();
+                shuffle_with_hash(&mut a, &Hash(hash));
+                shuffle_with_hash(&mut b, &Hash(hash));
+                prop_assert_eq!(a, b);
+            }
+
+            /// Different hashes produce different orderings (for n >= 2).
+            #[test]
+            fn shuffle_different_hashes_differ(
+                h1 in any::<[u8; 32]>(),
+                h2 in any::<[u8; 32]>(),
+            ) {
+                prop_assume!(h1 != h2);
+                let n = 20; // large enough that collision is negligible
+                let mut a: Vec<usize> = (0..n).collect();
+                let mut b: Vec<usize> = (0..n).collect();
+                shuffle_with_hash(&mut a, &Hash(h1));
+                shuffle_with_hash(&mut b, &Hash(h2));
+                prop_assert_ne!(a, b);
+            }
+
+            /// random_sequence_from_hash produces the requested length.
+            #[test]
+            fn random_sequence_length(hash in any::<[u8; 32]>(), len in 0usize..500) {
+                let seq = random_sequence_from_hash(&Hash(hash), len);
+                prop_assert_eq!(seq.len(), len);
+            }
+        }
+    }
+
     #[test]
     fn test_shuffle_vectors() {
         #[derive(serde::Deserialize)]
