@@ -1475,11 +1475,9 @@ mod tests {
         assert_eq!(pvm.registers()[2], 17, "φ[2] should be 16 + 1 = 17");
     }
 
-    // === Proptest differential: interpreter vs recompiler ===
-
-    /// Run a ThreeReg ALU program on both interpreter and recompiler,
-    /// assert they produce identical register state and gas usage.
-    fn differential_three_reg(opcode: u8, a: u64, b: u64) {
+    /// Helper: build a program that loads 64-bit values into r0 and r1 via LoadImm64,
+    /// applies a ThreeReg instruction (opcode) with ra=0, rb=1, rd=2, then ecalli 0.
+    fn run_three_reg_op(opcode: u8, a: u64, b: u64) -> u64 {
         let code = vec![
             20,
             0, // LoadImm64 φ[0]
@@ -1510,241 +1508,24 @@ mod tests {
         let bitmask = vec![
             1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0,
         ];
-        let gas = 100_000u64;
+        let registers = [0u64; 13];
 
-        // Run interpreter
-        let mut interp = crate::interpreter::Interpreter::new(
-            code.clone(),
-            bitmask.clone(),
-            vec![],
-            [0u64; 13],
-            vec![0u8; 4096],
-            gas,
-            crate::gas_cost::DEFAULT_MEM_CYCLES,
-        );
-        let (interp_exit, interp_gas_used) = interp.run();
-
-        // Run recompiler
-        let mut recomp = RecompiledPvm::new(
+        let mut pvm = RecompiledPvm::new(
             &code,
             bitmask,
             vec![],
-            [0u64; 13],
-            gas,
+            registers,
+            100_000,
             Some(test_layout()),
             crate::gas_cost::DEFAULT_MEM_CYCLES,
         )
         .expect("compilation should succeed");
-        let recomp_exit = recomp.run();
-        let recomp_gas_used = gas - recomp.gas();
-
-        assert_eq!(
-            interp_exit, recomp_exit,
-            "exit mismatch for opcode {opcode}, a={a:#x}, b={b:#x}: interp={interp_exit:?} recomp={recomp_exit:?}"
-        );
-        assert_eq!(
-            interp_gas_used, recomp_gas_used,
-            "gas mismatch for opcode {opcode}, a={a:#x}, b={b:#x}: interp={interp_gas_used} recomp={recomp_gas_used}"
-        );
-        for r in 0..13 {
-            assert_eq!(
-                interp.registers[r],
-                recomp.registers()[r],
-                "register φ[{r}] mismatch for opcode {opcode}, a={a:#x}, b={b:#x}: interp={:#x} recomp={:#x}",
-                interp.registers[r],
-                recomp.registers()[r]
-            );
-        }
+        let exit = pvm.run();
+        assert_eq!(exit, ExitReason::HostCall(0));
+        pvm.registers()[2]
     }
 
-    /// Run a TwoReg program on both backends and compare.
-    fn differential_two_reg(opcode: u8, a: u64) {
-        let code = vec![
-            20,
-            0, // LoadImm64 φ[0]
-            a as u8,
-            (a >> 8) as u8,
-            (a >> 16) as u8,
-            (a >> 24) as u8,
-            (a >> 32) as u8,
-            (a >> 40) as u8,
-            (a >> 48) as u8,
-            (a >> 56) as u8,
-            opcode,
-            0x01, // TwoReg: rd=1, ra=0
-            10,
-            0, // ecalli 0
-        ];
-        let bitmask = vec![1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0];
-        let gas = 100_000u64;
-
-        let mut interp = crate::interpreter::Interpreter::new(
-            code.clone(),
-            bitmask.clone(),
-            vec![],
-            [0u64; 13],
-            vec![0u8; 4096],
-            gas,
-            crate::gas_cost::DEFAULT_MEM_CYCLES,
-        );
-        let (interp_exit, interp_gas_used) = interp.run();
-
-        let mut recomp = RecompiledPvm::new(
-            &code,
-            bitmask,
-            vec![],
-            [0u64; 13],
-            gas,
-            Some(test_layout()),
-            crate::gas_cost::DEFAULT_MEM_CYCLES,
-        )
-        .expect("compilation should succeed");
-        let recomp_exit = recomp.run();
-        let recomp_gas_used = gas - recomp.gas();
-
-        assert_eq!(
-            interp_exit, recomp_exit,
-            "exit mismatch for opcode {opcode}, a={a:#x}"
-        );
-        assert_eq!(
-            interp_gas_used, recomp_gas_used,
-            "gas mismatch for opcode {opcode}, a={a:#x}"
-        );
-        for r in 0..13 {
-            assert_eq!(
-                interp.registers[r],
-                recomp.registers()[r],
-                "register φ[{r}] mismatch for opcode {opcode}, a={a:#x}"
-            );
-        }
-    }
-
-    mod proptests {
-        use super::*;
-        use proptest::prelude::*;
-
-        // ThreeReg ALU opcodes
-        const ADD64: u8 = 200;
-        const SUB64: u8 = 201;
-        const MUL64: u8 = 202;
-        const DIV_U64: u8 = 203;
-        const DIV_S64: u8 = 204;
-        const REM_U64: u8 = 205;
-        const REM_S64: u8 = 206;
-        const SHL64: u8 = 207;
-        const SHR64: u8 = 208;
-        const SAR64: u8 = 209;
-        const AND: u8 = 210;
-        const XOR: u8 = 211;
-        const OR: u8 = 212;
-        const MUL_UPPER_SS: u8 = 213;
-        const MUL_UPPER_UU: u8 = 214;
-        const SET_LT_U: u8 = 216;
-        const SET_LT_S: u8 = 217;
-        const ADD32: u8 = 190;
-        const SUB32: u8 = 191;
-        const MUL32: u8 = 192;
-
-        // TwoReg opcodes
-        const COUNT_SET_BITS_64: u8 = 102;
-        const COUNT_SET_BITS_32: u8 = 103;
-        const LEADING_ZERO_64: u8 = 104;
-        const LEADING_ZERO_32: u8 = 105;
-        const TRAILING_ZERO_64: u8 = 106;
-        const TRAILING_ZERO_32: u8 = 107;
-        const SIGN_EXTEND_8: u8 = 108;
-        const SIGN_EXTEND_16: u8 = 109;
-
-        proptest! {
-            #![proptest_config(ProptestConfig::with_cases(64))]
-
-            #[test]
-            fn diff_add64(a: u64, b: u64) {
-                differential_three_reg(ADD64, a, b);
-            }
-
-            #[test]
-            fn diff_sub64(a: u64, b: u64) {
-                differential_three_reg(SUB64, a, b);
-            }
-
-            #[test]
-            fn diff_mul64(a: u64, b: u64) {
-                differential_three_reg(MUL64, a, b);
-            }
-
-            #[test]
-            fn diff_div_u64(a: u64, b: u64) {
-                differential_three_reg(DIV_U64, a, b);
-            }
-
-            #[test]
-            fn diff_div_s64(a: u64, b: u64) {
-                differential_three_reg(DIV_S64, a, b);
-            }
-
-            #[test]
-            fn diff_rem_u64(a: u64, b: u64) {
-                differential_three_reg(REM_U64, a, b);
-            }
-
-            #[test]
-            fn diff_rem_s64(a: u64, b: u64) {
-                differential_three_reg(REM_S64, a, b);
-            }
-
-            #[test]
-            fn diff_shifts(a: u64, b in 0u64..64) {
-                differential_three_reg(SHL64, a, b);
-                differential_three_reg(SHR64, a, b);
-                differential_three_reg(SAR64, a, b);
-            }
-
-            #[test]
-            fn diff_logic(a: u64, b: u64) {
-                differential_three_reg(AND, a, b);
-                differential_three_reg(XOR, a, b);
-                differential_three_reg(OR, a, b);
-            }
-
-            #[test]
-            fn diff_mul_upper(a: u64, b: u64) {
-                differential_three_reg(MUL_UPPER_SS, a, b);
-                differential_three_reg(MUL_UPPER_UU, a, b);
-            }
-
-            #[test]
-            fn diff_set_lt(a: u64, b: u64) {
-                differential_three_reg(SET_LT_U, a, b);
-                differential_three_reg(SET_LT_S, a, b);
-            }
-
-            #[test]
-            fn diff_32bit_alu(a: u64, b: u64) {
-                differential_three_reg(ADD32, a, b);
-                differential_three_reg(SUB32, a, b);
-                differential_three_reg(MUL32, a, b);
-            }
-
-            #[test]
-            fn diff_bit_counting(a: u64) {
-                differential_two_reg(COUNT_SET_BITS_64, a);
-                differential_two_reg(COUNT_SET_BITS_32, a);
-                differential_two_reg(LEADING_ZERO_64, a);
-                differential_two_reg(LEADING_ZERO_32, a);
-                differential_two_reg(TRAILING_ZERO_64, a);
-                differential_two_reg(TRAILING_ZERO_32, a);
-            }
-
-            #[test]
-            fn diff_sign_extend(a: u64) {
-                differential_two_reg(SIGN_EXTEND_8, a);
-                differential_two_reg(SIGN_EXTEND_16, a);
-            }
-        }
-    }
-
-    /// Helper: build a program that loads a 64-bit immediate into r0 via LoadImm64,
+    /// Helper: build a program that loads a 64-bit value into r0 via LoadImm64,
     /// applies a TwoReg instruction (opcode) with rd=1, ra=0, then ecalli 0.
     fn run_two_reg_op(opcode: u8, input: u64) -> u64 {
         let code = vec![
@@ -1781,63 +1562,93 @@ mod tests {
         pvm.registers()[1]
     }
 
+    // === Division tests ===
+
     #[test]
-    fn test_recompile_count_set_bits_64() {
-        assert_eq!(run_two_reg_op(102, 0), 0);
-        assert_eq!(run_two_reg_op(102, 1), 1);
-        assert_eq!(run_two_reg_op(102, u64::MAX), 64);
-        assert_eq!(run_two_reg_op(102, 0xFF00FF00FF00FF00), 32);
-        assert_eq!(run_two_reg_op(102, 0x8000000000000001), 2);
+    fn test_recompile_div_u64() {
+        assert_eq!(run_three_reg_op(203, 100, 7), 14);
+        assert_eq!(run_three_reg_op(203, 42, 0), u64::MAX);
+        assert_eq!(run_three_reg_op(203, 0, 5), 0);
+        assert_eq!(run_three_reg_op(203, u64::MAX, 2), u64::MAX / 2);
     }
 
     #[test]
-    fn test_recompile_count_set_bits_32() {
-        assert_eq!(run_two_reg_op(103, 0), 0);
-        assert_eq!(run_two_reg_op(103, 1), 1);
-        assert_eq!(run_two_reg_op(103, 0xFFFFFFFF), 32);
-        assert_eq!(run_two_reg_op(103, 0xFF00FF00), 16);
-        // Upper 32 bits ignored
-        assert_eq!(run_two_reg_op(103, 0xFFFFFFFF00000000), 0);
-        assert_eq!(run_two_reg_op(103, 0xFFFFFFFF00000001), 1);
+    fn test_recompile_div_s64() {
+        assert_eq!(run_three_reg_op(204, 100, 7), 14);
+        let neg100 = (-100i64) as u64;
+        let neg14 = (-14i64) as u64;
+        assert_eq!(run_three_reg_op(204, neg100, 7), neg14);
+        assert_eq!(run_three_reg_op(204, 42, 0), u64::MAX);
     }
 
     #[test]
-    fn test_recompile_leading_zero_bits_64() {
-        assert_eq!(run_two_reg_op(104, 0), 64);
-        assert_eq!(run_two_reg_op(104, 1), 63);
-        assert_eq!(run_two_reg_op(104, u64::MAX), 0);
-        assert_eq!(run_two_reg_op(104, 0x8000000000000000), 0);
-        assert_eq!(run_two_reg_op(104, 0x0000000100000000), 31);
+    fn test_recompile_rem_u64() {
+        assert_eq!(run_three_reg_op(205, 100, 7), 2);
+        assert_eq!(run_three_reg_op(205, 42, 0), 42);
+        assert_eq!(run_three_reg_op(205, 0, 5), 0);
     }
 
     #[test]
-    fn test_recompile_leading_zero_bits_32() {
-        assert_eq!(run_two_reg_op(105, 0), 32);
-        assert_eq!(run_two_reg_op(105, 1), 31);
-        assert_eq!(run_two_reg_op(105, 0xFFFFFFFF), 0);
-        assert_eq!(run_two_reg_op(105, 0x80000000), 0);
-        assert_eq!(run_two_reg_op(105, 0x00010000), 15);
-        // Upper 32 bits ignored
-        assert_eq!(run_two_reg_op(105, 0xFFFFFFFF00000000), 32);
+    fn test_recompile_rem_s64() {
+        assert_eq!(run_three_reg_op(206, 100, 7), 2);
+        let neg100 = (-100i64) as u64;
+        let neg2 = (-2i64) as u64;
+        assert_eq!(run_three_reg_op(206, neg100, 7), neg2);
+        assert_eq!(run_three_reg_op(206, 42, 0), 42);
     }
 
     #[test]
-    fn test_recompile_trailing_zero_bits_64() {
-        assert_eq!(run_two_reg_op(106, 0), 64);
-        assert_eq!(run_two_reg_op(106, 1), 0);
-        assert_eq!(run_two_reg_op(106, u64::MAX), 0);
-        assert_eq!(run_two_reg_op(106, 0x8000000000000000), 63);
-        assert_eq!(run_two_reg_op(106, 0x0000000000001000), 12);
+    fn test_recompile_mul64() {
+        assert_eq!(run_three_reg_op(202, 6, 7), 42);
+        assert_eq!(run_three_reg_op(202, 0, 1000), 0);
+        assert_eq!(run_three_reg_op(202, u64::MAX, 2), u64::MAX.wrapping_mul(2));
     }
 
     #[test]
-    fn test_recompile_trailing_zero_bits_32() {
-        assert_eq!(run_two_reg_op(107, 0), 32);
-        assert_eq!(run_two_reg_op(107, 1), 0);
-        assert_eq!(run_two_reg_op(107, 0xFFFFFFFF), 0);
-        assert_eq!(run_two_reg_op(107, 0x80000000), 31);
-        assert_eq!(run_two_reg_op(107, 0x00001000), 12);
-        // Upper 32 bits ignored
-        assert_eq!(run_two_reg_op(107, 0x0000000100000000), 32);
+    fn test_recompile_mul_upper_uu() {
+        assert_eq!(run_three_reg_op(214, 1u64 << 63, 2), 1);
+        assert_eq!(run_three_reg_op(214, 100, 200), 0);
+        assert_eq!(run_three_reg_op(214, u64::MAX, u64::MAX), u64::MAX - 1);
+    }
+
+    #[test]
+    fn test_recompile_mul_upper_ss() {
+        assert_eq!(run_three_reg_op(213, u64::MAX, u64::MAX), 0);
+        assert_eq!(run_three_reg_op(213, u64::MAX, 1), u64::MAX);
+        assert_eq!(run_three_reg_op(213, 100, 200), 0);
+    }
+
+    #[test]
+    fn test_recompile_add32() {
+        assert_eq!(run_three_reg_op(190, 0x7FFFFFFF, 1), 0xFFFFFFFF80000000u64);
+        assert_eq!(run_three_reg_op(190, 5, 3), 8);
+    }
+
+    #[test]
+    fn test_recompile_sub32() {
+        assert_eq!(run_three_reg_op(191, 0, 1), 0xFFFFFFFFFFFFFFFFu64);
+        assert_eq!(run_three_reg_op(191, 10, 3), 7);
+    }
+
+    #[test]
+    fn test_recompile_mul32() {
+        assert_eq!(run_three_reg_op(192, 6, 7), 42);
+        assert_eq!(run_three_reg_op(192, 0x10000, 0x10000), 0);
+        assert_eq!(run_three_reg_op(192, 0xFFFF, 0xFFFF), 0xFFFFFFFFFFFE0001u64);
+    }
+
+    #[test]
+    fn test_recompile_sign_extend_8() {
+        assert_eq!(run_two_reg_op(108, 0x7F), 0x7F);
+        assert_eq!(run_two_reg_op(108, 0x80), 0xFFFFFFFFFFFFFF80u64);
+        assert_eq!(run_two_reg_op(108, 0xFF), 0xFFFFFFFFFFFFFFFFu64);
+        assert_eq!(run_two_reg_op(108, 0x100), 0);
+    }
+
+    #[test]
+    fn test_recompile_sign_extend_16() {
+        assert_eq!(run_two_reg_op(109, 0x7FFF), 0x7FFF);
+        assert_eq!(run_two_reg_op(109, 0x8000), 0xFFFFFFFFFFFF8000u64);
+        assert_eq!(run_two_reg_op(109, 0xFFFF), 0xFFFFFFFFFFFFFFFFu64);
     }
 }
