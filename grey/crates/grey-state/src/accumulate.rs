@@ -421,23 +421,8 @@ fn accumulate_single_service(
     let args = encode_accumulate_args(timeslot, service_id, item_count);
 
     // Build per-service fetch context with encoded items
+    let individual_items = collect_items(transfers, service_id, reports);
     let items_blob = build_items_blob(transfers, service_id, reports);
-    // Build individual items for fetch mode 15
-    let mut individual_items: Vec<Vec<u8>> = Vec::new();
-    for t in transfers.iter().filter(|t| t.destination == service_id) {
-        let mut item = vec![1u8]; // transfer discriminator
-        item.extend(encode_transfer(t));
-        individual_items.push(item);
-    }
-    for report in reports {
-        for digest in &report.results {
-            if digest.service_id == service_id {
-                let mut item = vec![0u8]; // operand discriminator
-                item.extend(encode_operand(report, digest));
-                individual_items.push(item);
-            }
-        }
-    }
 
     let service_fetch_ctx = FetchContext {
         config_blob: fetch_ctx.config_blob.clone(),
@@ -557,14 +542,13 @@ fn encode_transfer(t: &DeferredTransfer) -> Vec<u8> {
     buf
 }
 
-/// Build encoded items list for fetch (eq C.33).
-/// Items are discriminated: 0x00 + EU(operand) or 0x01 + EX(transfer).
+/// Collect discriminated items for a service: 0x01 + EX(transfer) and 0x00 + EU(operand).
 /// Order: transfers first (iT), then operands (iU).
-fn build_items_blob(
+fn collect_items(
     transfers: &[DeferredTransfer],
     service_id: ServiceId,
     reports: &[WorkReport],
-) -> Vec<u8> {
+) -> Vec<Vec<u8>> {
     let mut items: Vec<Vec<u8>> = Vec::new();
     // iT: transfers to this service
     for t in transfers.iter().filter(|t| t.destination == service_id) {
@@ -582,7 +566,16 @@ fn build_items_blob(
             }
         }
     }
-    // Encode as length-prefixed sequence: varint(count) + item_0 + item_1 + ...
+    items
+}
+
+/// Build encoded items blob for fetch (eq C.33).
+fn build_items_blob(
+    transfers: &[DeferredTransfer],
+    service_id: ServiceId,
+    reports: &[WorkReport],
+) -> Vec<u8> {
+    let items = collect_items(transfers, service_id, reports);
     let mut blob = Vec::new();
     blob.extend_from_slice(&(items.len() as u32).to_le_bytes());
     for item in &items {

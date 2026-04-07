@@ -9,6 +9,16 @@ use grey_types::validator::ValidatorKey;
 use grey_types::{Ed25519PublicKey, Hash, signing_contexts};
 use std::collections::BTreeSet;
 
+/// Check that a slice is strictly sorted (no duplicates).
+fn check_sorted_unique<T: Ord>(items: &[T], err: DisputeError) -> Result<(), DisputeError> {
+    for w in items.windows(2) {
+        if w[0] >= w[1] {
+            return Err(err);
+        }
+    }
+    Ok(())
+}
+
 /// Error type for disputes validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DisputeError {
@@ -83,21 +93,13 @@ pub fn process_disputes(
             .iter()
             .map(|j| j.validator_index)
             .collect();
-        for w in indices.windows(2) {
-            if w[0] >= w[1] {
-                return Err(DisputeError::JudgementsNotSortedUnique);
-            }
-        }
+        check_sorted_unique(&indices, DisputeError::JudgementsNotSortedUnique)?;
     }
 
     // eq 10.7: Verdicts must be sorted by report hash, no duplicates
     {
         let hashes: Vec<&Hash> = disputes.verdicts.iter().map(|v| &v.report_hash).collect();
-        for w in hashes.windows(2) {
-            if w[0] >= w[1] {
-                return Err(DisputeError::VerdictsNotSortedUnique);
-            }
-        }
+        check_sorted_unique(&hashes, DisputeError::VerdictsNotSortedUnique)?;
     }
 
     // eq 10.9: No verdict report hash may already be judged
@@ -197,22 +199,14 @@ pub fn process_disputes(
     {
         let keys: Vec<&Ed25519PublicKey> =
             disputes.culprits.iter().map(|c| &c.validator_key).collect();
-        for w in keys.windows(2) {
-            if w[0] >= w[1] {
-                return Err(DisputeError::CulpritsNotSortedUnique);
-            }
-        }
+        check_sorted_unique(&keys, DisputeError::CulpritsNotSortedUnique)?;
     }
 
     // eq 10.8: Faults sorted by key, no duplicates
     {
         let keys: Vec<&Ed25519PublicKey> =
             disputes.faults.iter().map(|f| &f.validator_key).collect();
-        for w in keys.windows(2) {
-            if w[0] >= w[1] {
-                return Err(DisputeError::FaultsNotSortedUnique);
-            }
-        }
+        check_sorted_unique(&keys, DisputeError::FaultsNotSortedUnique)?;
     }
 
     // Build the set of allowed keys: union of current and previous ed25519 keys, minus offenders
