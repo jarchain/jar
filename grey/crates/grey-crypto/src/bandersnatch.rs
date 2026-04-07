@@ -421,6 +421,61 @@ mod tests {
     }
 
     #[test]
+    fn test_seal_sign_deterministic() {
+        let kp = BandersnatchKeypair::from_seed(&[42u8; 32]);
+        let header_hash = b"test_header_hash_32bytes_padded_";
+        let sig1 = kp.seal_sign(header_hash, b"");
+        let sig2 = kp.seal_sign(header_hash, b"");
+        assert_eq!(sig1, sig2, "seal_sign should be deterministic");
+    }
+
+    #[test]
+    fn test_seal_sign_different_inputs_differ() {
+        let kp = BandersnatchKeypair::from_seed(&[42u8; 32]);
+        let sig1 = kp.seal_sign(b"header_a", b"");
+        let sig2 = kp.seal_sign(b"header_b", b"");
+        assert_ne!(
+            sig1, sig2,
+            "different headers should produce different seals"
+        );
+    }
+
+    #[test]
+    fn test_vrf_output_hash_invalid_input() {
+        // Too short
+        assert_eq!(vrf_output_hash(&[0u8; 10]), None);
+        // Empty
+        assert_eq!(vrf_output_hash(&[]), None);
+        // Random bytes (almost certainly not a valid curve point)
+        assert_eq!(vrf_output_hash(&[0xFF; 32]), None);
+    }
+
+    #[test]
+    fn test_build_ticket_vrf_input_format() {
+        let eta2 = [0xAB; 32];
+        let attempt = 3u8;
+        let input = build_ticket_vrf_input(&eta2, attempt);
+
+        // Should be: signing_context::TICKET_SEAL ++ eta2 ++ attempt
+        assert!(input.starts_with(grey_types::signing_contexts::TICKET_SEAL));
+        let ctx_len = grey_types::signing_contexts::TICKET_SEAL.len();
+        assert_eq!(&input[ctx_len..ctx_len + 32], &eta2);
+        assert_eq!(input[ctx_len + 32], attempt);
+        assert_eq!(input.len(), ctx_len + 33);
+    }
+
+    #[test]
+    fn test_build_ticket_vrf_input_different_attempts() {
+        let eta2 = [0u8; 32];
+        let input0 = build_ticket_vrf_input(&eta2, 0);
+        let input1 = build_ticket_vrf_input(&eta2, 1);
+        assert_ne!(
+            input0, input1,
+            "different attempts should produce different inputs"
+        );
+    }
+
+    #[test]
     fn test_ticket_ownership_detection() {
         let keypairs: Vec<BandersnatchKeypair> = (0..6u8)
             .map(|i| {
