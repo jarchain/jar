@@ -194,3 +194,145 @@ pub struct ImportSegment {
     /// Index of the segment (U16 in ASN).
     pub index: u16,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Hash;
+    use scale::{Decode, Encode};
+    use std::collections::BTreeMap;
+
+    /// Verify encode→decode roundtrip via re-encoding comparison.
+    fn roundtrip<T: Encode + Decode>(val: &T) {
+        let encoded = val.encode();
+        let (decoded, consumed) = T::decode(&encoded).expect("decode should succeed");
+        assert_eq!(consumed, encoded.len(), "should consume all bytes");
+        assert_eq!(decoded.encode(), encoded, "re-encode should match");
+    }
+
+    fn make_work_item() -> WorkItem {
+        WorkItem {
+            service_id: 42,
+            code_hash: Hash([1u8; 32]),
+            gas_limit: 10_000,
+            accumulate_gas_limit: 5_000,
+            exports_count: 0,
+            payload: vec![0xDE, 0xAD],
+            imports: vec![ImportSegment {
+                hash: Hash([2u8; 32]),
+                index: 7,
+            }],
+            extrinsics: vec![(Hash([3u8; 32]), 99)],
+        }
+    }
+
+    #[test]
+    fn test_work_result_roundtrip() {
+        roundtrip(&WorkResult::Ok(vec![1, 2, 3]));
+        roundtrip(&WorkResult::Ok(vec![]));
+        roundtrip(&WorkResult::OutOfGas);
+        roundtrip(&WorkResult::Panic);
+        roundtrip(&WorkResult::BadExports);
+        roundtrip(&WorkResult::BadCode);
+        roundtrip(&WorkResult::CodeOversize);
+    }
+
+    #[test]
+    fn test_work_item_roundtrip() {
+        roundtrip(&make_work_item());
+    }
+
+    #[test]
+    fn test_import_segment_roundtrip() {
+        roundtrip(&ImportSegment {
+            hash: Hash([0xAB; 32]),
+            index: 42,
+        });
+    }
+
+    #[test]
+    fn test_work_digest_roundtrip() {
+        roundtrip(&WorkDigest {
+            service_id: 1,
+            code_hash: Hash([1u8; 32]),
+            payload_hash: Hash([2u8; 32]),
+            accumulate_gas: 1000,
+            result: WorkResult::Ok(vec![0xAB]),
+            gas_used: 500,
+            imports_count: 1,
+            extrinsics_count: 2,
+            extrinsics_size: 64,
+            exports_count: 0,
+        });
+    }
+
+    #[test]
+    fn test_refinement_context_roundtrip() {
+        roundtrip(&RefinementContext {
+            anchor: Hash([10u8; 32]),
+            state_root: Hash([20u8; 32]),
+            beefy_root: Hash([30u8; 32]),
+            lookup_anchor: Hash([40u8; 32]),
+            lookup_anchor_timeslot: 100,
+            prerequisites: vec![Hash([50u8; 32])],
+        });
+    }
+
+    #[test]
+    fn test_work_report_roundtrip() {
+        roundtrip(&WorkReport {
+            package_spec: AvailabilitySpec {
+                package_hash: Hash([1u8; 32]),
+                bundle_length: 256,
+                erasure_root: Hash([2u8; 32]),
+                exports_root: Hash([3u8; 32]),
+                exports_count: 1,
+                erasure_shards: 0,
+            },
+            context: RefinementContext {
+                anchor: Hash::ZERO,
+                state_root: Hash::ZERO,
+                beefy_root: Hash::ZERO,
+                lookup_anchor: Hash::ZERO,
+                lookup_anchor_timeslot: 0,
+                prerequisites: vec![],
+            },
+            core_index: 0,
+            authorizer_hash: Hash([4u8; 32]),
+            auth_gas_used: 50,
+            auth_output: vec![0xFF],
+            segment_root_lookup: BTreeMap::new(),
+            results: vec![WorkDigest {
+                service_id: 42,
+                code_hash: Hash([5u8; 32]),
+                payload_hash: Hash([6u8; 32]),
+                accumulate_gas: 1000,
+                result: WorkResult::Ok(vec![]),
+                gas_used: 800,
+                imports_count: 0,
+                extrinsics_count: 0,
+                extrinsics_size: 0,
+                exports_count: 0,
+            }],
+        });
+    }
+
+    #[test]
+    fn test_work_package_roundtrip() {
+        roundtrip(&WorkPackage {
+            auth_code_host: 1,
+            auth_code_hash: Hash([10u8; 32]),
+            context: RefinementContext {
+                anchor: Hash::ZERO,
+                state_root: Hash::ZERO,
+                beefy_root: Hash::ZERO,
+                lookup_anchor: Hash::ZERO,
+                lookup_anchor_timeslot: 0,
+                prerequisites: vec![],
+            },
+            authorization: vec![0xAA, 0xBB],
+            authorizer_config: vec![],
+            items: vec![make_work_item()],
+        });
+    }
+}
