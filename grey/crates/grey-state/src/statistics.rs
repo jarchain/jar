@@ -206,3 +206,174 @@ fn compute_service_statistics(
 
     stats.service_stats = svc_stats;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use grey_types::config::Config;
+    use grey_types::header::Extrinsic;
+    use grey_types::state::ValidatorStatistics;
+    use std::collections::BTreeMap;
+
+    fn make_stats(n: usize) -> ValidatorStatistics {
+        ValidatorStatistics {
+            current: vec![ValidatorRecord::default(); n],
+            last: vec![ValidatorRecord::default(); n],
+            core_stats: vec![],
+            service_stats: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn test_empty_block_increments_blocks_produced() {
+        let config = Config::tiny();
+        let mut stats = make_stats(config.validators_count as usize);
+        let extrinsic = Extrinsic::default();
+
+        update_statistics(
+            &config,
+            &mut stats,
+            0,
+            1,
+            0,
+            &extrinsic,
+            &[],
+            &[],
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(stats.current[0].blocks_produced, 1);
+        // Other validators untouched
+        assert_eq!(stats.current[1].blocks_produced, 0);
+    }
+
+    #[test]
+    fn test_epoch_rotation() {
+        let config = Config::tiny(); // E=12
+        let mut stats = make_stats(config.validators_count as usize);
+        let extrinsic = Extrinsic::default();
+
+        // Block in epoch 0
+        update_statistics(
+            &config,
+            &mut stats,
+            0,
+            1,
+            0,
+            &extrinsic,
+            &[],
+            &[],
+            &BTreeMap::new(),
+        );
+        assert_eq!(stats.current[0].blocks_produced, 1);
+
+        // Block crossing into epoch 1 (timeslot 12): should rotate
+        update_statistics(
+            &config,
+            &mut stats,
+            11,
+            12,
+            0,
+            &extrinsic,
+            &[],
+            &[],
+            &BTreeMap::new(),
+        );
+        // After rotation: last should have the old current (1 block), current reset + new block
+        assert_eq!(stats.last[0].blocks_produced, 1);
+        assert_eq!(stats.current[0].blocks_produced, 1); // new block in new epoch
+    }
+
+    #[test]
+    fn test_no_rotation_same_epoch() {
+        let config = Config::tiny();
+        let mut stats = make_stats(config.validators_count as usize);
+        let extrinsic = Extrinsic::default();
+
+        update_statistics(
+            &config,
+            &mut stats,
+            1,
+            2,
+            0,
+            &extrinsic,
+            &[],
+            &[],
+            &BTreeMap::new(),
+        );
+        update_statistics(
+            &config,
+            &mut stats,
+            2,
+            3,
+            0,
+            &extrinsic,
+            &[],
+            &[],
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(stats.current[0].blocks_produced, 2);
+        assert_eq!(stats.last[0].blocks_produced, 0); // no rotation
+    }
+
+    #[test]
+    fn test_ticket_and_preimage_counts() {
+        let config = Config::tiny();
+        let mut stats = make_stats(config.validators_count as usize);
+        let mut extrinsic = Extrinsic::default();
+
+        // Add dummy tickets and preimages
+        extrinsic.tickets = vec![
+            grey_types::header::TicketProof {
+                attempt: 0,
+                proof: vec![],
+            },
+            grey_types::header::TicketProof {
+                attempt: 1,
+                proof: vec![],
+            },
+        ];
+        extrinsic.preimages = vec![(42, vec![0xAA, 0xBB, 0xCC])];
+
+        update_statistics(
+            &config,
+            &mut stats,
+            0,
+            1,
+            2,
+            &extrinsic,
+            &[],
+            &[],
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(stats.current[2].tickets_introduced, 2);
+        assert_eq!(stats.current[2].preimages_introduced, 1);
+        assert_eq!(stats.current[2].preimage_bytes, 3);
+    }
+
+    #[test]
+    fn test_author_out_of_range_no_panic() {
+        let config = Config::tiny();
+        let mut stats = make_stats(config.validators_count as usize);
+        let extrinsic = Extrinsic::default();
+
+        // Author index beyond validator count — should not panic
+        update_statistics(
+            &config,
+            &mut stats,
+            0,
+            1,
+            999,
+            &extrinsic,
+            &[],
+            &[],
+            &BTreeMap::new(),
+        );
+        // All validators should be untouched
+        for v in &stats.current {
+            assert_eq!(v.blocks_produced, 0);
+        }
+    }
+}
