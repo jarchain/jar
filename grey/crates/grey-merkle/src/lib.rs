@@ -138,10 +138,11 @@ pub fn state_key_for_service(index: u8, service_id: u32) -> [u8; 31] {
     key
 }
 
-/// State-key constructor C for service storage items (eq D.1).
-pub fn state_key_for_storage(service_id: u32, hash: &Hash) -> [u8; 31] {
+/// Interleave service_id LE bytes with blake2b hash bytes into a 31-byte key (eq D.1).
+///
+/// Used by both `state_key_for_storage` and `state_serial::key_for_service_data`.
+pub fn interleave_service_key(service_id: u32, a: &Hash) -> [u8; 31] {
     let s = service_id.to_le_bytes();
-    let a = grey_crypto::blake2b_256(&hash.0);
     let mut key = [0u8; 31];
     key[0] = s[0];
     key[1] = a.0[0];
@@ -153,6 +154,11 @@ pub fn state_key_for_storage(service_id: u32, hash: &Hash) -> [u8; 31] {
     key[7] = a.0[3];
     key[8..31].copy_from_slice(&a.0[4..27]);
     key
+}
+
+/// State-key constructor C for service storage items (eq D.1).
+pub fn state_key_for_storage(service_id: u32, hash: &Hash) -> [u8; 31] {
+    interleave_service_key(service_id, &grey_crypto::blake2b_256(&hash.0))
 }
 
 #[cfg(test)]

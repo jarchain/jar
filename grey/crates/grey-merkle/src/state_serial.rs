@@ -72,19 +72,7 @@ pub fn extract_accumulation_root(
 /// Construct state key C(s, h) where h is an arbitrary byte sequence.
 /// The key interleaves E_4(s) and H(h).
 fn key_for_service_data(service_id: ServiceId, h: &[u8]) -> [u8; 31] {
-    let s = service_id.to_le_bytes();
-    let a = blake2b_256(h);
-    let mut key = [0u8; 31];
-    key[0] = s[0];
-    key[1] = a.0[0];
-    key[2] = s[1];
-    key[3] = a.0[1];
-    key[4] = s[2];
-    key[5] = a.0[2];
-    key[6] = s[3];
-    key[7] = a.0[3];
-    key[8..31].copy_from_slice(&a.0[4..27]);
-    key
+    crate::interleave_service_key(service_id, &blake2b_256(h))
 }
 
 /// Construct the h argument for storage entries: E_4(2^32-1) ++ k
