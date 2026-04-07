@@ -36,6 +36,8 @@ const MGMT_DIRTY: u32 = 0xC;
 
 /// WHAT error code (2^64 - 2).
 const RESULT_WHAT: u64 = u64::MAX - 1;
+const RESULT_LOW: u64 = u64::MAX - 7;  // gas limit too low
+const RESULT_HUH: u64 = u64::MAX - 8;  // invalid operation
 
 /// Result from running the kernel until it needs host interaction.
 #[derive(Debug)]
@@ -616,10 +618,10 @@ impl InvocationKernel {
             self.vms[caller_id as usize].cap_table.set(caller_slot, cap);
         }
 
-        // Pass results: callee's φ[7], φ[8] → caller's φ[7], φ[8]
-        let callee_regs = *self.vms[callee_id as usize].regs();
-        self.vms[caller_id as usize].set_reg(7, callee_regs[7]);
-        self.vms[caller_id as usize].set_reg(8, callee_regs[8]);
+        // Pass φ[7] only + set φ[8]=0 (status = REPLY success)
+        let callee_r7 = self.vms[callee_id as usize].reg(7);
+        self.vms[caller_id as usize].set_reg(7, callee_r7);
+        self.vms[caller_id as usize].set_reg(8, 0);
 
         // Caller → Running
         let _ = self.vms[caller_id as usize].transition(VmState::Running);
@@ -1897,8 +1899,19 @@ impl InvocationKernel {
         }
     }
 
-    /// Handle a callee fault (panic/OOG/page fault).
+    /// Handle a callee fault with status code and aux value.
     pub fn handle_vm_fault(&mut self, fault: FaultType) -> DispatchResult {
+        // Determine status code and aux value based on fault type
+        let (status, aux_value) = match fault {
+            FaultType::Trap => {
+                // Status 1: trap. Preserve child's φ[7] as trap code.
+                (1u64, self.vms[self.active_vm as usize].reg(7))
+            }
+            FaultType::Panic => (2, RESULT_HUH),      // Status 2: runtime panic
+            FaultType::OutOfGas => (3, RESULT_LOW),    // Status 3: OOG
+            FaultType::PageFault(addr) => (4, addr as u64), // Status 4: page fault
+        };
+
         let callee_id = self.active_vm;
         let _ = self.vms[callee_id as usize].transition(VmState::Faulted);
 
@@ -1911,9 +1924,9 @@ impl InvocationKernel {
                 let cg = self.vms[caller_id as usize].gas();
                 self.vms[caller_id as usize].set_gas(cg + unused_gas);
 
-                // IPC cap is lost (callee faulted)
-                // Set error status in caller registers
-                self.vms[caller_id as usize].set_reg(7, RESULT_WHAT);
+                // Set φ[7]=aux_value, φ[8]=status
+                self.vms[caller_id as usize].set_reg(7, aux_value);
+                self.vms[caller_id as usize].set_reg(8, status);
 
                 let _ = self.vms[caller_id as usize].transition(VmState::Running);
                 self.active_vm = caller_id;
@@ -2149,9 +2162,9 @@ mod tests {
         assert_eq!(kernel.vms[0].state, VmState::Running);
         assert_eq!(kernel.vms[1].state, VmState::Idle);
 
-        // Caller received results
+        // Caller received results: φ[7]=child's return, φ[8]=0 (status=REPLY)
         assert_eq!(kernel.active_reg(7), 100);
-        assert_eq!(kernel.active_reg(8), 200);
+        assert_eq!(kernel.active_reg(8), 0);
     }
 
     #[test]

@@ -70,6 +70,8 @@ inductive DispatchResult where
 -- ============================================================================
 
 def RESULT_WHAT : UInt64 := UInt64.ofNat (2^64 - 2)
+def RESULT_LOW  : UInt64 := UInt64.ofNat (2^64 - 8)   -- gas limit too low
+def RESULT_HUH  : UInt64 := UInt64.ofNat (2^64 - 9)   -- invalid operation
 def ecalliGasCost : Nat := 10
 def callOverheadGas : Nat := 10
 def gasPerPage : Nat := 1500
@@ -249,14 +251,14 @@ private def resumeCaller (state : KernelState) (calleeIdx callerIdx : Nat)
         s.updateVm callerIdx fun vm =>
           { vm with capTable := vm.capTable.set slot c }
       | none => s
-  -- Pass results + resume caller
+  -- Pass φ[7] only + set φ[8]=0 (status = REPLY success)
   let calleeRegs := state.vms[calleeIdx]!.registers
   let state := state.updateVm callerIdx fun vm =>
     { vm with
       state := .running
       registers := setReg (setReg vm.registers
         7 (getReg calleeRegs 7))
-        8 (getReg calleeRegs 8) }
+        8 0 }
   { state with activeVm := callerIdx }
 
 def handleReply (state : KernelState) : KernelState × DispatchResult :=
@@ -286,12 +288,17 @@ def handleVmHalt (state : KernelState) (exitValue : Nat) : KernelState × Dispat
     let state := state.updateVm calleeIdx fun vm => { vm with state := .halted }
     let unusedGas := state.vms[calleeIdx]!.gas
     let state := state.updateVm callerIdx fun vm => { vm with gas := vm.gas + unusedGas }
+    -- Halt in jar1 = treated as panic (status 2, φ[7]=HUH)
     let state := state.updateVm callerIdx fun vm =>
       { vm with state := .running
-                registers := setReg vm.registers 7 (UInt64.ofNat exitValue) }
+                registers := setReg (setReg vm.registers 7 RESULT_HUH) 8 2 }
     ({ state with activeVm := callerIdx }, .continue_)
 
-def handleVmFault (state : KernelState) : KernelState × DispatchResult :=
+/-- Handle a non-root VM fault with status code and aux value.
+    status: 1=trap, 2=panic, 3=oog, 4=pagefault, 5=invalid_ecalli.
+    auxValue: child's φ[7] (trap), HUH (panic), LOW (oog), fault addr (pf), imm (ecalli). -/
+def handleVmFaultWith (state : KernelState) (status : UInt64) (auxValue : UInt64)
+    : KernelState × DispatchResult :=
   match state.callStack.back? with
   | none => (state, .rootPanic)
   | some frame =>
@@ -303,7 +310,7 @@ def handleVmFault (state : KernelState) : KernelState × DispatchResult :=
     let state := state.updateVm callerIdx fun vm => { vm with gas := vm.gas + unusedGas }
     let state := state.updateVm callerIdx fun vm =>
       { vm with state := .running
-                registers := setReg vm.registers 7 RESULT_WHAT }
+                registers := setReg (setReg vm.registers 7 auxValue) 8 status }
     ({ state with activeVm := callerIdx }, .continue_)
 
 -- ============================================================================
@@ -780,26 +787,30 @@ def runKernel (state : KernelState) (fuel : Nat) : KernelState × KernelResult :
           | .continue_ => runKernel state' fuel'
           | _ => (state', .panic)
         | .trap =>
-          -- Deliberate trap: same as panic but distinguished for status code
-          let (state', dr) := handleVmFault state
+          -- Status 1: trap. φ[7] = child's φ[7] (trap code).
+          let childR7 := getReg state.activeInst.registers 7
+          let (state', dr) := handleVmFaultWith state 1 childR7
           match dr with
-          | .rootPanic => (state', .panic) -- root trap → kernel panic
+          | .rootPanic => (state', .panic)
           | .continue_ => runKernel state' fuel'
           | _ => (state', .panic)
         | .panic =>
-          let (state', dr) := handleVmFault state
+          -- Status 2: runtime panic. φ[7] = HUH.
+          let (state', dr) := handleVmFaultWith state 2 RESULT_HUH
           match dr with
           | .rootPanic => (state', .panic)
           | .continue_ => runKernel state' fuel'
           | _ => (state', .panic)
         | .outOfGas =>
-          let (state', dr) := handleVmFault state
+          -- Status 3: out of gas. φ[7] = LOW.
+          let (state', dr) := handleVmFaultWith state 3 RESULT_LOW
           match dr with
           | .rootPanic => (state', .outOfGas)
           | .continue_ => runKernel state' fuel'
           | _ => (state', .outOfGas)
         | .pageFault addr =>
-          let (state', dr) := handleVmFault state
+          -- Status 4: page fault. φ[7] = fault address.
+          let (state', dr) := handleVmFaultWith state 4 addr
           match dr with
           | .rootPanic => (state', .pageFault addr.toNat)
           | .continue_ => runKernel state' fuel'
