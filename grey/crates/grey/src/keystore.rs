@@ -184,8 +184,7 @@ impl Keystore {
         bandersnatch_hex: &str,
         bls_hex: &str,
     ) -> Result<PathBuf, KeystoreError> {
-        let ed25519_seed =
-            decode_hex_seed(ed25519_hex.trim_start_matches("0x"), "ed25519")?;
+        let ed25519_seed = decode_hex_seed(ed25519_hex.trim_start_matches("0x"), "ed25519")?;
         let bandersnatch_seed =
             decode_hex_seed(bandersnatch_hex.trim_start_matches("0x"), "bandersnatch")?;
         let bls_seed = decode_hex_seed(bls_hex.trim_start_matches("0x"), "bls")?;
