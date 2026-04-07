@@ -914,11 +914,11 @@ impl InvocationKernel {
         match vm.cap_table.get_mut(cap_idx) {
             Some(Cap::Data(d)) => {
                 // Unmap previous mapping if remapping
-                if let Some((old_base, _)) = d.map(base_page, access) {
+                if let Some((_old_base, _)) = d.map(base_page, access) {
                     // SAFETY: wb is from active_window_base() (valid 4GB window).
                     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
                     unsafe {
-                        BackingStore::unmap_pages(wb, old_base, d.page_count);
+                        BackingStore::unmap_pages(wb, _old_base, d.page_count);
                     }
                 }
                 // Map new location
@@ -942,11 +942,11 @@ impl InvocationKernel {
         let vm = &mut self.vm_arena.vm_mut(self.active_vm);
         match vm.cap_table.get_mut(cap_idx) {
             Some(Cap::Data(d)) => {
-                if let Some((base_page, _)) = d.unmap() {
+                if let Some((_base_page, _)) = d.unmap() {
                     // SAFETY: wb is from active_window_base() (valid 4GB window).
                     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
                     unsafe {
-                        BackingStore::unmap_pages(wb, base_page, d.page_count);
+                        BackingStore::unmap_pages(wb, _base_page, d.page_count);
                     }
                 }
             }
@@ -1014,13 +1014,13 @@ impl InvocationKernel {
         // Unmap DATA caps before dropping
         if let Some(Cap::Data(d)) = vm.cap_table.get(cap_idx)
             && d.has_any_mapped()
-            && let Some(base_page) = d.base_offset
+            && let Some(_base_page) = d.base_offset
         {
-            let page_count = d.page_count;
+            let _page_count = d.page_count;
             // SAFETY: wb is from active_window_base() (valid 4GB window).
             #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
             unsafe {
-                BackingStore::unmap_pages(wb, base_page, page_count);
+                BackingStore::unmap_pages(wb, _base_page, _page_count);
             }
         }
         vm.cap_table.drop_cap(cap_idx);
@@ -1214,7 +1214,7 @@ impl InvocationKernel {
         let vm = &mut self.vm_arena.vm_mut(vm_idx as u16);
         match vm.cap_table.get_mut(slot) {
             Some(Cap::Data(d)) => {
-                if let Some(base_offset) = d.base_offset {
+                if let Some(_base_offset) = d.base_offset {
                     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
                     if let Some(wb) = window_base {
                         for p in
@@ -1223,7 +1223,7 @@ impl InvocationKernel {
                             if d.is_page_mapped(p) {
                                 // SAFETY: wb is from vm_window_base() (valid 4GB window).
                                 unsafe {
-                                    BackingStore::unmap_pages(wb, base_offset + p, 1);
+                                    BackingStore::unmap_pages(wb, _base_offset + p, 1);
                                 }
                             }
                         }
@@ -1282,14 +1282,14 @@ impl InvocationKernel {
         }
         if let Some(Cap::Data(d)) = self.vm_arena.vm(vm_idx as u16).cap_table.get(slot)
             && d.has_any_mapped()
-            && let Some(base_offset) = d.base_offset
+            && let Some(_base_offset) = d.base_offset
         {
-            let page_count = d.page_count;
+            let _page_count = d.page_count;
             #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
             if let Some(wb) = self.vm_window_base(vm_idx as u16) {
                 // SAFETY: wb is from vm_window_base() (valid 4GB window).
                 unsafe {
-                    BackingStore::unmap_pages(wb, base_offset, page_count);
+                    BackingStore::unmap_pages(wb, _base_offset, _page_count);
                 }
             }
         }
@@ -1319,13 +1319,13 @@ impl InvocationKernel {
         if s_vm != o_vm
             && let Cap::Data(ref mut d) = cap
             && d.has_any_mapped()
-            && let Some(base_offset) = d.base_offset
+            && let Some(_base_offset) = d.base_offset
         {
             #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
             if let Some(wb) = self.vm_window_base(s_vm as u16) {
                 // SAFETY: wb is from vm_window_base() (valid 4GB window).
                 unsafe {
-                    BackingStore::unmap_pages(wb, base_offset, d.page_count);
+                    BackingStore::unmap_pages(wb, _base_offset, d.page_count);
                 }
             }
             d.unmap_all();
