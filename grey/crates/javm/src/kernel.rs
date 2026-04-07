@@ -13,12 +13,14 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::GAS_PER_PAGE;
-use crate::backing::{BackingStore, CodeWindow};
+use crate::backing::BackingStore;
 use crate::cap::{
     Access, CallableCap, Cap, CapTable, CodeCap, DataCap, HandleCap, IPC_SLOT, UntypedCap,
 };
 use crate::program::{self, CapEntryType, CapManifestEntry, ParsedBlob};
-use crate::vm_pool::{CallFrame, MAX_CODE_CAPS, MAX_VMS, VmInstance, VmState};
+#[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+use crate::vm_pool::WindowPool;
+use crate::vm_pool::{CallFrame, MAX_CODE_CAPS, VmArena, VmId, VmInstance, VmState};
 
 /// ecalli immediate ranges.
 const CALL_RANGE_END: u32 = 0x100;
@@ -64,8 +66,8 @@ pub struct InvocationKernel {
     pub backing: BackingStore,
     /// Compiled CODE caps (max 5).
     pub code_caps: Vec<Arc<CodeCap>>,
-    /// VM instances (max 1024).
-    pub vms: Vec<VmInstance>,
+    /// VM instances (generational arena).
+    pub vm_arena: VmArena,
     /// Shared UNTYPED cap (bump allocator).
     pub untyped: Arc<UntypedCap>,
     /// Currently active VM index.
@@ -88,6 +90,13 @@ pub struct InvocationKernel {
     /// the JitContext ↔ VmInstance register copy on each ecalli.
     #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
     live_ctx: Option<*mut crate::recompiler::JitContext>,
+    /// Window pool: N pre-allocated 4GB virtual windows with LRU eviction.
+    /// Windows are assigned to VMs on CALL/RESUME and evicted when full.
+    #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+    window_pool: WindowPool,
+    /// Index of the window currently assigned to the active VM.
+    #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+    active_window: usize,
 }
 
 impl InvocationKernel {
@@ -112,10 +121,14 @@ impl InvocationKernel {
         let mem_cycles = crate::compute_mem_cycles(parsed.header.memory_pages);
         let untyped = Arc::new(UntypedCap::new(parsed.header.memory_pages));
 
+        #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+        let window_pool =
+            WindowPool::new(crate::vm_pool::WINDOW_POOL_SIZE).ok_or(KernelError::MemoryError)?;
+
         let mut kernel = Self {
             backing,
             code_caps: Vec::with_capacity(MAX_CODE_CAPS),
-            vms: Vec::with_capacity(16),
+            vm_arena: VmArena::new(),
             untyped,
             active_vm: 0,
             call_stack: Vec::with_capacity(8),
@@ -125,6 +138,10 @@ impl InvocationKernel {
             recompiler_resume_cap: None,
             #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
             live_ctx: None,
+            #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+            window_pool,
+            #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+            active_window: 0,
         };
 
         // Build VM 0's cap table: protocol caps + manifest caps
@@ -166,20 +183,30 @@ impl InvocationKernel {
             _ => return Err(KernelError::InvalidBlob),
         };
 
-        // Map DATA caps into the invoke CODE cap's window
-        let invoke_code_cap = &kernel.code_caps[invoke_code_id as usize];
-        for (base_page, backing_offset, page_count, access) in &data_caps_to_map {
-            unsafe {
-                if !kernel.backing.map_pages(
-                    invoke_code_cap.window.base(),
-                    *base_page,
-                    *backing_offset,
-                    *page_count,
-                    *access,
-                ) {
-                    return Err(KernelError::MemoryError);
+        // Assign window 0 to VM 0 and map DATA caps into it.
+        #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+        {
+            let assignment = kernel.window_pool.assign_window(0, 0);
+            kernel.active_window = assignment.window_idx;
+            let window_base = kernel.window_pool.window(assignment.window_idx).base();
+            for (base_page, backing_offset, page_count, access) in &data_caps_to_map {
+                unsafe {
+                    if !kernel.backing.map_pages(
+                        window_base,
+                        *base_page,
+                        *backing_offset,
+                        *page_count,
+                        *access,
+                    ) {
+                        return Err(KernelError::MemoryError);
+                    }
                 }
             }
+        }
+        // Non-recompiler platforms: DATA cap mapping is handled at interpreter run time.
+        #[cfg(not(all(feature = "std", target_os = "linux", target_arch = "x86_64")))]
+        {
+            let _ = &data_caps_to_map;
         }
 
         // Give VM 0 the UNTYPED cap at slot 254 (fixed slot, just below IPC).
@@ -213,7 +240,7 @@ impl InvocationKernel {
         // φ[7]=op set by caller (refine/accumulate), φ[8]=args_base, φ[9]=args_len
         vm0.set_reg(8, args_base);
         vm0.set_reg(9, args_len);
-        kernel.vms.push(vm0);
+        kernel.vm_arena.insert(vm0); // VM 0 gets VmId(0, 0)
 
         Ok(kernel)
     }
@@ -250,12 +277,8 @@ impl InvocationKernel {
                     KernelError::CompileError
                 })?;
 
-                // Allocate 4GB virtual window
-                let window = CodeWindow::new().ok_or(KernelError::MemoryError)?;
-
                 let code_cap = Arc::new(CodeCap {
                     id,
-                    window,
                     compiled,
                     jump_table: code_blob.jump_table,
                     bitmask: code_blob.bitmask,
@@ -307,13 +330,13 @@ impl InvocationKernel {
         if let Some(ctx) = self.live_ctx {
             unsafe { (*ctx).gas -= ecalli_gas as i64 };
         } else {
-            let g = self.vms[self.active_vm as usize].gas();
-            self.vms[self.active_vm as usize].set_gas(g - ecalli_gas);
+            let g = self.vm_arena.vm(self.active_vm).gas();
+            self.vm_arena.vm_mut(self.active_vm).set_gas(g - ecalli_gas);
         }
         #[cfg(not(all(feature = "std", target_os = "linux", target_arch = "x86_64")))]
         {
-            let g = self.vms[self.active_vm as usize].gas();
-            self.vms[self.active_vm as usize].set_gas(g - ecalli_gas);
+            let g = self.vm_arena.vm(self.active_vm).gas();
+            self.vm_arena.vm_mut(self.active_vm).set_gas(g - ecalli_gas);
         }
 
         if imm < CALL_RANGE_END {
@@ -338,7 +361,7 @@ impl InvocationKernel {
     /// Handle CALL on a cap slot.
     #[inline(always)]
     fn handle_call(&mut self, cap_idx: u8) -> DispatchResult {
-        let vm = &self.vms[self.active_vm as usize];
+        let vm = &self.vm_arena.vm(self.active_vm);
         let cap = match vm.cap_table.get(cap_idx) {
             Some(c) => c,
             None => {
@@ -392,7 +415,7 @@ impl InvocationKernel {
         let n_pages = self.active_reg(7) as u32;
         let gas_cost = 10 + n_pages as u64 * GAS_PER_PAGE;
 
-        let vm = &mut self.vms[self.active_vm as usize];
+        let vm = &mut self.vm_arena.vm_mut(self.active_vm);
         if vm.gas() < gas_cost {
             return DispatchResult::Fault(FaultType::OutOfGas);
         }
@@ -431,12 +454,13 @@ impl InvocationKernel {
                 return DispatchResult::Continue;
             }
         };
-        if !self.vms[dst_vm].cap_table.is_empty(dst_slot) {
+        if !self.vm_arena.vm(dst_vm as u16).cap_table.is_empty(dst_slot) {
             self.set_active_reg(7, RESULT_WHAT);
             return DispatchResult::Continue;
         }
 
-        self.vms[dst_vm]
+        self.vm_arena
+            .vm_mut(dst_vm as u16)
             .cap_table
             .set(dst_slot, Cap::Data(data_cap));
         self.set_active_reg(7, dst_slot as u64);
@@ -450,14 +474,9 @@ impl InvocationKernel {
     fn handle_call_code(&mut self, code_cap_id: u16, code_cnode_vm: usize) -> DispatchResult {
         let bitmask = self.active_reg(7);
 
-        if self.vms.len() >= MAX_VMS {
-            self.set_active_reg(7, RESULT_WHAT);
-            return DispatchResult::Continue;
-        }
-
         // Create child VM's cap table by copying bitmask-selected caps from CODE's CNode
         let mut child_table = CapTable::new();
-        let source_vm = &self.vms[code_cnode_vm];
+        let source_vm = self.vm_arena.vm(code_cnode_vm as u16);
 
         for bit in 0..64u8 {
             if bitmask & (1u64 << bit) != 0
@@ -476,9 +495,14 @@ impl InvocationKernel {
             }
         }
 
-        let child_vm_id = self.vms.len() as u16;
         let child = VmInstance::new(code_cap_id, 0, child_table, 0);
-        self.vms.push(child);
+        let child_vm_id = match self.vm_arena.insert(child) {
+            Some(id) => id,
+            None => {
+                self.set_active_reg(7, RESULT_WHAT);
+                return DispatchResult::Continue;
+            }
+        };
 
         // Caller-picks: HANDLE destination from φ[12] with indirection
         let handle = HandleCap {
@@ -494,11 +518,12 @@ impl InvocationKernel {
                 return DispatchResult::Continue;
             }
         };
-        if !self.vms[dst_vm].cap_table.is_empty(dst_slot) {
+        if !self.vm_arena.vm(dst_vm as u16).cap_table.is_empty(dst_slot) {
             self.set_active_reg(7, RESULT_WHAT);
             return DispatchResult::Continue;
         }
-        self.vms[dst_vm]
+        self.vm_arena
+            .vm_mut(dst_vm as u16)
             .cap_table
             .set(dst_slot, Cap::Handle(handle));
         self.set_active_reg(7, dst_slot as u64);
@@ -506,20 +531,25 @@ impl InvocationKernel {
     }
 
     /// CALL on HANDLE/CALLABLE → suspend caller, run target VM.
-    fn handle_call_vm(&mut self, target_vm_id: u16, max_gas: Option<u64>) -> DispatchResult {
-        if target_vm_id as usize >= self.vms.len() {
-            self.set_active_reg(7, RESULT_WHAT);
-            return DispatchResult::Continue;
-        }
+    fn handle_call_vm(&mut self, vm_id: VmId, max_gas: Option<u64>) -> DispatchResult {
+        let target_vm_id = vm_id.index();
 
-        if !self.vms[target_vm_id as usize].can_call() {
-            // Target is not IDLE — re-entrancy prevention
-            self.set_active_reg(7, RESULT_WHAT);
-            return DispatchResult::Continue;
+        // Validate VmId (generation check for stale handles)
+        match self.vm_arena.get(vm_id) {
+            None => {
+                self.set_active_reg(7, RESULT_WHAT);
+                return DispatchResult::Continue;
+            }
+            Some(vm) if !vm.can_call() => {
+                // Target is not IDLE — re-entrancy prevention
+                self.set_active_reg(7, RESULT_WHAT);
+                return DispatchResult::Continue;
+            }
+            Some(_) => {} // valid and idle
         }
 
         // Determine gas budget for callee
-        let caller_vm = &mut self.vms[self.active_vm as usize];
+        let caller_vm = &mut self.vm_arena.vm_mut(self.active_vm);
         let call_overhead = 10u64;
         if caller_vm.gas() < call_overhead {
             return DispatchResult::Fault(FaultType::OutOfGas);
@@ -534,26 +564,28 @@ impl InvocationKernel {
 
         // Save caller state
         let caller_id = self.active_vm;
-        let _ = self.vms[caller_id as usize].transition(VmState::WaitingForReply);
+        let _ = self
+            .vm_arena
+            .vm_mut(caller_id)
+            .transition(VmState::WaitingForReply);
 
         // Handle IPC cap (φ[12]). 0 = no cap to pass (slot 0 is IPC itself).
         let ipc_cap_slot = self.active_reg(12) as u8;
         let mut ipc_cap_idx = None;
         let mut ipc_was_mapped = None;
 
-        if ipc_cap_slot != 0
-            && !self.vms[caller_id as usize]
-                .cap_table
-                .is_empty(ipc_cap_slot)
-        {
+        if ipc_cap_slot != 0 && !self.vm_arena.vm(caller_id).cap_table.is_empty(ipc_cap_slot) {
             // Take cap from caller, auto-unmap if DATA
-            if let Some(mut cap) = self.vms[caller_id as usize].cap_table.take(ipc_cap_slot) {
+            if let Some(mut cap) = self.vm_arena.vm_mut(caller_id).cap_table.take(ipc_cap_slot) {
                 if let Cap::Data(ref mut d) = cap {
                     ipc_was_mapped = d.unmap();
                 }
                 ipc_cap_idx = Some(ipc_cap_slot);
                 // Place in callee's IPC slot [0]
-                self.vms[target_vm_id as usize].cap_table.set(IPC_SLOT, cap);
+                self.vm_arena
+                    .vm_mut(target_vm_id)
+                    .cap_table
+                    .set(IPC_SLOT, cap);
             }
         }
 
@@ -565,10 +597,10 @@ impl InvocationKernel {
         });
 
         // Pass args: caller's φ[7]..φ[10] → callee's φ[7]..φ[10]
-        let caller_regs = *self.vms[caller_id as usize].regs();
+        let caller_regs = *self.vm_arena.vm(caller_id).regs();
 
         // Set up callee
-        let callee = &mut self.vms[target_vm_id as usize];
+        let callee = self.vm_arena.vm_mut(target_vm_id);
         callee.set_gas(callee_gas);
         callee.caller = Some(caller_id);
         callee.set_reg(7, caller_regs[7]);
@@ -597,17 +629,17 @@ impl InvocationKernel {
         let caller_id = frame.caller_vm_id;
 
         // Callee → IDLE
-        let _ = self.vms[callee_id as usize].transition(VmState::Idle);
+        let _ = self.vm_arena.vm_mut(callee_id).transition(VmState::Idle);
 
         // Return unused gas to caller
-        let unused_gas = self.vms[callee_id as usize].gas();
-        let cg = self.vms[caller_id as usize].gas();
-        self.vms[caller_id as usize].set_gas(cg + unused_gas);
-        self.vms[callee_id as usize].set_gas(0);
+        let unused_gas = self.vm_arena.vm(callee_id).gas();
+        let cg = self.vm_arena.vm(caller_id).gas();
+        self.vm_arena.vm_mut(caller_id).set_gas(cg + unused_gas);
+        self.vm_arena.vm_mut(callee_id).set_gas(0);
 
         // Return IPC cap
         if let Some(caller_slot) = frame.ipc_cap_idx
-            && let Some(mut cap) = self.vms[callee_id as usize].cap_table.take(IPC_SLOT)
+            && let Some(mut cap) = self.vm_arena.vm_mut(callee_id).cap_table.take(IPC_SLOT)
         {
             // Auto-remap DATA cap at caller's original base_page
             if let Some((base_page, access)) = frame.ipc_was_mapped
@@ -615,16 +647,19 @@ impl InvocationKernel {
             {
                 d.map(base_page, access);
             }
-            self.vms[caller_id as usize].cap_table.set(caller_slot, cap);
+            self.vm_arena
+                .vm_mut(caller_id)
+                .cap_table
+                .set(caller_slot, cap);
         }
 
         // Pass φ[7] only + set φ[8]=0 (status = REPLY success)
-        let callee_r7 = self.vms[callee_id as usize].reg(7);
-        self.vms[caller_id as usize].set_reg(7, callee_r7);
-        self.vms[caller_id as usize].set_reg(8, 0);
+        let callee_r7 = self.vm_arena.vm(callee_id).reg(7);
+        self.vm_arena.vm_mut(caller_id).set_reg(7, callee_r7);
+        self.vm_arena.vm_mut(caller_id).set_reg(8, 0);
 
         // Caller → Running
-        let _ = self.vms[caller_id as usize].transition(VmState::Running);
+        let _ = self.vm_arena.vm_mut(caller_id).transition(VmState::Running);
         self.active_vm = caller_id;
 
         DispatchResult::Continue
@@ -648,19 +683,16 @@ impl InvocationKernel {
             if handle_slot == 0 {
                 continue; // end of chain
             }
-            let vm = &self.vms[vm_idx];
+            let vm = &self.vm_arena.vm(vm_idx as u16);
             match vm.cap_table.get(handle_slot) {
                 Some(Cap::Handle(h)) => {
-                    let target_vm = h.vm_id as usize;
-                    if target_vm >= self.vms.len() {
-                        return None;
-                    }
-                    let target_state = self.vms[target_vm].state;
-                    if target_state == VmState::Running || target_state == VmState::WaitingForReply
+                    // Validate VmId (generation check for stale handles)
+                    let target = self.vm_arena.get(h.vm_id)?;
+                    if target.state == VmState::Running || target.state == VmState::WaitingForReply
                     {
                         return None; // target must be non-RUNNING
                     }
-                    vm_idx = target_vm;
+                    vm_idx = h.vm_id.index() as usize;
                 }
                 _ => return None, // not a HANDLE
             }
@@ -689,8 +721,8 @@ impl InvocationKernel {
         if current_gas < ecall_gas {
             return DispatchResult::Fault(FaultType::OutOfGas);
         }
-        let g = self.vms[self.active_vm as usize].gas();
-        self.vms[self.active_vm as usize].set_gas(g - ecall_gas);
+        let g = self.vm_arena.vm(self.active_vm).gas();
+        self.vm_arena.vm_mut(self.active_vm).set_gas(g - ecall_gas);
 
         let phi12 = self.active_reg(12);
         let object_ref = (phi12 & 0xFFFFFFFF) as u32; // low u32
@@ -708,10 +740,15 @@ impl InvocationKernel {
                     self.handle_call(slot)
                 } else {
                     // Remote cap — look up the cap in the remote VM
-                    let cap_type = self.vms[vm_idx].cap_table.get(slot).map(|c| match c {
-                        Cap::Protocol(p) => Some(p.id),
-                        _ => None,
-                    });
+                    let cap_type = self
+                        .vm_arena
+                        .vm(vm_idx as u16)
+                        .cap_table
+                        .get(slot)
+                        .map(|c| match c {
+                            Cap::Protocol(p) => Some(p.id),
+                            _ => None,
+                        });
                     match cap_type {
                         Some(Some(id)) => DispatchResult::ProtocolCall { slot: id },
                         _ => {
@@ -868,28 +905,20 @@ impl InvocationKernel {
             }
         };
 
-        let vm = &self.vms[self.active_vm as usize];
-        let code_cap_id = vm.code_cap_id;
-        let vm = &mut self.vms[self.active_vm as usize];
+        let wb = self.active_window_base();
+        let vm = &mut self.vm_arena.vm_mut(self.active_vm);
         match vm.cap_table.get_mut(cap_idx) {
             Some(Cap::Data(d)) => {
                 // Unmap previous mapping if remapping
                 if let Some((old_base, _)) = d.map(base_page, access) {
-                    let code_cap = &self.code_caps[code_cap_id as usize];
                     unsafe {
-                        BackingStore::unmap_pages(code_cap.window.base(), old_base, d.page_count);
+                        BackingStore::unmap_pages(wb, old_base, d.page_count);
                     }
                 }
                 // Map new location
-                let code_cap = &self.code_caps[code_cap_id as usize];
                 unsafe {
-                    self.backing.map_pages(
-                        code_cap.window.base(),
-                        base_page,
-                        d.backing_offset,
-                        d.page_count,
-                        access,
-                    );
+                    self.backing
+                        .map_pages(wb, base_page, d.backing_offset, d.page_count, access);
                 }
             }
             _ => {
@@ -900,14 +929,13 @@ impl InvocationKernel {
     }
 
     fn mgmt_unmap(&mut self, cap_idx: u8) -> DispatchResult {
-        let code_cap_id = self.vms[self.active_vm as usize].code_cap_id;
-        let vm = &mut self.vms[self.active_vm as usize];
+        let wb = self.active_window_base();
+        let vm = &mut self.vm_arena.vm_mut(self.active_vm);
         match vm.cap_table.get_mut(cap_idx) {
             Some(Cap::Data(d)) => {
                 if let Some((base_page, _)) = d.unmap() {
-                    let code_cap = &self.code_caps[code_cap_id as usize];
                     unsafe {
-                        BackingStore::unmap_pages(code_cap.window.base(), base_page, d.page_count);
+                        BackingStore::unmap_pages(wb, base_page, d.page_count);
                     }
                 }
             }
@@ -921,7 +949,7 @@ impl InvocationKernel {
     fn mgmt_split(&mut self, cap_idx: u8) -> DispatchResult {
         let page_off = self.active_reg(7) as u32;
 
-        let vm = &mut self.vms[self.active_vm as usize];
+        let vm = &mut self.vm_arena.vm_mut(self.active_vm);
 
         // Pre-validate: must be DATA, unmapped, valid offset
         let can_split = match vm.cap_table.get(cap_idx) {
@@ -956,17 +984,29 @@ impl InvocationKernel {
     }
 
     fn mgmt_drop(&mut self, cap_idx: u8) -> DispatchResult {
-        let code_cap_id = self.vms[self.active_vm as usize].code_cap_id;
-        let vm = &mut self.vms[self.active_vm as usize];
+        let wb = self.active_window_base();
+        // DROP HANDLE → reclaim VM via arena.remove()
+        if let Some(Cap::Handle(h)) = self.vm_arena.vm(self.active_vm).cap_table.get(cap_idx) {
+            let vm_id = h.vm_id;
+            self.vm_arena
+                .vm_mut(self.active_vm)
+                .cap_table
+                .drop_cap(cap_idx);
+            // Reclaim the VM — release window and remove from arena
+            #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+            self.window_pool.release(vm_id.index());
+            self.vm_arena.remove(vm_id);
+            return DispatchResult::Continue;
+        }
+        let vm = &mut self.vm_arena.vm_mut(self.active_vm);
         // Unmap DATA caps before dropping
         if let Some(Cap::Data(d)) = vm.cap_table.get(cap_idx)
             && d.has_any_mapped()
             && let Some(base_page) = d.base_offset
         {
             let page_count = d.page_count;
-            let code_cap = &self.code_caps[code_cap_id as usize];
             unsafe {
-                BackingStore::unmap_pages(code_cap.window.base(), base_page, page_count);
+                BackingStore::unmap_pages(wb, base_page, page_count);
             }
         }
         vm.cap_table.drop_cap(cap_idx);
@@ -975,7 +1015,7 @@ impl InvocationKernel {
 
     fn mgmt_move(&mut self, cap_idx: u8) -> DispatchResult {
         let dst = self.active_reg(7) as u8;
-        let vm = &mut self.vms[self.active_vm as usize];
+        let vm = &mut self.vm_arena.vm_mut(self.active_vm);
         match vm.cap_table.move_cap(cap_idx, dst) {
             Ok(()) => {}
             Err(_) => {
@@ -987,7 +1027,7 @@ impl InvocationKernel {
 
     fn mgmt_copy(&mut self, cap_idx: u8) -> DispatchResult {
         let dst = self.active_reg(7) as u8;
-        let vm = &mut self.vms[self.active_vm as usize];
+        let vm = &mut self.vm_arena.vm_mut(self.active_vm);
         match vm.cap_table.copy_cap(cap_idx, dst) {
             Ok(()) => {}
             Err(_) => {
@@ -1000,7 +1040,7 @@ impl InvocationKernel {
     // mgmt_grant and mgmt_revoke removed — subsumed by MOVE with indirection via ecall.
 
     fn mgmt_downgrade(&mut self, handle_idx: u8) -> DispatchResult {
-        let vm = &self.vms[self.active_vm as usize];
+        let vm = &self.vm_arena.vm(self.active_vm);
         let (vm_id, max_gas) = match vm.cap_table.get(handle_idx) {
             Some(Cap::Handle(h)) => (h.vm_id, h.max_gas),
             _ => {
@@ -1011,7 +1051,7 @@ impl InvocationKernel {
 
         let callable = CallableCap { vm_id, max_gas };
 
-        let vm = &mut self.vms[self.active_vm as usize];
+        let vm = &mut self.vm_arena.vm_mut(self.active_vm);
         let free = match (64..255u8).find(|i| vm.cap_table.is_empty(*i)) {
             Some(s) => s,
             None => {
@@ -1027,7 +1067,7 @@ impl InvocationKernel {
 
     fn mgmt_set_max_gas(&mut self, handle_idx: u8) -> DispatchResult {
         let gas_limit = self.active_reg(7);
-        let vm = &mut self.vms[self.active_vm as usize];
+        let vm = &mut self.vm_arena.vm_mut(self.active_vm);
         match vm.cap_table.get_mut(handle_idx) {
             Some(Cap::Handle(h)) => {
                 h.max_gas = Some(gas_limit);
@@ -1041,28 +1081,27 @@ impl InvocationKernel {
 
     /// RESUME a FAULTED VM. Same gas model as CALL.
     fn handle_resume(&mut self, handle_idx: u8) -> DispatchResult {
-        let vm = &self.vms[self.active_vm as usize];
-        let (target_vm_id, max_gas) = match vm.cap_table.get(handle_idx) {
+        let vm = self.vm_arena.vm(self.active_vm);
+        let (target_vm_vid, max_gas) = match vm.cap_table.get(handle_idx) {
             Some(Cap::Handle(h)) => (h.vm_id, h.max_gas),
             _ => {
                 self.set_active_reg(7, RESULT_WHAT);
                 return DispatchResult::Continue;
             }
         };
+        let target_vm_id = target_vm_vid.index();
 
-        if target_vm_id as usize >= self.vms.len() {
-            self.set_active_reg(7, RESULT_WHAT);
-            return DispatchResult::Continue;
-        }
-
-        // Target must be FAULTED
-        if self.vms[target_vm_id as usize].state != VmState::Faulted {
-            self.set_active_reg(7, RESULT_WHAT);
-            return DispatchResult::Continue;
+        // Validate VmId + target must be FAULTED
+        match self.vm_arena.get(target_vm_vid) {
+            Some(vm) if vm.state == VmState::Faulted => {}
+            _ => {
+                self.set_active_reg(7, RESULT_WHAT);
+                return DispatchResult::Continue;
+            }
         }
 
         // Gas transfer (same as CALL)
-        let caller_vm = &mut self.vms[self.active_vm as usize];
+        let caller_vm = &mut self.vm_arena.vm_mut(self.active_vm);
         let call_overhead = 10u64;
         if caller_vm.gas() < call_overhead {
             return DispatchResult::Fault(FaultType::OutOfGas);
@@ -1077,7 +1116,10 @@ impl InvocationKernel {
 
         // Save caller state
         let caller_id = self.active_vm;
-        let _ = self.vms[caller_id as usize].transition(VmState::WaitingForReply);
+        let _ = self
+            .vm_arena
+            .vm_mut(caller_id)
+            .transition(VmState::WaitingForReply);
 
         // Push call frame (no IPC cap for RESUME)
         self.call_stack.push(CallFrame {
@@ -1087,7 +1129,7 @@ impl InvocationKernel {
         });
 
         // Resume callee: FAULTED → RUNNING, registers/PC preserved
-        let callee = &mut self.vms[target_vm_id as usize];
+        let callee = self.vm_arena.vm_mut(target_vm_id);
         callee.set_gas(callee_gas);
         callee.caller = Some(caller_id);
         let _ = callee.transition(VmState::Running);
@@ -1114,25 +1156,26 @@ impl InvocationKernel {
             }
         };
 
-        let code_cap_id = self.vms[vm_idx].code_cap_id;
-        let vm = &mut self.vms[vm_idx];
+        let window_base = self.vm_window_base(vm_idx as u16);
+        let vm = &mut self.vm_arena.vm_mut(vm_idx as u16);
         match vm.cap_table.get_mut(slot) {
             Some(Cap::Data(d)) => {
                 if !d.map_pages(base_offset, access, page_offset, page_count) {
                     self.set_active_reg(7, RESULT_WHAT);
                     return DispatchResult::Continue;
                 }
-                // Map the pages in the CODE window
-                let code_cap = &self.code_caps[code_cap_id as usize];
-                for p in page_offset..page_offset + page_count {
-                    unsafe {
-                        self.backing.map_pages(
-                            code_cap.window.base(),
-                            base_offset + p,
-                            d.backing_offset + p,
-                            1,
-                            access,
-                        );
+                // Map the pages in the VM's window (if it has one)
+                if let Some(wb) = window_base {
+                    for p in page_offset..page_offset + page_count {
+                        unsafe {
+                            self.backing.map_pages(
+                                wb,
+                                base_offset + p,
+                                d.backing_offset + p,
+                                1,
+                                access,
+                            );
+                        }
                     }
                 }
             }
@@ -1149,20 +1192,19 @@ impl InvocationKernel {
         let page_offset = self.active_reg(7) as u32;
         let page_count = self.active_reg(8) as u32;
 
-        let code_cap_id = self.vms[vm_idx].code_cap_id;
-        let vm = &mut self.vms[vm_idx];
+        let window_base = self.vm_window_base(vm_idx as u16);
+        let vm = &mut self.vm_arena.vm_mut(vm_idx as u16);
         match vm.cap_table.get_mut(slot) {
             Some(Cap::Data(d)) => {
                 if let Some(base_offset) = d.base_offset {
-                    for p in page_offset..page_offset.saturating_add(page_count).min(d.page_count) {
-                        if d.is_page_mapped(p) {
-                            let code_cap = &self.code_caps[code_cap_id as usize];
-                            unsafe {
-                                BackingStore::unmap_pages(
-                                    code_cap.window.base(),
-                                    base_offset + p,
-                                    1,
-                                );
+                    if let Some(wb) = window_base {
+                        for p in
+                            page_offset..page_offset.saturating_add(page_count).min(d.page_count)
+                        {
+                            if d.is_page_mapped(p) {
+                                unsafe {
+                                    BackingStore::unmap_pages(wb, base_offset + p, 1);
+                                }
                             }
                         }
                     }
@@ -1182,39 +1224,54 @@ impl InvocationKernel {
         let page_off = self.active_reg(7) as u32;
 
         // Validate
-        let can_split = match self.vms[s_vm].cap_table.get(s_slot) {
+        let can_split = match self.vm_arena.vm(s_vm as u16).cap_table.get(s_slot) {
             Some(Cap::Data(d)) => !d.has_any_mapped() && page_off > 0 && page_off < d.page_count,
             _ => false,
         };
-        if !can_split || !self.vms[o_vm].cap_table.is_empty(o_slot) {
+        if !can_split || !self.vm_arena.vm(o_vm as u16).cap_table.is_empty(o_slot) {
             self.set_active_reg(7, RESULT_WHAT);
             return DispatchResult::Continue;
         }
 
-        let cap = match self.vms[s_vm].cap_table.take(s_slot) {
+        let cap = match self.vm_arena.vm_mut(s_vm as u16).cap_table.take(s_slot) {
             Some(Cap::Data(d)) => d,
             _ => unreachable!(),
         };
         let (lo, hi) = cap.split(page_off).unwrap();
-        self.vms[s_vm].cap_table.set(s_slot, Cap::Data(lo));
-        self.vms[o_vm].cap_table.set(o_slot, Cap::Data(hi));
+        self.vm_arena
+            .vm_mut(s_vm as u16)
+            .cap_table
+            .set(s_slot, Cap::Data(lo));
+        self.vm_arena
+            .vm_mut(o_vm as u16)
+            .cap_table
+            .set(o_slot, Cap::Data(hi));
         DispatchResult::Continue
     }
 
-    /// DROP a cap. Auto-unmaps DATA.
+    /// DROP a cap. Auto-unmaps DATA. Reclaims VM on HANDLE drop.
     fn ecall_drop(&mut self, vm_idx: usize, slot: u8) -> DispatchResult {
-        let code_cap_id = self.vms[vm_idx].code_cap_id;
-        if let Some(Cap::Data(d)) = self.vms[vm_idx].cap_table.get(slot)
+        // DROP HANDLE → reclaim VM
+        if let Some(Cap::Handle(h)) = self.vm_arena.vm(vm_idx as u16).cap_table.get(slot) {
+            let vm_id = h.vm_id;
+            self.vm_arena.vm_mut(vm_idx as u16).cap_table.drop_cap(slot);
+            #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+            self.window_pool.release(vm_id.index());
+            self.vm_arena.remove(vm_id);
+            return DispatchResult::Continue;
+        }
+        if let Some(Cap::Data(d)) = self.vm_arena.vm(vm_idx as u16).cap_table.get(slot)
             && d.has_any_mapped()
             && let Some(base_offset) = d.base_offset
         {
             let page_count = d.page_count;
-            let code_cap = &self.code_caps[code_cap_id as usize];
-            unsafe {
-                BackingStore::unmap_pages(code_cap.window.base(), base_offset, page_count);
+            if let Some(wb) = self.vm_window_base(vm_idx as u16) {
+                unsafe {
+                    BackingStore::unmap_pages(wb, base_offset, page_count);
+                }
             }
         }
-        self.vms[vm_idx].cap_table.drop_cap(slot);
+        self.vm_arena.vm_mut(vm_idx as u16).cap_table.drop_cap(slot);
         DispatchResult::Continue
     }
 
@@ -1223,12 +1280,12 @@ impl InvocationKernel {
         if s_vm == o_vm && s_slot == o_slot {
             return DispatchResult::Continue;
         }
-        if !self.vms[o_vm].cap_table.is_empty(o_slot) {
+        if !self.vm_arena.vm(o_vm as u16).cap_table.is_empty(o_slot) {
             self.set_active_reg(7, RESULT_WHAT);
             return DispatchResult::Continue;
         }
 
-        let mut cap = match self.vms[s_vm].cap_table.take(s_slot) {
+        let mut cap = match self.vm_arena.vm_mut(s_vm as u16).cap_table.take(s_slot) {
             Some(c) => c,
             None => {
                 self.set_active_reg(7, RESULT_WHAT);
@@ -1242,25 +1299,25 @@ impl InvocationKernel {
             && d.has_any_mapped()
             && let Some(base_offset) = d.base_offset
         {
-            let code_cap_id = self.vms[s_vm].code_cap_id;
-            let code_cap = &self.code_caps[code_cap_id as usize];
-            unsafe {
-                BackingStore::unmap_pages(code_cap.window.base(), base_offset, d.page_count);
+            if let Some(wb) = self.vm_window_base(s_vm as u16) {
+                unsafe {
+                    BackingStore::unmap_pages(wb, base_offset, d.page_count);
+                }
             }
             d.unmap_all();
         }
 
-        self.vms[o_vm].cap_table.set(o_slot, cap);
+        self.vm_arena.vm_mut(o_vm as u16).cap_table.set(o_slot, cap);
         DispatchResult::Continue
     }
 
     /// COPY a cap between CNodes (copyable types only).
     fn ecall_copy(&mut self, s_vm: usize, s_slot: u8, o_vm: usize, o_slot: u8) -> DispatchResult {
-        if !self.vms[o_vm].cap_table.is_empty(o_slot) {
+        if !self.vm_arena.vm(o_vm as u16).cap_table.is_empty(o_slot) {
             self.set_active_reg(7, RESULT_WHAT);
             return DispatchResult::Continue;
         }
-        let copy = match self.vms[s_vm].cap_table.get(s_slot) {
+        let copy = match self.vm_arena.vm(s_vm as u16).cap_table.get(s_slot) {
             Some(c) => match c.try_copy() {
                 Some(copy) => copy,
                 None => {
@@ -1273,7 +1330,10 @@ impl InvocationKernel {
                 return DispatchResult::Continue;
             }
         };
-        self.vms[o_vm].cap_table.set(o_slot, copy);
+        self.vm_arena
+            .vm_mut(o_vm as u16)
+            .cap_table
+            .set(o_slot, copy);
         DispatchResult::Continue
     }
 
@@ -1285,18 +1345,19 @@ impl InvocationKernel {
         o_vm: usize,
         o_slot: u8,
     ) -> DispatchResult {
-        let (vm_id, max_gas) = match self.vms[s_vm].cap_table.get(s_slot) {
+        let (vm_id, max_gas) = match self.vm_arena.vm(s_vm as u16).cap_table.get(s_slot) {
             Some(Cap::Handle(h)) => (h.vm_id, h.max_gas),
             _ => {
                 self.set_active_reg(7, RESULT_WHAT);
                 return DispatchResult::Continue;
             }
         };
-        if !self.vms[o_vm].cap_table.is_empty(o_slot) {
+        if !self.vm_arena.vm(o_vm as u16).cap_table.is_empty(o_slot) {
             self.set_active_reg(7, RESULT_WHAT);
             return DispatchResult::Continue;
         }
-        self.vms[o_vm]
+        self.vm_arena
+            .vm_mut(o_vm as u16)
             .cap_table
             .set(o_slot, Cap::Callable(CallableCap { vm_id, max_gas }));
         DispatchResult::Continue
@@ -1305,7 +1366,7 @@ impl InvocationKernel {
     /// SET_MAX_GAS on a HANDLE.
     fn ecall_set_max_gas(&mut self, vm_idx: usize, slot: u8) -> DispatchResult {
         let gas_limit = self.active_reg(7);
-        match self.vms[vm_idx].cap_table.get_mut(slot) {
+        match self.vm_arena.vm_mut(vm_idx as u16).cap_table.get_mut(slot) {
             Some(Cap::Handle(h)) => {
                 h.max_gas = Some(gas_limit);
             }
@@ -1322,7 +1383,7 @@ impl InvocationKernel {
     fn flush_live_ctx(&mut self) {
         if let Some(ctx) = self.live_ctx.take() {
             let ctx = unsafe { &*ctx };
-            let vm = &mut self.vms[self.active_vm as usize];
+            let vm = &mut self.vm_arena.vm_mut(self.active_vm);
             vm.set_regs(ctx.regs);
             vm.set_gas(ctx.gas.max(0) as u64);
             vm.pc = ctx.pc;
@@ -1336,7 +1397,7 @@ impl InvocationKernel {
         if let Some(ctx) = self.live_ctx {
             return unsafe { (*ctx).regs[idx] };
         }
-        self.vms[self.active_vm as usize].reg(idx)
+        self.vm_arena.vm(self.active_vm).reg(idx)
     }
 
     pub fn set_active_reg(&mut self, idx: usize, val: u64) {
@@ -1345,7 +1406,7 @@ impl InvocationKernel {
             unsafe { (*ctx).regs[idx] = val };
             return;
         }
-        self.vms[self.active_vm as usize].set_reg(idx, val);
+        self.vm_arena.vm_mut(self.active_vm).set_reg(idx, val);
     }
 
     /// Get the active VM's remaining gas.
@@ -1354,7 +1415,7 @@ impl InvocationKernel {
         if let Some(ctx) = self.live_ctx {
             return unsafe { (*ctx).gas.max(0) as u64 };
         }
-        self.vms[self.active_vm as usize].gas()
+        self.vm_arena.vm(self.active_vm).gas()
     }
 
     /// Resume after a protocol call was handled by the host.
@@ -1362,6 +1423,95 @@ impl InvocationKernel {
     pub fn resume_protocol_call(&mut self, result0: u64, result1: u64) {
         self.set_active_reg(7, result0);
         self.set_active_reg(8, result1);
+    }
+
+    // --- Window helpers ---
+
+    /// Get the active window's base pointer (guest memory base, R15 in JIT code).
+    #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+    fn active_window_base(&self) -> *mut u8 {
+        self.window_pool.window(self.active_window).base()
+    }
+
+    /// Get the active window's JitContext pointer.
+    #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+    fn active_window_ctx_ptr(&self) -> *mut u8 {
+        self.window_pool.window(self.active_window).ctx_ptr()
+    }
+
+    /// Get window base for a specific VM, if it has an assigned window.
+    #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+    fn vm_window_base(&self, vm_idx: u16) -> Option<*mut u8> {
+        self.window_pool
+            .find_window(vm_idx)
+            .map(|idx| self.window_pool.window(idx).base())
+    }
+
+    /// Ensure the active VM has a window assigned. Handles eviction and
+    /// DATA cap mapping/unmapping. Called before executing any VM code and
+    /// after context switches (CALL/REPLY/HALT).
+    ///
+    /// Fast path: if the active VM already owns the current window, this is
+    /// a single branch (no scan). Only does real work on context switches.
+    #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+    #[inline(always)]
+    fn ensure_active_window(&mut self) {
+        // Fast path: active VM already owns the current window.
+        if self.window_pool.window_owner(self.active_window) == Some(self.active_vm) {
+            return;
+        }
+
+        let vm_idx = self.active_vm;
+        let generation = self.vm_arena.generation_of(vm_idx);
+        let assignment = self.window_pool.assign_window(vm_idx, generation);
+
+        // Evict previous owner's DATA caps from the window
+        if let Some(evicted_vm) = assignment.evicted {
+            self.unmap_vm_data_caps(evicted_vm, assignment.window_idx);
+        }
+
+        // Map current VM's DATA caps into the window
+        if assignment.needs_map {
+            self.map_vm_data_caps(vm_idx, assignment.window_idx);
+        }
+
+        self.active_window = assignment.window_idx;
+    }
+
+    /// Unmap all of a VM's mapped DATA caps from a window.
+    #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+    fn unmap_vm_data_caps(&self, vm_idx: u16, window_idx: usize) {
+        let wb = self.window_pool.window(window_idx).base();
+        let vm = self.vm_arena.vm(vm_idx);
+        for slot in 0..=255u8 {
+            if let Some(Cap::Data(d)) = vm.cap_table.get(slot)
+                && d.has_any_mapped()
+                && let Some(base_offset) = d.base_offset
+            {
+                unsafe {
+                    BackingStore::unmap_pages(wb, base_offset, d.page_count);
+                }
+            }
+        }
+    }
+
+    /// Map all of a VM's mapped DATA caps into a window.
+    #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+    fn map_vm_data_caps(&self, vm_idx: u16, window_idx: usize) {
+        let wb = self.window_pool.window(window_idx).base();
+        let vm = self.vm_arena.vm(vm_idx);
+        for slot in 0..=255u8 {
+            if let Some(Cap::Data(d)) = vm.cap_table.get(slot)
+                && d.has_any_mapped()
+                && let Some(base_offset) = d.base_offset
+            {
+                let access = d.access.unwrap_or(Access::RO);
+                unsafe {
+                    self.backing
+                        .map_pages(wb, base_offset, d.backing_offset, d.page_count, access);
+                }
+            }
+        }
     }
 
     /// Execute one segment via the JIT recompiler backend.
@@ -1381,8 +1531,8 @@ impl InvocationKernel {
             crate::backend::CompiledProgram::Recompiler(c) => c,
             _ => unreachable!(),
         };
-        let vm = &self.vms[self.active_vm as usize];
-        let ctx_raw = code_cap.window.ctx_ptr() as *mut JitContext;
+        let vm = &self.vm_arena.vm(self.active_vm);
+        let ctx_raw = self.active_window_ctx_ptr() as *mut JitContext;
         // SAFETY: ctx_ptr() returns a writable page allocated by CodeWindow::new().
         unsafe {
             ctx_raw.write(JitContext {
@@ -1402,7 +1552,7 @@ impl InvocationKernel {
                 pc: vm.pc,
                 dispatch_table: compiled.dispatch_table.as_ptr(),
                 code_base: compiled.native_code.ptr as u64,
-                flat_buf: code_cap.window.base(),
+                flat_buf: self.active_window_base(),
                 flat_perms: std::ptr::null(),
                 fast_reentry: 0,
                 _pad2: 0,
@@ -1414,10 +1564,6 @@ impl InvocationKernel {
         self.run_recompiler_inner(code_cap_id, ctx_raw)
     }
 
-    /// Resume recompiler execution after a protocol call, reusing the existing
-    /// JitContext. Only updates registers, gas, and entry_pc — avoids rebuilding
-    /// jump table pointers, dispatch table, code base, etc.
-    /// Also skips signal state setup since it's unchanged for the same code cap.
     /// Resume recompiler after a protocol call. The JitContext is still live —
     /// only update the result registers that kernel_resume() changed, then
     /// re-enter native code. No full register sync needed.
@@ -1431,13 +1577,13 @@ impl InvocationKernel {
             crate::backend::CompiledProgram::Recompiler(c) => c,
             _ => unreachable!(),
         };
-        let ctx_raw = code_cap.window.ctx_ptr() as *mut JitContext;
+        let ctx_raw = self.active_window_ctx_ptr() as *mut JitContext;
 
         // The live_ctx was set on the previous ecalli exit. kernel_resume()
         // wrote result regs via set_active_reg which updated JitContext directly.
         // Just set entry_pc and re-enter.
         let ctx = unsafe { &mut *ctx_raw };
-        ctx.entry_pc = self.vms[self.active_vm as usize].pc;
+        ctx.entry_pc = self.vm_arena.vm(self.active_vm).pc;
         ctx.exit_reason = 0;
         ctx.exit_arg = 0;
 
@@ -1453,11 +1599,11 @@ impl InvocationKernel {
 
         if exit_reason == 4 {
             // ecalli: keep live_ctx, sync only pc
-            self.vms[self.active_vm as usize].pc = ctx.pc;
+            self.vm_arena.vm_mut(self.active_vm).pc = ctx.pc;
             self.live_ctx = Some(ctx_raw);
         } else {
             // Non-ecalli: full sync, clear live_ctx
-            let vm = &mut self.vms[self.active_vm as usize];
+            let vm = &mut self.vm_arena.vm_mut(self.active_vm);
             vm.set_regs(ctx.regs);
             vm.set_gas(ctx.gas.max(0) as u64);
             vm.pc = ctx.pc;
@@ -1509,11 +1655,11 @@ impl InvocationKernel {
         if exit_reason == 4 {
             // ecalli: set live_ctx so dispatch reads JitContext directly.
             // Sync only pc to VmInstance (needed for ProtocolCall metadata).
-            self.vms[self.active_vm as usize].pc = ctx.pc;
+            self.vm_arena.vm_mut(self.active_vm).pc = ctx.pc;
             self.live_ctx = Some(ctx_raw);
         } else {
             // Non-ecalli: full sync to VmInstance, clear live_ctx.
-            let vm = &mut self.vms[self.active_vm as usize];
+            let vm = &mut self.vm_arena.vm_mut(self.active_vm);
             vm.set_regs(ctx.regs);
             vm.set_gas(ctx.gas.max(0) as u64);
             vm.pc = ctx.pc;
@@ -1539,7 +1685,7 @@ impl InvocationKernel {
         };
 
         // Determine memory size from mapped DATA caps. Find the highest mapped page.
-        let vm = &self.vms[self.active_vm as usize];
+        let vm = &self.vm_arena.vm(self.active_vm);
         let mut max_addr: usize = 0;
         for slot in 0..=255u8 {
             if let Some(Cap::Data(d)) = vm.cap_table.get(slot)
@@ -1551,9 +1697,9 @@ impl InvocationKernel {
                 max_addr = max_addr.max(end);
             }
         }
-        // Allocate flat memory and copy in mapped pages from the CODE window
+        // Allocate flat memory and copy in mapped pages from the window
         let mut flat_mem = vec![0u8; max_addr];
-        let window_base = code_cap.window.base();
+        let window_base = self.active_window_base();
         for slot in 0..=255u8 {
             if let Some(Cap::Data(d)) = vm.cap_table.get(slot)
                 && d.has_any_mapped()
@@ -1573,7 +1719,7 @@ impl InvocationKernel {
             }
         }
 
-        let vm = &mut self.vms[self.active_vm as usize];
+        let vm = &mut self.vm_arena.vm_mut(self.active_vm);
         let mut interp = crate::interpreter::Interpreter::new(
             prog.code.clone(),
             prog.bitmask.clone(),
@@ -1587,9 +1733,9 @@ impl InvocationKernel {
 
         let (exit, _gas_used) = interp.run();
 
-        // Write back modified pages to the CODE window
-        let code_cap = &self.code_caps[code_cap_id];
-        let vm_ref = &self.vms[self.active_vm as usize];
+        // Write back modified pages to the window
+        let vm_ref = &self.vm_arena.vm(self.active_vm);
+        let wb = self.active_window_base();
         for slot in 0..=255u8 {
             if let Some(Cap::Data(d)) = vm_ref.cap_table.get(slot)
                 && d.has_any_mapped()
@@ -1602,7 +1748,7 @@ impl InvocationKernel {
                     unsafe {
                         std::ptr::copy_nonoverlapping(
                             interp.flat_mem.as_ptr().add(addr),
-                            code_cap.window.base().add(addr),
+                            wb.add(addr),
                             len,
                         );
                     }
@@ -1610,7 +1756,7 @@ impl InvocationKernel {
             }
         }
 
-        let vm = &mut self.vms[self.active_vm as usize];
+        let vm = &mut self.vm_arena.vm_mut(self.active_vm);
         vm.set_regs(interp.registers);
         vm.set_gas(interp.gas);
         vm.pc = interp.pc;
@@ -1642,7 +1788,11 @@ impl InvocationKernel {
     /// Run the kernel until it needs host interaction or terminates.
     pub fn run(&mut self) -> KernelResult {
         loop {
-            let code_cap_id = self.vms[self.active_vm as usize].code_cap_id as usize;
+            // Ensure active VM has a window assigned (handles eviction + DATA cap mapping).
+            #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+            self.ensure_active_window();
+
+            let code_cap_id = self.vm_arena.vm(self.active_vm).code_cap_id as usize;
 
             // Execute via the compiled backend.
             // After a ProtocolCall, recompiler_resume_cap is set so we can resume
@@ -1678,7 +1828,7 @@ impl InvocationKernel {
                             #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
                             {
                                 let new_code_cap_id =
-                                    self.vms[self.active_vm as usize].code_cap_id as usize;
+                                    self.vm_arena.vm(self.active_vm).code_cap_id as usize;
                                 if self.active_vm == prev_vm
                                     && new_code_cap_id == code_cap_id
                                     && matches!(
@@ -1712,7 +1862,7 @@ impl InvocationKernel {
                 }
                 0 => {
                     // Halt
-                    let value = self.vms[self.active_vm as usize].reg(7);
+                    let value = self.vm_arena.vm(self.active_vm).reg(7);
                     match self.handle_vm_halt(value) {
                         DispatchResult::RootHalt(v) => return KernelResult::Halt(v),
                         DispatchResult::Continue => continue,
@@ -1759,7 +1909,7 @@ impl InvocationKernel {
                         let target = cc.jump_table[idx as usize];
                         if (target as usize) < cc.bitmask.len() && cc.bitmask[target as usize] == 1
                         {
-                            self.vms[self.active_vm as usize].pc = target;
+                            self.vm_arena.vm_mut(self.active_vm).pc = target;
                             continue;
                         }
                     }
@@ -1795,7 +1945,7 @@ impl InvocationKernel {
 
     /// Read bytes from a DATA cap's mapped region in the active VM's CODE window.
     pub fn read_data_cap(&self, cap_idx: u8, offset: u32, len: u32) -> Option<Vec<u8>> {
-        let vm = &self.vms[self.active_vm as usize];
+        let vm = &self.vm_arena.vm(self.active_vm);
         let d = match vm.cap_table.get(cap_idx)? {
             Cap::Data(d) => d,
             _ => return None,
@@ -1804,40 +1954,31 @@ impl InvocationKernel {
         if !d.has_any_mapped() {
             return None;
         }
-        let code_cap = &self.code_caps[vm.code_cap_id as usize];
+        let wb = self.active_window_base();
         let addr = base_page as usize * crate::PVM_PAGE_SIZE as usize + offset as usize;
         let mut buf = vec![0u8; len as usize];
-        // SAFETY: base_page was mmap'd into the CODE window by map_pages.
+        // SAFETY: base_page was mmap'd into the window by map_pages.
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                code_cap.window.base().add(addr),
-                buf.as_mut_ptr(),
-                len as usize,
-            );
+            std::ptr::copy_nonoverlapping(wb.add(addr), buf.as_mut_ptr(), len as usize);
         }
         Some(buf)
     }
 
-    /// Read bytes directly from the active VM's CODE window by address.
+    /// Read bytes directly from the active VM's window by address.
     /// Used for reading output from guest programs that return ptr+len in registers.
     pub fn read_data_cap_window(&self, addr: u32, len: u32) -> Option<Vec<u8>> {
-        let vm = &self.vms[self.active_vm as usize];
-        let code_cap = &self.code_caps[vm.code_cap_id as usize];
+        let wb = self.active_window_base();
         let mut buf = vec![0u8; len as usize];
-        // SAFETY: addr is within the CODE window's 4GB mmap region.
+        // SAFETY: addr is within the window's 4GB mmap region.
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                code_cap.window.base().add(addr as usize),
-                buf.as_mut_ptr(),
-                len as usize,
-            );
+            std::ptr::copy_nonoverlapping(wb.add(addr as usize), buf.as_mut_ptr(), len as usize);
         }
         Some(buf)
     }
 
-    /// Write bytes into a DATA cap's mapped region in the active VM's CODE window.
+    /// Write bytes into a DATA cap's mapped region in the active VM's window.
     pub fn write_data_cap(&self, cap_idx: u8, offset: u32, data: &[u8]) -> bool {
-        let vm = &self.vms[self.active_vm as usize];
+        let vm = &self.vm_arena.vm(self.active_vm);
         let d = match vm.cap_table.get(cap_idx) {
             Some(Cap::Data(d)) => d,
             _ => return false,
@@ -1846,15 +1987,11 @@ impl InvocationKernel {
             Some(b) if d.has_any_mapped() => b,
             _ => return false,
         };
-        let code_cap = &self.code_caps[vm.code_cap_id as usize];
+        let wb = self.active_window_base();
         let addr = base_page as usize * crate::PVM_PAGE_SIZE as usize + offset as usize;
-        // SAFETY: base_page was mmap'd into the CODE window by map_pages.
+        // SAFETY: base_page was mmap'd into the window by map_pages.
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                data.as_ptr(),
-                code_cap.window.base().add(addr),
-                data.len(),
-            );
+            std::ptr::copy_nonoverlapping(data.as_ptr(), wb.add(addr), data.len());
         }
         true
     }
@@ -1862,33 +1999,36 @@ impl InvocationKernel {
     /// Handle a callee halt (exit from VM execution).
     pub fn handle_vm_halt(&mut self, exit_value: u64) -> DispatchResult {
         let callee_id = self.active_vm;
-        let _ = self.vms[callee_id as usize].transition(VmState::Halted);
+        let _ = self.vm_arena.vm_mut(callee_id).transition(VmState::Halted);
 
         match self.call_stack.pop() {
             Some(frame) => {
                 let caller_id = frame.caller_vm_id;
 
                 // Return unused gas
-                let unused_gas = self.vms[callee_id as usize].gas();
-                let cg = self.vms[caller_id as usize].gas();
-                self.vms[caller_id as usize].set_gas(cg + unused_gas);
+                let unused_gas = self.vm_arena.vm(callee_id).gas();
+                let cg = self.vm_arena.vm(caller_id).gas();
+                self.vm_arena.vm_mut(caller_id).set_gas(cg + unused_gas);
 
                 // Return IPC cap
                 if let Some(caller_slot) = frame.ipc_cap_idx
-                    && let Some(mut cap) = self.vms[callee_id as usize].cap_table.take(IPC_SLOT)
+                    && let Some(mut cap) = self.vm_arena.vm_mut(callee_id).cap_table.take(IPC_SLOT)
                 {
                     if let Some((bp, acc)) = frame.ipc_was_mapped
                         && let Cap::Data(d) = &mut cap
                     {
                         d.map(bp, acc);
                     }
-                    self.vms[caller_id as usize].cap_table.set(caller_slot, cap);
+                    self.vm_arena
+                        .vm_mut(caller_id)
+                        .cap_table
+                        .set(caller_slot, cap);
                 }
 
                 // Return result
-                self.vms[caller_id as usize].set_reg(7, exit_value);
+                self.vm_arena.vm_mut(caller_id).set_reg(7, exit_value);
 
-                let _ = self.vms[caller_id as usize].transition(VmState::Running);
+                let _ = self.vm_arena.vm_mut(caller_id).transition(VmState::Running);
                 self.active_vm = caller_id;
                 DispatchResult::Continue
             }
@@ -1905,7 +2045,7 @@ impl InvocationKernel {
         let (status, aux_value) = match fault {
             FaultType::Trap => {
                 // Status 1: trap. Preserve child's φ[7] as trap code.
-                (1u64, self.vms[self.active_vm as usize].reg(7))
+                (1u64, self.vm_arena.vm(self.active_vm).reg(7))
             }
             FaultType::Panic => (2, RESULT_HUH), // Status 2: runtime panic
             FaultType::OutOfGas => (3, RESULT_LOW), // Status 3: OOG
@@ -1913,22 +2053,22 @@ impl InvocationKernel {
         };
 
         let callee_id = self.active_vm;
-        let _ = self.vms[callee_id as usize].transition(VmState::Faulted);
+        let _ = self.vm_arena.vm_mut(callee_id).transition(VmState::Faulted);
 
         match self.call_stack.pop() {
             Some(frame) => {
                 let caller_id = frame.caller_vm_id;
 
                 // Return unused gas
-                let unused_gas = self.vms[callee_id as usize].gas();
-                let cg = self.vms[caller_id as usize].gas();
-                self.vms[caller_id as usize].set_gas(cg + unused_gas);
+                let unused_gas = self.vm_arena.vm(callee_id).gas();
+                let cg = self.vm_arena.vm(caller_id).gas();
+                self.vm_arena.vm_mut(caller_id).set_gas(cg + unused_gas);
 
                 // Set φ[7]=aux_value, φ[8]=status
-                self.vms[caller_id as usize].set_reg(7, aux_value);
-                self.vms[caller_id as usize].set_reg(8, status);
+                self.vm_arena.vm_mut(caller_id).set_reg(7, aux_value);
+                self.vm_arena.vm_mut(caller_id).set_reg(8, status);
 
-                let _ = self.vms[caller_id as usize].transition(VmState::Running);
+                let _ = self.vm_arena.vm_mut(caller_id).transition(VmState::Running);
                 self.active_vm = caller_id;
                 DispatchResult::Continue
             }
@@ -2054,7 +2194,7 @@ mod tests {
     fn test_kernel_create() {
         let blob = make_simple_blob(10);
         let kernel = InvocationKernel::new(&blob, &[], 100_000).unwrap();
-        assert_eq!(kernel.vms.len(), 1);
+        assert_eq!(kernel.vm_arena.len(), 1);
         assert_eq!(kernel.code_caps.len(), 1);
         assert_eq!(kernel.mem_cycles, 25);
     }
@@ -2065,12 +2205,12 @@ mod tests {
         let mut kernel = InvocationKernel::new(&blob, &[], 100_000).unwrap();
 
         // Set VM 0 to running
-        let _ = kernel.vms[0].transition(VmState::Running);
+        let _ = kernel.vm_arena.vm_mut(0).transition(VmState::Running);
 
         // UNTYPED is at fixed slot 254
         let untyped_slot = 254u8;
         assert!(matches!(
-            kernel.vms[0].cap_table.get(untyped_slot),
+            kernel.vm_arena.vm(0).cap_table.get(untyped_slot),
             Some(Cap::Untyped(_))
         ));
 
@@ -2088,7 +2228,7 @@ mod tests {
         let new_cap_idx = kernel.active_reg(7) as u8;
         assert_eq!(new_cap_idx, 66);
         assert!(matches!(
-            kernel.vms[0].cap_table.get(new_cap_idx),
+            kernel.vm_arena.vm(0).cap_table.get(new_cap_idx),
             Some(Cap::Data(_))
         ));
     }
@@ -2097,7 +2237,7 @@ mod tests {
     fn test_kernel_create_vm() {
         let blob = make_simple_blob(10);
         let mut kernel = InvocationKernel::new(&blob, &[], 100_000).unwrap();
-        let _ = kernel.vms[0].transition(VmState::Running);
+        let _ = kernel.vm_arena.vm_mut(0).transition(VmState::Running);
 
         // Find the CODE cap slot
         let code_slot = 64u8; // From manifest
@@ -2110,14 +2250,14 @@ mod tests {
         assert!(matches!(result, DispatchResult::Continue));
 
         // Should have created VM 1
-        assert_eq!(kernel.vms.len(), 2);
-        assert_eq!(kernel.vms[1].state, VmState::Idle);
+        assert_eq!(kernel.vm_arena.len(), 2);
+        assert_eq!(kernel.vm_arena.vm(1).state, VmState::Idle);
 
         // φ[7] = dst_slot
         let handle_idx = kernel.active_reg(7) as u8;
         assert_eq!(handle_idx, 66);
         assert!(matches!(
-            kernel.vms[0].cap_table.get(handle_idx),
+            kernel.vm_arena.vm(0).cap_table.get(handle_idx),
             Some(Cap::Handle(_))
         ));
     }
@@ -2126,7 +2266,7 @@ mod tests {
     fn test_kernel_call_reply() {
         let blob = make_simple_blob(10);
         let mut kernel = InvocationKernel::new(&blob, &[], 100_000).unwrap();
-        let _ = kernel.vms[0].transition(VmState::Running);
+        let _ = kernel.vm_arena.vm_mut(0).transition(VmState::Running);
 
         // Create child VM: φ[7]=bitmask, φ[12]=dst_slot for HANDLE
         kernel.set_active_reg(7, 0); // no caps copied
@@ -2144,8 +2284,8 @@ mod tests {
 
         // Active VM should now be the child (VM 1)
         assert_eq!(kernel.active_vm, 1);
-        assert_eq!(kernel.vms[0].state, VmState::WaitingForReply);
-        assert_eq!(kernel.vms[1].state, VmState::Running);
+        assert_eq!(kernel.vm_arena.vm(0).state, VmState::WaitingForReply);
+        assert_eq!(kernel.vm_arena.vm(1).state, VmState::Running);
 
         // Child received args
         assert_eq!(kernel.active_reg(7), 42);
@@ -2159,8 +2299,8 @@ mod tests {
 
         // Back to VM 0
         assert_eq!(kernel.active_vm, 0);
-        assert_eq!(kernel.vms[0].state, VmState::Running);
-        assert_eq!(kernel.vms[1].state, VmState::Idle);
+        assert_eq!(kernel.vm_arena.vm(0).state, VmState::Running);
+        assert_eq!(kernel.vm_arena.vm(1).state, VmState::Idle);
 
         // Caller received results: φ[7]=child's return, φ[8]=0 (status=REPLY)
         assert_eq!(kernel.active_reg(7), 100);
@@ -2171,7 +2311,7 @@ mod tests {
     fn test_kernel_no_reentrancy() {
         let blob = make_simple_blob(10);
         let mut kernel = InvocationKernel::new(&blob, &[], 100_000).unwrap();
-        let _ = kernel.vms[0].transition(VmState::Running);
+        let _ = kernel.vm_arena.vm_mut(0).transition(VmState::Running);
 
         // Create two child VMs: φ[7]=bitmask, φ[12]=dst_slot
         kernel.set_active_reg(7, 0);
@@ -2196,14 +2336,14 @@ mod tests {
         // We can't actually create one (no HANDLE to VM 0 exists in VM 1).
         // The reentrancy test is: VM 0 is in WaitingForReply, not IDLE.
         // If anyone tries to call VM 0, it fails.
-        assert!(!kernel.vms[0].can_call());
+        assert!(!kernel.vm_arena.vm(0).can_call());
     }
 
     #[test]
     fn test_kernel_gas_bounding() {
         let blob = make_simple_blob(10);
         let mut kernel = InvocationKernel::new(&blob, &[], 100_000).unwrap();
-        let _ = kernel.vms[0].transition(VmState::Running);
+        let _ = kernel.vm_arena.vm_mut(0).transition(VmState::Running);
 
         // Create child VM: φ[7]=bitmask, φ[12]=dst_slot
         kernel.set_active_reg(7, 0);
@@ -2220,26 +2360,28 @@ mod tests {
         kernel.dispatch_ecall(0x0B);
 
         // CALL child — gas should be capped at 5000
-        let parent_gas_before = kernel.vms[0].gas();
+        let parent_gas_before = kernel.vm_arena.vm(0).gas();
         kernel.set_active_reg(7, 0);
         kernel.set_active_reg(12, 0); // no IPC cap (slot 0 = IPC itself)
         kernel.dispatch_ecalli(handle_idx as u32);
 
         assert_eq!(kernel.active_vm, 1);
-        assert_eq!(kernel.vms[1].gas(), 5000);
+        assert_eq!(kernel.vm_arena.vm(1).gas(), 5000);
 
         // Parent lost 10 (ecalli) + 10 (call overhead) + 5000 (transfer)
-        assert_eq!(kernel.vms[0].gas(), parent_gas_before - 5020);
+        assert_eq!(kernel.vm_arena.vm(0).gas(), parent_gas_before - 5020);
     }
 
     #[test]
     fn test_kernel_protocol_call() {
         let blob = make_simple_blob(10);
         let mut kernel = InvocationKernel::new(&blob, &[], 100_000).unwrap();
-        let _ = kernel.vms[0].transition(VmState::Running);
+        let _ = kernel.vm_arena.vm_mut(0).transition(VmState::Running);
 
         // Set a protocol cap at slot 1 (GAS)
-        kernel.vms[0]
+        kernel
+            .vm_arena
+            .vm_mut(0)
             .cap_table
             .set(1, Cap::Protocol(ProtocolCap { id: 1 }));
 
@@ -2260,7 +2402,7 @@ mod tests {
     fn test_kernel_missing_cap() {
         let blob = make_simple_blob(10);
         let mut kernel = InvocationKernel::new(&blob, &[], 100_000).unwrap();
-        let _ = kernel.vms[0].transition(VmState::Running);
+        let _ = kernel.vm_arena.vm_mut(0).transition(VmState::Running);
 
         // CALL empty slot → WHAT
         let result = kernel.dispatch_ecalli(50);
@@ -2272,7 +2414,7 @@ mod tests {
     fn test_kernel_downgrade() {
         let blob = make_simple_blob(10);
         let mut kernel = InvocationKernel::new(&blob, &[], 100_000).unwrap();
-        let _ = kernel.vms[0].transition(VmState::Running);
+        let _ = kernel.vm_arena.vm_mut(0).transition(VmState::Running);
 
         // Create child: φ[7]=bitmask, φ[12]=dst_slot
         kernel.set_active_reg(7, 0);
@@ -2292,12 +2434,12 @@ mod tests {
 
         // Handle still exists
         assert!(matches!(
-            kernel.vms[0].cap_table.get(handle_idx),
+            kernel.vm_arena.vm(0).cap_table.get(handle_idx),
             Some(Cap::Handle(_))
         ));
         // Callable created
         assert!(matches!(
-            kernel.vms[0].cap_table.get(callable_idx),
+            kernel.vm_arena.vm(0).cap_table.get(callable_idx),
             Some(Cap::Callable(_))
         ));
     }
@@ -2309,7 +2451,7 @@ mod tests {
         // mmap DATA → execute native code → exit handling.
         let blob = make_simple_blob(10);
         let mut kernel = InvocationKernel::new(&blob, &[], 100_000).unwrap();
-        let _ = kernel.vms[0].transition(VmState::Running);
+        let _ = kernel.vm_arena.vm_mut(0).transition(VmState::Running);
         let result = kernel.run();
         assert!(
             matches!(result, KernelResult::Panic),

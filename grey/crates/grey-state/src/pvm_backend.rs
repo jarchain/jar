@@ -65,9 +65,10 @@ impl PvmInstance {
     }
 
     pub fn set_gas(&mut self, gas: Gas) {
-        if let Some(vm) = self.kernel.vms.get_mut(self.kernel.active_vm as usize) {
-            vm.set_gas(gas);
-        }
+        self.kernel
+            .vm_arena
+            .vm_mut(self.kernel.active_vm)
+            .set_gas(gas);
     }
 
     /// Read a register. Routes through live_ctx when the recompiler is active,

@@ -19,10 +19,10 @@ fn run_kernel(backend: javm::PvmBackend, input: &[u8], test_id: u32) -> KernelRu
     let gas = 100_000_000_000u64;
     let mut kernel = InvocationKernel::new_with_backend(GUEST_TESTS_BLOB, input, gas, backend)
         .expect("kernel should initialize");
-    let _ = kernel.vms[0].transition(VmState::Running);
+    let _ = kernel.vm_arena.vm_mut(0).transition(VmState::Running);
 
     let result = kernel.run();
-    let packed = kernel.vms[kernel.active_vm as usize].reg(7);
+    let packed = kernel.vm_arena.vm(kernel.active_vm).reg(7);
     let ptr = (packed >> 32) as u32;
     let len = (packed & 0xFFFFFFFF) as u32;
     let gas_used = gas - kernel.active_gas();

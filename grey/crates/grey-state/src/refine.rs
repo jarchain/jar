@@ -119,7 +119,7 @@ pub fn invoke_is_authorized(
             KernelResult::Panic => {
                 let pc = pvm
                     .kernel()
-                    .map(|k| k.vms[k.active_vm as usize].pc)
+                    .map(|k| k.vm_arena.vm(k.active_vm).pc)
                     .unwrap_or(0);
                 let gas = pvm.gas();
                 tracing::warn!(pc, gas, "PVM panicked during is-authorized");

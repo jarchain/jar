@@ -32,12 +32,12 @@ pub fn run_kernel_with_backend(blob: &[u8], gas: u64, backend: javm::PvmBackend)
         match kernel.run() {
             javm::kernel::KernelResult::Halt(v) => return (v, gas - kernel.active_gas()),
             javm::kernel::KernelResult::Panic => {
-                let vm = &kernel.vms[kernel.active_vm as usize];
+                let vm = &kernel.vm_arena.vm(kernel.active_vm);
                 panic!("kernel panicked at PC={} gas={}", vm.pc, vm.gas());
             }
             javm::kernel::KernelResult::OutOfGas => panic!("kernel out of gas"),
             javm::kernel::KernelResult::PageFault(a) => {
-                let vm = &kernel.vms[kernel.active_vm as usize];
+                let vm = &kernel.vm_arena.vm(kernel.active_vm);
                 panic!("kernel page fault at {a:#x} PC={} gas={}", vm.pc, vm.gas());
             }
             javm::kernel::KernelResult::ProtocolCall { .. } => continue,
@@ -827,17 +827,17 @@ pub fn run_fib_recur_with_backend(
 
     let mut kernel = InvocationKernel::new_with_backend(blob, &[], gas, backend)
         .expect("fib_recur kernel init failed");
-    kernel.vms[0].set_reg(7, n);
-    let _ = kernel.vms[0].transition(VmState::Running);
+    kernel.vm_arena.vm_mut(0).set_reg(7, n);
+    let _ = kernel.vm_arena.vm_mut(0).transition(VmState::Running);
 
     match kernel.run() {
         KernelResult::Halt(v) => {
             let gas_used = gas - kernel.active_gas();
-            let vm_count = kernel.vms.len();
+            let vm_count = kernel.vm_arena.len();
             (v, gas_used, vm_count)
         }
         KernelResult::Panic => {
-            let vm = &kernel.vms[kernel.active_vm as usize];
+            let vm = &kernel.vm_arena.vm(kernel.active_vm);
             panic!(
                 "fib_recur panicked: vm={} pc={} gas={}",
                 kernel.active_vm,
@@ -1051,7 +1051,7 @@ mod tests_sort {
             .expect("blob should be loadable");
         // In v2, the program dispatches on φ[7] (op code).
         // φ[7]=1 means accumulate. Set it before running.
-        kernel.vms[kernel.active_vm as usize].set_reg(7, 1);
+        kernel.vm_arena.vm_mut(kernel.active_vm).set_reg(7, 1);
         let result = kernel.run();
         match result {
             javm::kernel::KernelResult::Halt(_)
