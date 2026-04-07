@@ -40,4 +40,24 @@ mod tests {
         let hash2 = blake2b_256(b"world");
         assert_ne!(hash1, hash2);
     }
+
+    /// Known-answer test: blake2b-256("") — RFC 7693 test vector.
+    #[test]
+    fn test_blake2b_256_kat_empty() {
+        let hash = blake2b_256(b"");
+        assert_eq!(
+            hex::encode(hash.0),
+            "0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8"
+        );
+    }
+
+    /// Known-answer test: blake2b-256("abc") — RFC 7693 test vector.
+    #[test]
+    fn test_blake2b_256_kat_abc() {
+        let hash = blake2b_256(b"abc");
+        assert_eq!(
+            hex::encode(hash.0),
+            "bddd813c634239723171ef3fee98579b94964e3bb1cb3e427262c8c068d52319"
+        );
+    }
 }
