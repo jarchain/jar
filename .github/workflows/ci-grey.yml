@@ -82,6 +82,24 @@ jobs:
           GREY_PVM: interpreter
           RUSTFLAGS: "-D warnings"
 
+  test-macos:
+    name: Tests (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rust-src
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Workspace tests (interpreter)
+        run: cargo test --locked --workspace --release
+        env:
+          GREY_PVM: interpreter
+          RUSTFLAGS: "-D warnings"
+
   harness:
     name: Integration harness
     runs-on: ubuntu-latest
