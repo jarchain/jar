@@ -205,3 +205,99 @@ pub struct Guarantee {
     /// Credentials: (validator_index, signature) pairs.
     pub credentials: Vec<(ValidatorIndex, crate::Ed25519Signature)>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{BandersnatchSignature, Ed25519Signature, Hash};
+    use scale::{Decode, Encode};
+
+    fn roundtrip<T: Encode + Decode>(val: &T) {
+        let encoded = val.encode();
+        let (decoded, consumed) = T::decode(&encoded).expect("decode should succeed");
+        assert_eq!(consumed, encoded.len(), "should consume all bytes");
+        assert_eq!(decoded.encode(), encoded, "re-encode should match");
+    }
+
+    #[test]
+    fn test_ticket_roundtrip() {
+        roundtrip(&Ticket {
+            id: Hash([0xAA; 32]),
+            attempt: 3,
+        });
+    }
+
+    #[test]
+    fn test_epoch_marker_roundtrip() {
+        roundtrip(&EpochMarker {
+            entropy: Hash([1u8; 32]),
+            entropy_previous: Hash([2u8; 32]),
+            validators: vec![(
+                crate::BandersnatchPublicKey([3u8; 32]),
+                crate::Ed25519PublicKey([4u8; 32]),
+            )],
+        });
+    }
+
+    #[test]
+    fn test_assurance_roundtrip() {
+        roundtrip(&Assurance {
+            anchor: Hash([10u8; 32]),
+            bitfield: vec![0b11110000],
+            validator_index: 5,
+            signature: Ed25519Signature([0xBB; 64]),
+        });
+    }
+
+    #[test]
+    fn test_verdict_roundtrip() {
+        roundtrip(&Verdict {
+            report_hash: Hash([1u8; 32]),
+            age: 42,
+            judgments: vec![Judgment {
+                is_valid: true,
+                validator_index: 3,
+                signature: Ed25519Signature([0xCC; 64]),
+            }],
+        });
+    }
+
+    #[test]
+    fn test_header_roundtrip() {
+        roundtrip(&Header {
+            data: UnsignedHeader {
+                parent_hash: Hash([1u8; 32]),
+                state_root: Hash([2u8; 32]),
+                extrinsic_hash: Hash([3u8; 32]),
+                timeslot: 100,
+                epoch_marker: None,
+                tickets_marker: None,
+                author_index: 5,
+                vrf_signature: BandersnatchSignature([4u8; 96]),
+                offenders_marker: vec![],
+            },
+            seal: BandersnatchSignature([5u8; 96]),
+        });
+    }
+
+    #[test]
+    fn test_block_roundtrip() {
+        roundtrip(&Block {
+            header: Header {
+                data: UnsignedHeader {
+                    parent_hash: Hash([1u8; 32]),
+                    state_root: Hash([2u8; 32]),
+                    extrinsic_hash: Hash([3u8; 32]),
+                    timeslot: 1,
+                    epoch_marker: None,
+                    tickets_marker: None,
+                    author_index: 0,
+                    vrf_signature: BandersnatchSignature([0u8; 96]),
+                    offenders_marker: vec![],
+                },
+                seal: BandersnatchSignature([0u8; 96]),
+            },
+            extrinsic: Extrinsic::default(),
+        });
+    }
+}
