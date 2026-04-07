@@ -2104,19 +2104,28 @@ impl InvocationKernel {
     }
 
     /// Write bytes into a DATA cap's mapped region in the active VM's window.
-    pub fn write_data_cap(&self, cap_idx: u8, offset: u32, data: &[u8]) -> bool {
-        let vm = &self.vm_arena.vm(self.active_vm);
-        let d = match vm.cap_table.get(cap_idx) {
-            Some(Cap::Data(d)) => d,
-            _ => return false,
+    pub fn write_data_cap(&mut self, cap_idx: u8, offset: u32, data: &[u8]) -> bool {
+        // Extract cap info first, releasing the borrow on vm_arena before
+        // mutably borrowing backing on the non-Linux path.
+        let cap_info = {
+            let vm = &self.vm_arena.vm(self.active_vm);
+            let d = match vm.cap_table.get(cap_idx) {
+                Some(Cap::Data(d)) => d,
+                _ => return false,
+            };
+            match d.base_offset {
+                Some(b) if d.has_any_mapped() => Some((b, d.backing_offset)),
+                _ => None,
+            }
         };
-        let base_page = match d.base_offset {
-            Some(b) if d.has_any_mapped() => b,
-            _ => return false,
+        let (base_page, backing_offset) = match cap_info {
+            Some(info) => info,
+            None => return false,
         };
         let addr = base_page as usize * crate::PVM_PAGE_SIZE as usize + offset as usize;
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         {
+            let _ = backing_offset; // only used on non-Linux
             let wb = self.active_window_base();
             // SAFETY: base_page was mmap'd into the window by map_pages.
             unsafe {
@@ -2125,7 +2134,7 @@ impl InvocationKernel {
         }
         #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         {
-            let byte_off = d.backing_offset as usize * crate::PVM_PAGE_SIZE as usize
+            let byte_off = backing_offset as usize * crate::PVM_PAGE_SIZE as usize
                 + (addr - base_page as usize * crate::PVM_PAGE_SIZE as usize);
             self.backing.write_bytes_at(byte_off, data);
         }

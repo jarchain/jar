@@ -247,23 +247,11 @@ impl BackingStore {
     }
 
     /// Write bytes at a raw byte offset. Returns false if out of bounds.
-    ///
-    /// Uses unsafe interior mutation analogous to the Linux mmap write path.
-    /// The backing store is exclusively owned by `InvocationKernel` and the
-    /// byte range must not alias any live Rust reference.
-    pub fn write_bytes_at(&self, byte_offset: usize, data: &[u8]) -> bool {
+    pub fn write_bytes_at(&mut self, byte_offset: usize, data: &[u8]) -> bool {
         if byte_offset + data.len() > self.data.len() {
             return false;
         }
-        // SAFETY: bounds checked above; backing store is exclusively owned and
-        // no other live reference overlaps this range during a write.
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                data.as_ptr(),
-                self.data.as_ptr().add(byte_offset) as *mut u8,
-                data.len(),
-            );
-        }
+        self.data[byte_offset..byte_offset + data.len()].copy_from_slice(data);
         true
     }
 }

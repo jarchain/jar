@@ -51,7 +51,7 @@ impl PvmInstance {
     }
 
     /// Write to a DATA cap in the kernel's active VM.
-    pub fn kernel_write_data(&self, cap_idx: u8, offset: u32, data: &[u8]) -> bool {
+    pub fn kernel_write_data(&mut self, cap_idx: u8, offset: u32, data: &[u8]) -> bool {
         self.kernel.write_data_cap(cap_idx, offset, data)
     }
 
