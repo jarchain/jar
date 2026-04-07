@@ -321,6 +321,172 @@ pub fn peephole_fuse_load_imm_alu(
     fused
 }
 
+/// Peephole pass: fuse `load_imm` + indirect memory op into direct memory op.
+///
+/// When `load_imm rd, K` is immediately followed by `load_ind_X dest, rd, offset`
+/// or `store_ind_X [rd + offset], val`, and `K + offset` fits in i32, the pair is
+/// replaced by the direct `load_X dest, K+offset` or `store_X [K+offset], val`.
+/// This eliminates the intermediate address register load.
+pub fn peephole_fuse_load_imm_memory(
+    code: &mut [u8],
+    bitmask: &mut [u8],
+    jump_table: &[u32],
+) -> usize {
+    let len = code.len();
+    if len < 4 {
+        return 0;
+    }
+
+    let targets = collect_branch_targets(code, bitmask, jump_table);
+
+    // Map indirect opcode → direct opcode
+    let direct_opcode = |ind_op: u8| -> Option<u8> {
+        match ind_op {
+            124 => Some(52), // load_ind_u8  → load_u8
+            125 => Some(53), // load_ind_i8  → load_i8
+            126 => Some(54), // load_ind_u16 → load_u16
+            127 => Some(55), // load_ind_i16 → load_i16
+            128 => Some(56), // load_ind_u32 → load_u32
+            129 => Some(57), // load_ind_i32 → load_i32
+            130 => Some(58), // load_ind_u64 → load_u64
+            120 => Some(59), // store_ind_u8  → store_u8
+            121 => Some(60), // store_ind_u16 → store_u16
+            122 => Some(61), // store_ind_u32 → store_u32
+            123 => Some(62), // store_ind_u64 → store_u64
+            _ => None,
+        }
+    };
+
+    // For load_ind: rd is dest, ra is base. We fuse when base == load_imm's rd.
+    // For store_ind: rd is value, ra is base. We fuse when base == load_imm's rd.
+    // In both cases, ra (high nibble of reg byte) must match load_imm's destination.
+    let is_load_ind = |op: u8| -> bool { (124..=130).contains(&op) };
+
+    let mut fused = 0;
+    let mut i = 0;
+    while i < len {
+        if i >= bitmask.len() || bitmask[i] != 1 {
+            i += 1;
+            continue;
+        }
+        let op = code[i];
+        let s = skip_for(bitmask, i);
+        let next_i = i + 1 + s;
+
+        // Look for load_imm (51) followed by load_ind or store_ind
+        if op == 51 && next_i < len && bitmask[next_i] == 1 && !targets.contains(&next_i) {
+            let mem_op = code[next_i];
+            let mem_s = skip_for(bitmask, next_i);
+            if let Some(dir_op) = direct_opcode(mem_op) {
+                // Parse load_imm: [51, reg_byte, imm...]
+                if i + 1 < len {
+                    let load_rd = code[i + 1] & 0x0F;
+                    let lx = s.saturating_sub(1);
+                    let mut imm_buf = [0u8; 8];
+                    for k in 0..lx.min(8) {
+                        if i + 2 + k < len {
+                            imm_buf[k] = code[i + 2 + k];
+                        }
+                    }
+                    if lx > 0 && lx <= 8 && imm_buf[lx.min(8) - 1] & 0x80 != 0 {
+                        for b in &mut imm_buf[lx.min(8)..8] {
+                            *b = 0xFF;
+                        }
+                    }
+                    let load_val = i64::from_le_bytes(imm_buf);
+
+                    // Parse memory op: [mem_op, rd|(ra<<4), imm0-3]
+                    if next_i + 2 < len {
+                        let mem_reg_byte = code[next_i + 1];
+                        let mem_rd = mem_reg_byte & 0x0F; // dest (load) or value (store)
+                        let mem_ra = (mem_reg_byte >> 4) & 0x0F; // base address register
+
+                        // Fuse if: load_imm's rd == memory op's base register (ra)
+                        // AND the loaded register is not also used as the value in a store
+                        // (i.e., for store_ind: load_rd must be ra, not rd)
+                        let base_matches = load_rd == mem_ra;
+
+                        // For load_ind: also check load_rd != mem_rd if load_rd == mem_ra,
+                        // because the direct form loses ra. But we keep mem_rd as the dest,
+                        // so the only constraint is base_matches.
+                        // For store_ind: load_rd == mem_ra is sufficient. If load_rd == mem_rd
+                        // too, the value is the same constant — still valid since the store
+                        // reads mem_rd BEFORE we'd clobber it.
+                        //
+                        // Additional safety: if load_rd is used as BOTH base and value in
+                        // store_ind (mem_ra == mem_rd == load_rd), the direct store still
+                        // reads the value from the register correctly.
+                        let is_load = is_load_ind(mem_op);
+                        let safe = if is_load {
+                            // For load_ind: load_rd == mem_ra. If load_rd == mem_rd too,
+                            // the load overwrites the base register — but we don't need
+                            // the base anymore since we're using the direct address.
+                            base_matches
+                        } else {
+                            // For store_ind: load_rd == mem_ra. Must also ensure
+                            // load_rd != mem_rd OR the store doesn't need the original
+                            // register value (it needs the LOADED constant, which is fine).
+                            base_matches
+                        };
+
+                        // Parse memory op's offset
+                        let ly = mem_s.saturating_sub(1);
+                        let mut off_buf = [0u8; 8];
+                        for k in 0..ly.min(8) {
+                            if next_i + 2 + k < len {
+                                off_buf[k] = code[next_i + 2 + k];
+                            }
+                        }
+                        if ly > 0 && ly <= 8 && off_buf[ly.min(8) - 1] & 0x80 != 0 {
+                            for b in &mut off_buf[ly.min(8)..8] {
+                                *b = 0xFF;
+                            }
+                        }
+                        let offset = i64::from_le_bytes(off_buf);
+
+                        let combined = load_val.wrapping_add(offset);
+                        let fits_u32 = combined >= 0 && combined <= u32::MAX as i64;
+                        let end_of_pair = next_i + 1 + mem_s;
+
+                        if safe && fits_u32 && end_of_pair >= next_i + 6 {
+                            // Rewrite memory op in-place as direct form
+                            code[next_i] = dir_op;
+                            // Direct form: [dir_op, rd, imm0-3] (OneRegOneImm)
+                            // rd is the dest (load) or value (store) register
+                            code[next_i + 1] = mem_rd;
+                            let addr_bytes = (combined as u32).to_le_bytes();
+                            code[next_i + 2] = addr_bytes[0];
+                            code[next_i + 3] = addr_bytes[1];
+                            code[next_i + 4] = addr_bytes[2];
+                            code[next_i + 5] = addr_bytes[3];
+                            // Zero remaining bytes
+                            for k in 6..(end_of_pair - next_i) {
+                                code[next_i + k] = 0;
+                            }
+                            // Clear continuation bitmask for memory op
+                            for b in &mut bitmask[(next_i + 1)..end_of_pair] {
+                                *b = 0;
+                            }
+
+                            // NOP the load_imm by clearing its bitmask
+                            bitmask[i] = 0;
+                            for b in code[i..next_i].iter_mut() {
+                                *b = 0;
+                            }
+
+                            fused += 1;
+                            i = end_of_pair;
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+        i += 1 + s;
+    }
+    fused
+}
+
 /// Peephole pass: eliminate dead `load_imm` instructions.
 ///
 /// When a `load_imm` (opcode 51) or `load_imm_64` (opcode 20) writes to register R,

@@ -130,6 +130,7 @@ pub fn link_elf(elf_data: &[u8]) -> Result<Vec<u8>, TranspileError> {
     rewrite_data_code_ptrs(&elf, &mut ctx, &mut ro_data, &mut rw_data);
 
     crate::peephole_fuse_load_imm_alu(&mut ctx.code, &mut ctx.bitmask, &ctx.jump_table);
+    crate::peephole_fuse_load_imm_memory(&mut ctx.code, &mut ctx.bitmask, &ctx.jump_table);
     crate::peephole_eliminate_dead_load_imm(&mut ctx.code, &mut ctx.bitmask, &ctx.jump_table);
     crate::ensure_branch_targets_are_block_starts(
         &mut ctx.code,
