@@ -282,3 +282,144 @@ fn encode_work_package_simple(package: &WorkPackage) -> Vec<u8> {
     }
     buf
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use grey_types::Hash;
+    use std::collections::BTreeMap;
+
+    fn make_context() -> SimpleRefineContext {
+        let mut ctx = SimpleRefineContext {
+            code_blobs: BTreeMap::new(),
+            storage: BTreeMap::new(),
+            preimages: BTreeMap::new(),
+        };
+        let code = vec![0x01, 0x02, 0x03];
+        let hash = grey_crypto::blake2b_256(&code);
+        ctx.code_blobs.insert(hash, code);
+        ctx.storage.insert((42, b"key".to_vec()), b"value".to_vec());
+        ctx.preimages.insert(Hash([5u8; 32]), vec![0xAA, 0xBB]);
+        ctx
+    }
+
+    fn make_work_item() -> WorkItem {
+        WorkItem {
+            service_id: 42,
+            code_hash: Hash([1u8; 32]),
+            gas_limit: 10_000,
+            accumulate_gas_limit: 5_000,
+            exports_count: 0,
+            payload: vec![0xDE, 0xAD],
+            imports: vec![],
+            extrinsics: vec![],
+        }
+    }
+
+    #[test]
+    fn test_simple_context_get_code() {
+        let ctx = make_context();
+        let code = vec![0x01, 0x02, 0x03];
+        let hash = grey_crypto::blake2b_256(&code);
+        assert_eq!(ctx.get_code(&hash), Some(code));
+        assert_eq!(ctx.get_code(&Hash([0u8; 32])), None);
+    }
+
+    #[test]
+    fn test_simple_context_get_storage() {
+        let ctx = make_context();
+        assert_eq!(ctx.get_storage(42, b"key"), Some(b"value".to_vec()));
+        assert_eq!(ctx.get_storage(42, b"missing"), None);
+        assert_eq!(ctx.get_storage(99, b"key"), None);
+    }
+
+    #[test]
+    fn test_simple_context_get_preimage() {
+        let ctx = make_context();
+        assert_eq!(ctx.get_preimage(&Hash([5u8; 32])), Some(vec![0xAA, 0xBB]));
+        assert_eq!(ctx.get_preimage(&Hash([6u8; 32])), None);
+    }
+
+    #[test]
+    fn test_error_refine_result_fields() {
+        let item = make_work_item();
+        let result = error_refine_result(&item, WorkResult::Panic, 3000);
+
+        assert_eq!(result.digest.service_id, 42);
+        assert_eq!(result.digest.code_hash, Hash([1u8; 32]));
+        assert_eq!(result.digest.gas_used, 3000);
+        // accumulate_gas = gas_limit - gas_used
+        assert_eq!(result.digest.accumulate_gas, 10_000 - 3000);
+        assert!(matches!(result.digest.result, WorkResult::Panic));
+        assert!(result.exported_segments.is_empty());
+        assert!(result.expunge_requests.is_empty());
+        // payload_hash should be blake2b of the payload
+        let expected_hash = grey_crypto::blake2b_256(&item.payload);
+        assert_eq!(result.digest.payload_hash, expected_hash);
+    }
+
+    #[test]
+    fn test_error_refine_result_out_of_gas() {
+        let item = make_work_item();
+        let result = error_refine_result(&item, WorkResult::OutOfGas, 10_000);
+
+        assert_eq!(result.digest.accumulate_gas, 0); // gas_limit == gas_used
+        assert!(matches!(result.digest.result, WorkResult::OutOfGas));
+    }
+
+    #[test]
+    fn test_encode_work_package_simple_format() {
+        let pkg = WorkPackage {
+            auth_code_host: 1,
+            auth_code_hash: Hash([0u8; 32]),
+            context: RefinementContext {
+                anchor: Hash::ZERO,
+                state_root: Hash::ZERO,
+                beefy_root: Hash::ZERO,
+                lookup_anchor: Hash::ZERO,
+                lookup_anchor_timeslot: 0,
+                prerequisites: vec![],
+            },
+            authorization: vec![0xAA, 0xBB],
+            authorizer_config: vec![],
+            items: vec![
+                WorkItem {
+                    service_id: 1,
+                    code_hash: Hash::ZERO,
+                    gas_limit: 100,
+                    accumulate_gas_limit: 50,
+                    exports_count: 0,
+                    payload: vec![0x01, 0x02],
+                    imports: vec![],
+                    extrinsics: vec![],
+                },
+                WorkItem {
+                    service_id: 2,
+                    code_hash: Hash::ZERO,
+                    gas_limit: 200,
+                    accumulate_gas_limit: 100,
+                    exports_count: 0,
+                    payload: vec![0x03],
+                    imports: vec![],
+                    extrinsics: vec![],
+                },
+            ],
+        };
+
+        let encoded = encode_work_package_simple(&pkg);
+        // authorization + item1.payload + item2.payload
+        assert_eq!(encoded, vec![0xAA, 0xBB, 0x01, 0x02, 0x03]);
+    }
+
+    #[test]
+    fn test_refine_error_display() {
+        let e1 = RefineError::CodeNotFound(Hash([0xAB; 32]));
+        assert!(e1.to_string().contains("code not found"));
+
+        let e2 = RefineError::AuthorizationFailed("test".into());
+        assert!(e2.to_string().contains("authorization failed: test"));
+
+        let e3 = RefineError::PvmInitFailed;
+        assert!(e3.to_string().contains("PVM initialization failed"));
+    }
+}
