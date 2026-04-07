@@ -1420,8 +1420,17 @@ impl InvocationKernel {
     /// Ensure the active VM has a window assigned. Handles eviction and
     /// DATA cap mapping/unmapping. Called before executing any VM code and
     /// after context switches (CALL/REPLY/HALT).
+    ///
+    /// Fast path: if the active VM already owns the current window, this is
+    /// a single branch (no scan). Only does real work on context switches.
     #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
+    #[inline(always)]
     fn ensure_active_window(&mut self) {
+        // Fast path: active VM already owns the current window.
+        if self.window_pool.window_owner(self.active_window) == Some(self.active_vm) {
+            return;
+        }
+
         let vm_idx = self.active_vm;
         let generation = self.vm_arena.generation_of(vm_idx);
         let assignment = self.window_pool.assign_window(vm_idx, generation);

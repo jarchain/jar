@@ -431,6 +431,12 @@ impl WindowPool {
     pub fn window(&self, idx: usize) -> &crate::backing::CodeWindow {
         &self.windows[idx]
     }
+
+    /// Get the owner of a window (for fast-path check in ensure_active_window).
+    #[inline(always)]
+    pub fn window_owner(&self, idx: usize) -> Option<u16> {
+        self.owner[idx]
+    }
 }
 
 /// Result of a window assignment operation.
