@@ -432,4 +432,96 @@ mod tests {
         let e = ErasureError::RecoveryFailed("fail".into());
         assert_eq!(e.to_string(), "recovery failed: fail");
     }
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Generate random data of 1..=max_pieces piece-sizes.
+        fn random_data(max_pieces: usize) -> impl Strategy<Value = Vec<u8>> {
+            let piece = ErasureParams::TINY.piece_size();
+            (1..=max_pieces)
+                .prop_flat_map(move |n| proptest::collection::vec(any::<u8>(), n * piece))
+        }
+
+        proptest! {
+            /// Encode then decode with all shards always recovers the original data.
+            #[test]
+            fn roundtrip_all_shards(data in random_data(5)) {
+                let params = ErasureParams::TINY;
+                let chunks = encode(&params, &data).expect("encode");
+                let indexed: Vec<(Vec<u8>, usize)> =
+                    chunks.into_iter().enumerate().map(|(i, c)| (c, i)).collect();
+                let recovered = recover(&params, &indexed, data.len()).expect("recover");
+                prop_assert_eq!(recovered, data);
+            }
+
+            /// Recovery works with exactly data_shards chunks (minimum required).
+            #[test]
+            fn roundtrip_minimum_shards(data in random_data(3)) {
+                let params = ErasureParams::TINY;
+                let chunks = encode(&params, &data).expect("encode");
+                // Take only the first data_shards chunks
+                let indexed: Vec<(Vec<u8>, usize)> = chunks
+                    .into_iter()
+                    .enumerate()
+                    .take(params.data_shards)
+                    .map(|(i, c)| (c, i))
+                    .collect();
+                let recovered = recover(&params, &indexed, data.len()).expect("recover");
+                prop_assert_eq!(recovered, data);
+            }
+
+            /// Recovery works with any data_shards-of-total_shards combination.
+            #[test]
+            fn roundtrip_random_shard_selection(
+                data in random_data(3),
+                seed in any::<u64>(),
+            ) {
+                let params = ErasureParams::TINY;
+                let chunks = encode(&params, &data).expect("encode");
+
+                // Select data_shards random indices from 0..total_shards
+                use std::collections::BTreeSet;
+                let mut selected = BTreeSet::new();
+                let mut rng_state = seed;
+                while selected.len() < params.data_shards {
+                    // Simple PRNG for deterministic selection
+                    rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    let idx = (rng_state >> 33) as usize % params.total_shards;
+                    selected.insert(idx);
+                }
+
+                let indexed: Vec<(Vec<u8>, usize)> = selected
+                    .into_iter()
+                    .map(|i| (chunks[i].clone(), i))
+                    .collect();
+                let recovered = recover(&params, &indexed, data.len()).expect("recover");
+                prop_assert_eq!(recovered, data);
+            }
+
+            /// Corrupting one chunk and using the remaining still recovers.
+            #[test]
+            fn recovery_after_single_corruption(
+                data in random_data(2),
+                corrupt_idx in 0..6usize, // 0..total_shards for TINY
+            ) {
+                let params = ErasureParams::TINY;
+                let chunks = encode(&params, &data).expect("encode");
+
+                // Skip the corrupted chunk, use all others
+                let indexed: Vec<(Vec<u8>, usize)> = chunks
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != corrupt_idx)
+                    .map(|(i, c)| (c, i))
+                    .collect();
+
+                // We have total_shards - 1 = 5 chunks, need data_shards = 2
+                prop_assert!(indexed.len() >= params.data_shards);
+                let recovered = recover(&params, &indexed, data.len()).expect("recover");
+                prop_assert_eq!(recovered, data);
+            }
+        }
+    }
 }
