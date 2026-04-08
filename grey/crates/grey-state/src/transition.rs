@@ -280,10 +280,7 @@ fn apply_safrole(
         }
         Err(_e) => {
             // If Safrole fails, still update entropy: η₀' = H(η₀ ⌢ Y(H_V))
-            let mut data = Vec::with_capacity(64);
-            data.extend_from_slice(&state.entropy[0].0);
-            data.extend_from_slice(&vrf_output.0);
-            state.entropy[0] = grey_crypto::blake2b_256(&data);
+            state.entropy[0] = crate::safrole::accumulate_entropy(&state.entropy[0], &vrf_output);
         }
     }
 }
