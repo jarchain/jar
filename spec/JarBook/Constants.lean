@@ -111,6 +111,13 @@ All protocol constants from the Gray Paper (GP Appendix I.4.4 and throughout).
 
 {docstring Jar.S_MIN}
 
+# Variable Validators (GP\#514)
+
+In jar1, the active validator set size and core count can vary. The effective
+validator count determines which protocol constants scale dynamically.
+
+{docstring Jar.effectiveValCount}
+
 # Tickets
 
 {docstring Jar.K_MAX_TICKETS}
