@@ -281,44 +281,37 @@ pub struct ServiceStatistics {
 mod tests {
     use super::*;
     use crate::Hash;
+    use crate::test_helpers::assert_default_roundtrip;
     use scale::{Decode, Encode};
-
-    fn roundtrip<T: Default + Encode + Decode>() {
-        let val = T::default();
-        let encoded = val.encode();
-        let (decoded, consumed) = T::decode(&encoded).expect("decode should succeed");
-        assert_eq!(consumed, encoded.len(), "should consume all bytes");
-        assert_eq!(decoded.encode(), encoded, "re-encode should match");
-    }
 
     #[test]
     fn test_privileged_services_roundtrip() {
-        roundtrip::<PrivilegedServices>();
+        assert_default_roundtrip::<PrivilegedServices>();
     }
 
     #[test]
     fn test_judgments_roundtrip() {
-        roundtrip::<Judgments>();
+        assert_default_roundtrip::<Judgments>();
     }
 
     #[test]
     fn test_validator_statistics_roundtrip() {
-        roundtrip::<ValidatorStatistics>();
+        assert_default_roundtrip::<ValidatorStatistics>();
     }
 
     #[test]
     fn test_validator_record_roundtrip() {
-        roundtrip::<ValidatorRecord>();
+        assert_default_roundtrip::<ValidatorRecord>();
     }
 
     #[test]
     fn test_core_statistics_roundtrip() {
-        roundtrip::<CoreStatistics>();
+        assert_default_roundtrip::<CoreStatistics>();
     }
 
     #[test]
     fn test_service_statistics_roundtrip() {
-        roundtrip::<ServiceStatistics>();
+        assert_default_roundtrip::<ServiceStatistics>();
     }
 
     #[test]

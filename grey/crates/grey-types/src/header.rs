@@ -209,19 +209,12 @@ pub struct Guarantee {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::assert_codec_roundtrip;
     use crate::{BandersnatchSignature, Ed25519Signature, Hash};
-    use scale::{Decode, Encode};
-
-    fn roundtrip<T: Encode + Decode>(val: &T) {
-        let encoded = val.encode();
-        let (decoded, consumed) = T::decode(&encoded).expect("decode should succeed");
-        assert_eq!(consumed, encoded.len(), "should consume all bytes");
-        assert_eq!(decoded.encode(), encoded, "re-encode should match");
-    }
 
     #[test]
     fn test_ticket_roundtrip() {
-        roundtrip(&Ticket {
+        assert_codec_roundtrip(&Ticket {
             id: Hash([0xAA; 32]),
             attempt: 3,
         });
@@ -229,7 +222,7 @@ mod tests {
 
     #[test]
     fn test_epoch_marker_roundtrip() {
-        roundtrip(&EpochMarker {
+        assert_codec_roundtrip(&EpochMarker {
             entropy: Hash([1u8; 32]),
             entropy_previous: Hash([2u8; 32]),
             validators: vec![(
@@ -241,7 +234,7 @@ mod tests {
 
     #[test]
     fn test_assurance_roundtrip() {
-        roundtrip(&Assurance {
+        assert_codec_roundtrip(&Assurance {
             anchor: Hash([10u8; 32]),
             bitfield: vec![0b11110000],
             validator_index: 5,
@@ -251,7 +244,7 @@ mod tests {
 
     #[test]
     fn test_verdict_roundtrip() {
-        roundtrip(&Verdict {
+        assert_codec_roundtrip(&Verdict {
             report_hash: Hash([1u8; 32]),
             age: 42,
             judgments: vec![Judgment {
@@ -264,7 +257,7 @@ mod tests {
 
     #[test]
     fn test_header_roundtrip() {
-        roundtrip(&Header {
+        assert_codec_roundtrip(&Header {
             data: UnsignedHeader {
                 parent_hash: Hash([1u8; 32]),
                 state_root: Hash([2u8; 32]),
@@ -282,7 +275,7 @@ mod tests {
 
     #[test]
     fn test_block_roundtrip() {
-        roundtrip(&Block {
+        assert_codec_roundtrip(&Block {
             header: Header {
                 data: UnsignedHeader {
                     parent_hash: Hash([1u8; 32]),

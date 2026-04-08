@@ -288,27 +288,34 @@ pub type RegisterValue = u64;
 /// An opaque blob of bytes.
 pub type Blob = Vec<u8>;
 
+/// Shared test helpers for codec roundtrip verification.
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod test_helpers {
     use scale::{Decode, Encode};
 
-    /// Verify encode→decode roundtrip for a Default-able type.
-    /// Checks that default value encodes, decodes without error, consumes all bytes,
-    /// and re-encodes to the same bytes (idempotent encoding).
-    fn roundtrip<T: Default + Encode + Decode>() {
-        let val = T::default();
+    /// Verify encode→decode→re-encode roundtrip for a given value.
+    pub fn assert_codec_roundtrip<T: Encode + Decode>(val: &T) {
         let encoded = val.encode();
         let (decoded, consumed) = T::decode(&encoded).expect("decode should succeed");
         assert_eq!(consumed, encoded.len(), "should consume all bytes");
-        // Re-encode and compare bytes (works even without PartialEq)
-        let re_encoded = decoded.encode();
-        assert_eq!(encoded, re_encoded, "re-encoded bytes should match");
+        assert_eq!(decoded.encode(), encoded, "re-encode should match");
     }
+
+    /// Verify encode→decode→re-encode roundtrip for a Default-constructed value.
+    pub fn assert_default_roundtrip<T: Default + Encode + Decode>() {
+        assert_codec_roundtrip(&T::default());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::assert_default_roundtrip;
+    use scale::{Decode, Encode};
 
     #[test]
     fn test_hash_roundtrip() {
-        roundtrip::<Hash>();
+        assert_default_roundtrip::<Hash>();
         // Also test non-default
         let h = Hash([42u8; 32]);
         let encoded = h.encode();
@@ -318,85 +325,72 @@ mod tests {
 
     #[test]
     fn test_ed25519_signature_roundtrip() {
-        roundtrip::<Ed25519Signature>();
+        assert_default_roundtrip::<Ed25519Signature>();
     }
 
     #[test]
     fn test_bandersnatch_signature_roundtrip() {
-        roundtrip::<BandersnatchSignature>();
+        assert_default_roundtrip::<BandersnatchSignature>();
     }
 
     #[test]
     fn test_extrinsic_roundtrip() {
-        roundtrip::<header::Extrinsic>();
+        assert_default_roundtrip::<header::Extrinsic>();
     }
 
     #[test]
     fn test_disputes_extrinsic_roundtrip() {
-        roundtrip::<header::DisputesExtrinsic>();
+        assert_default_roundtrip::<header::DisputesExtrinsic>();
     }
 
     #[test]
     fn test_privileged_services_roundtrip() {
-        roundtrip::<state::PrivilegedServices>();
+        assert_default_roundtrip::<state::PrivilegedServices>();
     }
 
     #[test]
     fn test_judgments_roundtrip() {
-        roundtrip::<state::Judgments>();
+        assert_default_roundtrip::<state::Judgments>();
     }
 
     #[test]
     fn test_validator_statistics_roundtrip() {
-        roundtrip::<state::ValidatorStatistics>();
+        assert_default_roundtrip::<state::ValidatorStatistics>();
     }
 
     mod proptests {
         use super::*;
+        use crate::test_helpers::assert_codec_roundtrip;
         use proptest::prelude::*;
-
-        /// Verify encode→decode→re-encode roundtrip for random data.
-        /// Uses byte comparison (works even without PartialEq on the type).
-        fn check_roundtrip<T: Encode + Decode>(val: &T) {
-            let encoded = val.encode();
-            let (decoded, consumed) =
-                T::decode(&encoded).expect("decode should succeed for encoded data");
-            assert_eq!(consumed, encoded.len(), "should consume all bytes");
-            let re_encoded = decoded.encode();
-            assert_eq!(
-                encoded, re_encoded,
-                "re-encoded bytes should match original"
-            );
-        }
 
         proptest! {
             #![proptest_config(ProptestConfig::with_cases(128))]
 
             #[test]
             fn hash_roundtrip(bytes in proptest::array::uniform32(0u8..)) {
-                check_roundtrip(&Hash(bytes));
+                assert_codec_roundtrip(&Hash(bytes));
             }
 
             #[test]
             fn ed25519_pubkey_roundtrip(bytes in proptest::array::uniform32(0u8..)) {
-                check_roundtrip(&Ed25519PublicKey(bytes));
+                assert_codec_roundtrip(&Ed25519PublicKey(bytes));
             }
 
             #[test]
             fn bandersnatch_pubkey_roundtrip(bytes in proptest::array::uniform32(0u8..)) {
-                check_roundtrip(&BandersnatchPublicKey(bytes));
+                assert_codec_roundtrip(&BandersnatchPublicKey(bytes));
             }
 
             #[test]
             fn ed25519_signature_roundtrip(bytes in proptest::collection::vec(0u8.., 64..=64)) {
                 let mut arr = [0u8; 64];
                 arr.copy_from_slice(&bytes);
-                check_roundtrip(&Ed25519Signature(arr));
+                assert_codec_roundtrip(&Ed25519Signature(arr));
             }
 
             #[test]
             fn ticket_roundtrip(id in proptest::array::uniform32(0u8..), attempt in 0u8..4) {
-                check_roundtrip(&header::Ticket {
+                assert_codec_roundtrip(&header::Ticket {
                     id: Hash(id),
                     attempt,
                 });
@@ -410,7 +404,7 @@ mod tests {
             ) {
                 let mut sig_arr = [0u8; 64];
                 sig_arr.copy_from_slice(&sig);
-                check_roundtrip(&header::Judgment {
+                assert_codec_roundtrip(&header::Judgment {
                     validator_index,
                     is_valid,
                     signature: Ed25519Signature(sig_arr),
@@ -430,7 +424,7 @@ mod tests {
                         signature: Ed25519Signature([i as u8; 64]),
                     })
                     .collect();
-                check_roundtrip(&header::Verdict {
+                assert_codec_roundtrip(&header::Verdict {
                     report_hash: Hash(report_hash),
                     age,
                     judgments,
@@ -443,7 +437,7 @@ mod tests {
                 proof_len in 0usize..100,
             ) {
                 let proof = vec![42u8; proof_len];
-                check_roundtrip(&header::TicketProof { attempt, proof });
+                assert_codec_roundtrip(&header::TicketProof { attempt, proof });
             }
 
             #[test]
@@ -455,7 +449,7 @@ mod tests {
             ) {
                 let mut sig_arr = [0u8; 64];
                 sig_arr.copy_from_slice(&sig);
-                check_roundtrip(&header::Assurance {
+                assert_codec_roundtrip(&header::Assurance {
                     anchor: Hash(anchor),
                     bitfield: vec![0xAA; bitfield_len],
                     validator_index,

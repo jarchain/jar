@@ -199,16 +199,8 @@ pub struct ImportSegment {
 mod tests {
     use super::*;
     use crate::Hash;
-    use scale::{Decode, Encode};
+    use crate::test_helpers::assert_codec_roundtrip;
     use std::collections::BTreeMap;
-
-    /// Verify encode→decode roundtrip via re-encoding comparison.
-    fn roundtrip<T: Encode + Decode>(val: &T) {
-        let encoded = val.encode();
-        let (decoded, consumed) = T::decode(&encoded).expect("decode should succeed");
-        assert_eq!(consumed, encoded.len(), "should consume all bytes");
-        assert_eq!(decoded.encode(), encoded, "re-encode should match");
-    }
 
     fn make_work_item() -> WorkItem {
         WorkItem {
@@ -228,23 +220,23 @@ mod tests {
 
     #[test]
     fn test_work_result_roundtrip() {
-        roundtrip(&WorkResult::Ok(vec![1, 2, 3]));
-        roundtrip(&WorkResult::Ok(vec![]));
-        roundtrip(&WorkResult::OutOfGas);
-        roundtrip(&WorkResult::Panic);
-        roundtrip(&WorkResult::BadExports);
-        roundtrip(&WorkResult::BadCode);
-        roundtrip(&WorkResult::CodeOversize);
+        assert_codec_roundtrip(&WorkResult::Ok(vec![1, 2, 3]));
+        assert_codec_roundtrip(&WorkResult::Ok(vec![]));
+        assert_codec_roundtrip(&WorkResult::OutOfGas);
+        assert_codec_roundtrip(&WorkResult::Panic);
+        assert_codec_roundtrip(&WorkResult::BadExports);
+        assert_codec_roundtrip(&WorkResult::BadCode);
+        assert_codec_roundtrip(&WorkResult::CodeOversize);
     }
 
     #[test]
     fn test_work_item_roundtrip() {
-        roundtrip(&make_work_item());
+        assert_codec_roundtrip(&make_work_item());
     }
 
     #[test]
     fn test_import_segment_roundtrip() {
-        roundtrip(&ImportSegment {
+        assert_codec_roundtrip(&ImportSegment {
             hash: Hash([0xAB; 32]),
             index: 42,
         });
@@ -252,7 +244,7 @@ mod tests {
 
     #[test]
     fn test_work_digest_roundtrip() {
-        roundtrip(&WorkDigest {
+        assert_codec_roundtrip(&WorkDigest {
             service_id: 1,
             code_hash: Hash([1u8; 32]),
             payload_hash: Hash([2u8; 32]),
@@ -268,7 +260,7 @@ mod tests {
 
     #[test]
     fn test_refinement_context_roundtrip() {
-        roundtrip(&RefinementContext {
+        assert_codec_roundtrip(&RefinementContext {
             anchor: Hash([10u8; 32]),
             state_root: Hash([20u8; 32]),
             beefy_root: Hash([30u8; 32]),
@@ -280,7 +272,7 @@ mod tests {
 
     #[test]
     fn test_work_report_roundtrip() {
-        roundtrip(&WorkReport {
+        assert_codec_roundtrip(&WorkReport {
             package_spec: AvailabilitySpec {
                 package_hash: Hash([1u8; 32]),
                 bundle_length: 256,
@@ -319,7 +311,7 @@ mod tests {
 
     #[test]
     fn test_work_package_roundtrip() {
-        roundtrip(&WorkPackage {
+        assert_codec_roundtrip(&WorkPackage {
             auth_code_host: 1,
             auth_code_hash: Hash([10u8; 32]),
             context: RefinementContext {
