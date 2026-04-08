@@ -132,3 +132,165 @@ impl GasSimulator {
         self.max_done = 0;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // === flush_and_get_cost ===
+
+    #[test]
+    fn test_empty_block_cost_is_one() {
+        let sim = GasSimulator::new();
+        assert_eq!(sim.flush_and_get_cost(), 1, "empty block should cost 1");
+    }
+
+    // === feed_direct ===
+
+    #[test]
+    fn test_single_alu_instruction() {
+        // One ALU op: 1 cycle, 1 decode slot, r0 → r2
+        let mut sim = GasSimulator::new();
+        sim.feed_direct(1, 1, 0, 0xFF, 2); // src1=r0, no src2, dst=r2
+        // max_done = 0 (start) + 1 (cycles) = 1
+        // cost = max(1 - 3, 1) = 1
+        assert_eq!(sim.flush_and_get_cost(), 1);
+    }
+
+    #[test]
+    fn test_data_dependency_chain() {
+        // Chain: r0 → r1 (1 cycle), r1 → r2 (1 cycle)
+        // r1 is ready at cycle 1, r2 at cycle 2
+        let mut sim = GasSimulator::new();
+        sim.feed_direct(1, 1, 0, 0xFF, 1); // r1 done at cycle 1
+        sim.feed_direct(1, 1, 1, 0xFF, 2); // depends on r1, r2 done at cycle 2
+        // max_done = 2, cost = max(2 - 3, 1) = 1
+        assert_eq!(sim.flush_and_get_cost(), 1);
+    }
+
+    #[test]
+    fn test_long_dependency_chain() {
+        // 5-deep chain, each 1 cycle: r0→r1→r2→r3→r4→r5
+        let mut sim = GasSimulator::new();
+        for i in 0..5u8 {
+            sim.feed_direct(1, 1, i, 0xFF, i + 1);
+        }
+        // r5 done at cycle 5, cost = max(5 - 3, 1) = 2
+        assert_eq!(sim.flush_and_get_cost(), 2);
+    }
+
+    #[test]
+    fn test_independent_instructions_parallel() {
+        // Two independent ALU ops: r0→r2 and r1→r3, both 1 cycle
+        let mut sim = GasSimulator::new();
+        sim.feed_direct(1, 1, 0, 0xFF, 2);
+        sim.feed_direct(1, 1, 1, 0xFF, 3);
+        // Both start at cycle 0, done at cycle 1
+        // max_done = 1, cost = 1
+        assert_eq!(sim.flush_and_get_cost(), 1);
+    }
+
+    #[test]
+    fn test_multi_cycle_instruction() {
+        // One 4-cycle instruction (e.g., multiply)
+        let mut sim = GasSimulator::new();
+        sim.feed_direct(4, 1, 0, 1, 2); // 4 cycles, src r0+r1, dst r2
+        // max_done = 4, cost = max(4 - 3, 1) = 1
+        assert_eq!(sim.flush_and_get_cost(), 1);
+    }
+
+    #[test]
+    fn test_high_latency_chain() {
+        // 4-cycle MUL → 1-cycle ALU dependent on result
+        let mut sim = GasSimulator::new();
+        sim.feed_direct(4, 1, 0, 1, 2); // MUL: r2 done at cycle 4
+        sim.feed_direct(1, 1, 2, 0xFF, 3); // ALU: depends on r2, r3 done at cycle 5
+        // max_done = 5, cost = max(5 - 3, 1) = 2
+        assert_eq!(sim.flush_and_get_cost(), 2);
+    }
+
+    #[test]
+    fn test_decode_throughput_limit() {
+        // 5 independent 1-slot instructions: 4 fit in cycle 0, 5th bumps to cycle 1
+        let mut sim = GasSimulator::new();
+        for i in 0..5u8 {
+            sim.feed_direct(1, 1, 0xFF, 0xFF, i); // no deps, 1 slot each
+        }
+        // First 4 decode in cycle 0 (done at 1), 5th decodes in cycle 1 (done at 2)
+        // max_done = 2, cost = max(2 - 3, 1) = 1
+        assert_eq!(sim.flush_and_get_cost(), 1);
+    }
+
+    #[test]
+    fn test_no_src_no_dst() {
+        // Instruction with no register deps (e.g., NOP-like)
+        let mut sim = GasSimulator::new();
+        sim.feed_direct(1, 1, 0xFF, 0xFF, 0xFF);
+        // max_done = 1 (start 0 + 1 cycle)
+        assert_eq!(sim.flush_and_get_cost(), 1);
+    }
+
+    #[test]
+    fn test_two_sources() {
+        // r2 = r0 + r1 where r0 available at cycle 0, r1 available at cycle 3
+        let mut sim = GasSimulator::new();
+        sim.feed_direct(3, 1, 0xFF, 0xFF, 1); // r1 done at cycle 3
+        sim.feed_direct(1, 1, 0, 1, 2); // depends on r0 (ready 0) and r1 (ready 3)
+        // r2 starts at max(0, 3) = 3, done at 4
+        // max_done = 4, cost = max(4 - 3, 1) = 1
+        assert_eq!(sim.flush_and_get_cost(), 1);
+    }
+
+    // === feed (bitmask-based) ===
+
+    #[test]
+    fn test_feed_move_reg_propagates_done() {
+        // move_reg: zero-cycle, propagates reg_done from src to dst
+        let mut sim = GasSimulator::new();
+        sim.feed_direct(3, 1, 0xFF, 0xFF, 0); // r0 done at cycle 3
+        sim.feed(&FastCost {
+            cycles: 0,
+            decode_slots: 1,
+            exec_unit: 0,
+            src_mask: 1 << 0, // r0
+            dst_mask: 1 << 1, // r1
+            is_terminator: false,
+            is_move_reg: true,
+        });
+        // r1 should inherit r0's done time (3)
+        sim.feed_direct(1, 1, 1, 0xFF, 2); // depends on r1
+        // r2 starts at 3, done at 4
+        // max_done = 4, cost = max(4 - 3, 1) = 1
+        assert_eq!(sim.flush_and_get_cost(), 1);
+    }
+
+    #[test]
+    fn test_feed_bitmask_multiple_sources() {
+        let mut sim = GasSimulator::new();
+        sim.feed_direct(2, 1, 0xFF, 0xFF, 0); // r0 done at 2
+        sim.feed_direct(3, 1, 0xFF, 0xFF, 1); // r1 done at 3
+        sim.feed(&FastCost {
+            cycles: 1,
+            decode_slots: 1,
+            exec_unit: 1,                  // ALU
+            src_mask: (1 << 0) | (1 << 1), // r0 + r1
+            dst_mask: 1 << 2,              // r2
+            is_terminator: false,
+            is_move_reg: false,
+        });
+        // r2 starts at max(2, 3) = 3, done at 4
+        // max_done = 4, cost = max(4 - 3, 1) = 1
+        assert_eq!(sim.flush_and_get_cost(), 1);
+    }
+
+    // === reset ===
+
+    #[test]
+    fn test_reset_clears_state() {
+        let mut sim = GasSimulator::new();
+        sim.feed_direct(10, 1, 0xFF, 0xFF, 0); // large cost
+        assert!(sim.flush_and_get_cost() > 1);
+        sim.reset();
+        assert_eq!(sim.flush_and_get_cost(), 1, "after reset, cost should be 1");
+    }
+}
