@@ -404,11 +404,8 @@ pub fn compute_ring_root(keys: &[ValidatorKey]) -> BandersnatchRingRoot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::make_hash;
     use grey_types::header::Ticket;
-
-    fn make_hash(byte: u8) -> Hash {
-        Hash([byte; 32])
-    }
 
     fn make_validator(i: u8) -> ValidatorKey {
         ValidatorKey {

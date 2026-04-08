@@ -15,6 +15,15 @@ pub mod safrole;
 pub mod statistics;
 pub mod transition;
 
+#[cfg(test)]
+pub(crate) mod test_helpers {
+    use grey_types::Hash;
+
+    pub fn make_hash(byte: u8) -> Hash {
+        Hash([byte; 32])
+    }
+}
+
 use grey_types::header::Block;
 use grey_types::state::State;
 use thiserror::Error;

@@ -314,16 +314,13 @@ pub fn process_disputes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::make_hash;
     use grey_types::config::Config;
     use grey_types::header::{DisputesExtrinsic, Judgment, Verdict};
     use grey_types::validator::ValidatorKey;
 
     fn test_config() -> Config {
         Config::tiny()
-    }
-
-    fn make_hash(byte: u8) -> Hash {
-        Hash([byte; 32])
     }
 
     fn make_ed25519_key(byte: u8) -> Ed25519PublicKey {

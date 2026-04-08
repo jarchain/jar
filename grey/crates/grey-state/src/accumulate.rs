@@ -1741,11 +1741,8 @@ pub fn run_accumulation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::make_hash;
     use grey_types::work::{AvailabilitySpec, RefinementContext, WorkReport};
-
-    fn make_hash(byte: u8) -> Hash {
-        Hash([byte; 32])
-    }
 
     fn make_report(pkg_hash_byte: u8) -> WorkReport {
         WorkReport {
