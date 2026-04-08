@@ -1961,7 +1961,7 @@ mod tests {
     #[test]
     fn test_keccak_merkle_node_single() {
         let leaf = vec![1, 2, 3];
-        let result = keccak_merkle_node(&[leaf.clone()]);
+        let result = keccak_merkle_node(std::slice::from_ref(&leaf));
         // Single leaf is returned as-is (not hashed)
         assert_eq!(result, leaf);
     }
