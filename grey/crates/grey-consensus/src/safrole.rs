@@ -46,24 +46,7 @@ pub fn fallback_key_sequence(
     entropy: &Hash,
     validators: &[ValidatorKey],
 ) -> Vec<BandersnatchPublicKey> {
-    let v = validators.len();
-    if v == 0 {
-        return vec![BandersnatchPublicKey::default(); EPOCH_LENGTH as usize];
-    }
-
-    let mut preimage = [0u8; 36];
-    preimage[..32].copy_from_slice(&entropy.0);
-    (0..EPOCH_LENGTH)
-        .map(|i| {
-            // H(r ++ E4(i))
-            preimage[32..].copy_from_slice(&i.to_le_bytes());
-            let hash = grey_crypto::blake2b_256(&preimage);
-
-            // E4⁻¹(hash[0..4]) mod |k|
-            let idx = u32::from_le_bytes([hash.0[0], hash.0[1], hash.0[2], hash.0[3]]) as usize % v;
-            validators[idx].bandersnatch
-        })
-        .collect()
+    grey_state::safrole::fallback_key_sequence_raw(EPOCH_LENGTH, entropy, validators)
 }
 
 /// Filter offending validators from a key set (eq 6.14: Φ).

@@ -299,16 +299,28 @@ pub fn fallback_key_sequence(
     entropy: &Hash,
     validators: &[ValidatorKey],
 ) -> Vec<BandersnatchPublicKey> {
+    fallback_key_sequence_raw(config.epoch_length, entropy, validators)
+}
+
+/// Core fallback key sequence generation parameterized by epoch length.
+///
+/// Shared implementation used by both `grey-state` (with Config) and
+/// `grey-consensus` (with compile-time EPOCH_LENGTH constant).
+pub fn fallback_key_sequence_raw(
+    epoch_length: u32,
+    entropy: &Hash,
+    validators: &[ValidatorKey],
+) -> Vec<BandersnatchPublicKey> {
     let v = validators.len();
     if v == 0 {
-        return vec![BandersnatchPublicKey::default(); config.epoch_length as usize];
+        return vec![BandersnatchPublicKey::default(); epoch_length as usize];
     }
 
-    (0..config.epoch_length)
+    let mut preimage = [0u8; 36];
+    preimage[..32].copy_from_slice(&entropy.0);
+    (0..epoch_length)
         .map(|i| {
-            let mut preimage = Vec::with_capacity(36);
-            preimage.extend_from_slice(&entropy.0);
-            preimage.extend_from_slice(&i.to_le_bytes());
+            preimage[32..].copy_from_slice(&i.to_le_bytes());
             let hash = grey_crypto::blake2b_256(&preimage);
             let idx = u32::from_le_bytes([hash.0[0], hash.0[1], hash.0[2], hash.0[3]]) as usize % v;
             validators[idx].bandersnatch
