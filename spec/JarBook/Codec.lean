@@ -68,6 +68,44 @@ and produces deterministic-length encodings for all collection types.
 
 {docstring Jar.Codec.encodeBlock}
 
+# Decoder Monad
+
+Decoding is the inverse of encoding: binary bytes back to structured types.
+The decoder uses a monadic combinator approach — a `Decoder α` consumes bytes
+from a `DecodeState` and returns `Option (α × DecodeState)`.
+
+{docstring Jar.Codec.DecodeState}
+
+{docstring Jar.Codec.Decoder}
+
+{docstring Jar.Codec.Decoder.run}
+
+{docstring Jar.Codec.Decoder.bind}
+
+{docstring Jar.Codec.Decoder.readBytes}
+
+# Primitive Decoders
+
+{docstring Jar.Codec.Decoder.decodeArray}
+
+{docstring Jar.Codec.Decoder.decodeFixedNat}
+
+{docstring Jar.Codec.Decoder.decodeNat}
+
+{docstring Jar.Codec.Decoder.decodeOption}
+
+{docstring Jar.Codec.Decoder.decodeLengthPrefixed}
+
+{docstring Jar.Codec.Decoder.decodeBits}
+
+# Block Decoding
+
+{docstring Jar.Codec.Decoder.decodeHeader}
+
+{docstring Jar.Codec.Decoder.decodeExtrinsic}
+
+{docstring Jar.Codec.Decoder.decodeBlock}
+
 # jar1 Codec
 
 The jar1 variant uses `Codec.Jar1` — all collection counts and byte lengths
