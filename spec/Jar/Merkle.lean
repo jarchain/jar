@@ -247,6 +247,9 @@ private def merkleHelper (items : Array Hash) (depth : Nat) : Hash :=
       let right := merkleHelper (items.extract mid items.size) d
       Crypto.blake2b (left.data ++ right.data)
 
+/-- M_B(items) : Binary Merkle tree root. GP Appendix D eq (D.7).
+    Recursively splits the array in half, hashing left and right subtrees with Blake2b.
+    Empty → H₀, single item → item, otherwise → H(left ++ right). -/
 def binaryMerkleRoot (items : Array Hash) : Hash :=
   merkleHelper items items.size
 
