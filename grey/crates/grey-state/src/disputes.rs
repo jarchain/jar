@@ -310,3 +310,245 @@ pub fn process_disputes(
 
     Ok(DisputeOutput { offenders_mark })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use grey_types::config::Config;
+    use grey_types::header::{
+        DisputesExtrinsic, Judgment, Verdict,
+    };
+    use grey_types::validator::ValidatorKey;
+
+    fn test_config() -> Config {
+        Config::tiny()
+    }
+
+    fn make_hash(byte: u8) -> Hash {
+        Hash([byte; 32])
+    }
+
+    fn make_ed25519_key(byte: u8) -> Ed25519PublicKey {
+        Ed25519PublicKey([byte; 32])
+    }
+
+    fn make_validators(n: usize) -> Vec<ValidatorKey> {
+        (0..n)
+            .map(|i| ValidatorKey {
+                ed25519: make_ed25519_key(i as u8),
+                bandersnatch: grey_types::BandersnatchPublicKey([i as u8; 32]),
+                bls: grey_types::BlsPublicKey([i as u8; 144]),
+                metadata: [i as u8; 128],
+            })
+            .collect()
+    }
+
+    fn empty_disputes() -> DisputesExtrinsic {
+        DisputesExtrinsic {
+            verdicts: vec![],
+            culprits: vec![],
+            faults: vec![],
+        }
+    }
+
+    #[test]
+    fn test_check_sorted_unique_empty() {
+        let items: Vec<u32> = vec![];
+        assert!(check_sorted_unique(&items, DisputeError::VerdictsNotSortedUnique).is_ok());
+    }
+
+    #[test]
+    fn test_check_sorted_unique_single() {
+        assert!(check_sorted_unique(&[42u32], DisputeError::VerdictsNotSortedUnique).is_ok());
+    }
+
+    #[test]
+    fn test_check_sorted_unique_sorted() {
+        assert!(check_sorted_unique(&[1u32, 2, 3], DisputeError::VerdictsNotSortedUnique).is_ok());
+    }
+
+    #[test]
+    fn test_check_sorted_unique_duplicate() {
+        assert_eq!(
+            check_sorted_unique(&[1u32, 2, 2], DisputeError::VerdictsNotSortedUnique),
+            Err(DisputeError::VerdictsNotSortedUnique)
+        );
+    }
+
+    #[test]
+    fn test_check_sorted_unique_unsorted() {
+        assert_eq!(
+            check_sorted_unique(&[3u32, 1, 2], DisputeError::VerdictsNotSortedUnique),
+            Err(DisputeError::VerdictsNotSortedUnique)
+        );
+    }
+
+    #[test]
+    fn test_empty_disputes_succeeds() {
+        let config = test_config();
+        let validators = make_validators(6);
+        let mut judgments = Judgments::default();
+        let mut pending = vec![None; config.core_count as usize];
+
+        let result = process_disputes(
+            &config,
+            &mut judgments,
+            &mut pending,
+            100,
+            &empty_disputes(),
+            &validators,
+            &validators,
+        );
+        assert!(result.is_ok());
+        assert!(result.unwrap().offenders_mark.is_empty());
+    }
+
+    #[test]
+    fn test_verdicts_not_sorted() {
+        let config = test_config();
+        let validators = make_validators(6);
+        let mut judgments = Judgments::default();
+        let mut pending = vec![None; config.core_count as usize];
+
+        // Two verdicts with report_hash[1] > report_hash[0] — wrong order
+        let disputes = DisputesExtrinsic {
+            verdicts: vec![
+                Verdict {
+                    report_hash: make_hash(2),
+                    age: 100 / config.epoch_length,
+                    judgments: vec![],
+                },
+                Verdict {
+                    report_hash: make_hash(1),
+                    age: 100 / config.epoch_length,
+                    judgments: vec![],
+                },
+            ],
+            culprits: vec![],
+            faults: vec![],
+        };
+
+        let result = process_disputes(
+            &config,
+            &mut judgments,
+            &mut pending,
+            100,
+            &disputes,
+            &validators,
+            &validators,
+        );
+        assert_eq!(result, Err(DisputeError::VerdictsNotSortedUnique));
+    }
+
+    #[test]
+    fn test_already_judged_report() {
+        let config = test_config();
+        let validators = make_validators(6);
+        let mut judgments = Judgments::default();
+        let mut pending = vec![None; config.core_count as usize];
+
+        let report_hash = make_hash(1);
+        judgments.good.insert(report_hash);
+
+        let disputes = DisputesExtrinsic {
+            verdicts: vec![Verdict {
+                report_hash,
+                age: 100 / config.epoch_length,
+                judgments: vec![],
+            }],
+            culprits: vec![],
+            faults: vec![],
+        };
+
+        let result = process_disputes(
+            &config,
+            &mut judgments,
+            &mut pending,
+            100,
+            &disputes,
+            &validators,
+            &validators,
+        );
+        assert_eq!(result, Err(DisputeError::AlreadyJudged));
+    }
+
+    #[test]
+    fn test_bad_judgement_age() {
+        let config = test_config();
+        let validators = make_validators(6);
+        let mut judgments = Judgments::default();
+        let mut pending = vec![None; config.core_count as usize];
+        let timeslot = 100u32;
+        let current_epoch = timeslot / config.epoch_length;
+
+        // Age two epochs ago — too old
+        let disputes = DisputesExtrinsic {
+            verdicts: vec![Verdict {
+                report_hash: make_hash(1),
+                age: current_epoch.wrapping_sub(2),
+                judgments: vec![],
+            }],
+            culprits: vec![],
+            faults: vec![],
+        };
+
+        let result = process_disputes(
+            &config,
+            &mut judgments,
+            &mut pending,
+            timeslot,
+            &disputes,
+            &validators,
+            &validators,
+        );
+        assert_eq!(result, Err(DisputeError::BadJudgementAge));
+    }
+
+    #[test]
+    fn test_judgments_not_sorted_within_verdict() {
+        let config = test_config();
+        let validators = make_validators(6);
+        let mut judgments = Judgments::default();
+        let mut pending = vec![None; config.core_count as usize];
+        let sig = grey_types::Ed25519Signature([0u8; 64]);
+
+        // Judgments within a verdict must be sorted by validator_index
+        let disputes = DisputesExtrinsic {
+            verdicts: vec![Verdict {
+                report_hash: make_hash(1),
+                age: 100 / config.epoch_length,
+                judgments: vec![
+                    Judgment { is_valid: true, validator_index: 3, signature: sig },
+                    Judgment { is_valid: true, validator_index: 1, signature: sig },
+                ],
+            }],
+            culprits: vec![],
+            faults: vec![],
+        };
+
+        let result = process_disputes(
+            &config,
+            &mut judgments,
+            &mut pending,
+            100,
+            &disputes,
+            &validators,
+            &validators,
+        );
+        assert_eq!(result, Err(DisputeError::JudgementsNotSortedUnique));
+    }
+
+    #[test]
+    fn test_error_as_str() {
+        assert_eq!(DisputeError::BadSignature.as_str(), "bad_signature");
+        assert_eq!(DisputeError::BadVoteSplit.as_str(), "bad_vote_split");
+        assert_eq!(
+            DisputeError::JudgementsNotSortedUnique.as_str(),
+            "judgements_not_sorted_unique"
+        );
+        assert_eq!(
+            DisputeError::AlreadyJudged.as_str(),
+            "already_judged"
+        );
+    }
+}
