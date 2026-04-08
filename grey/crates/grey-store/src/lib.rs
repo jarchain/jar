@@ -1830,4 +1830,111 @@ mod tests {
         let votes_r1 = store.get_grandpa_votes_for_round(1).unwrap();
         assert!(votes_r1.is_empty());
     }
+
+    #[test]
+    fn test_get_service_storage() {
+        let (store, _dir) = temp_store();
+        let config = Config::tiny();
+        let (mut state, _) = grey_consensus::genesis::create_genesis(&config);
+
+        // Add a service with storage entries
+        let mut service = grey_types::state::ServiceAccount {
+            code_hash: Hash([0xAB; 32]),
+            quota_items: 100,
+            min_accumulate_gas: 0,
+            min_on_transfer_gas: 0,
+            storage: std::collections::BTreeMap::new(),
+            preimage_lookup: std::collections::BTreeMap::new(),
+            preimage_info: std::collections::BTreeMap::new(),
+            quota_bytes: 10000,
+            total_footprint: 0,
+            accumulation_counter: 0,
+            last_accumulation: 0,
+            last_activity: 0,
+            preimage_count: 0,
+        };
+        let storage_key = b"my_key".to_vec();
+        let storage_value = b"my_value".to_vec();
+        service
+            .storage
+            .insert(storage_key.clone(), storage_value.clone());
+        state.services.insert(42, service);
+
+        let block_hash = Hash([99u8; 32]);
+        store.put_state(&block_hash, &state, &config).unwrap();
+
+        // Look up the storage entry
+        let result = store
+            .get_service_storage(&block_hash, 42, &storage_key)
+            .unwrap();
+        assert_eq!(result, Some(storage_value));
+
+        // Non-existent key
+        let result = store
+            .get_service_storage(&block_hash, 42, b"missing")
+            .unwrap();
+        assert!(result.is_none());
+
+        // Non-existent service
+        let result = store
+            .get_service_storage(&block_hash, 999, &storage_key)
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_service_code_hash() {
+        let (store, _dir) = temp_store();
+        let config = Config::tiny();
+        let (mut state, _) = grey_consensus::genesis::create_genesis(&config);
+
+        let code_hash = Hash([0xCD; 32]);
+        let service = grey_types::state::ServiceAccount {
+            code_hash,
+            quota_items: 50,
+            min_accumulate_gas: 0,
+            min_on_transfer_gas: 0,
+            storage: std::collections::BTreeMap::new(),
+            preimage_lookup: std::collections::BTreeMap::new(),
+            preimage_info: std::collections::BTreeMap::new(),
+            quota_bytes: 5000,
+            total_footprint: 0,
+            accumulation_counter: 0,
+            last_accumulation: 0,
+            last_activity: 0,
+            preimage_count: 0,
+        };
+        state.services.insert(7, service);
+
+        let block_hash = Hash([88u8; 32]);
+        store.put_state(&block_hash, &state, &config).unwrap();
+
+        let result = store.get_service_code_hash(&block_hash, 7).unwrap();
+        assert_eq!(result, Some(code_hash));
+
+        // Non-existent service
+        let result = store.get_service_code_hash(&block_hash, 999).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_state_kv() {
+        let (store, _dir) = temp_store();
+        let config = Config::tiny();
+        let (genesis_state, _) = grey_consensus::genesis::create_genesis(&config);
+        let block_hash = Hash([77u8; 32]);
+        store
+            .put_state(&block_hash, &genesis_state, &config)
+            .unwrap();
+
+        // State key for index 6 (entropy) should exist
+        let key = grey_merkle::state_key_from_index(6);
+        let result = store.get_state_kv(&block_hash, &key).unwrap();
+        assert!(result.is_some(), "entropy state key should exist");
+
+        // Non-existent state key
+        let fake_key = [0xFF; 31];
+        let result = store.get_state_kv(&block_hash, &fake_key).unwrap();
+        assert!(result.is_none());
+    }
 }
