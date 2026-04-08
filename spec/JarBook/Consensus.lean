@@ -33,7 +33,13 @@ consensus protocol (GP §6).
 
 {docstring Jar.Consensus.updateSafrole}
 
-# Chain Selection
+# Chain Selection (GP §19)
+
+Chain selection determines which fork to follow. The protocol uses a scoring
+metric based on how many blocks were sealed via the ticket mechanism (vs fallback).
+Blocks must pass acceptability checks before being considered.
+
+{docstring Jar.Consensus.ChainAncestry}
 
 {docstring Jar.Consensus.chainMetric}
 
