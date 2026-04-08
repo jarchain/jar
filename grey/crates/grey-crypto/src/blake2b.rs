@@ -3,6 +3,12 @@
 use blake2::digest::consts::U32;
 use blake2::{Blake2b, Digest};
 use grey_types::Hash;
+use grey_types::header::Header;
+
+/// Compute the Blake2b-256 header hash: H(E(header)).
+pub fn header_hash(header: &Header) -> Hash {
+    blake2b_256(&scale::Encode::encode(header))
+}
 
 /// Compute the Blake2b-256 hash of the given data.
 ///

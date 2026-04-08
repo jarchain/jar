@@ -91,7 +91,7 @@ pub fn apply_with_config(
 
     // Step 8: Update recent block history β' (Section 7)
     {
-        let header_hash = grey_crypto::blake2b_256(&scale::Encode::encode(header));
+        let header_hash = grey_crypto::header_hash(header);
         let work_packages: Vec<(Hash, Hash)> = extrinsic
             .guarantees
             .iter()

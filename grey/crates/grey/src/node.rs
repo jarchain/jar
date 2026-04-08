@@ -716,7 +716,7 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                             &[],
                         ) {
                             Ok((new_state, _)) => {
-                                let header_hash = grey_crypto::blake2b_256(&scale::Encode::encode(&block.header));
+                                let header_hash = grey_crypto::header_hash(&block.header);
                                 // Capture pre-transition seal mode: the block was sealed under
                                 // the current epoch's key series, not the post-transition one.
                                 let ticket_sealed = grey_consensus::safrole::is_ticket_sealed(
@@ -874,7 +874,7 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                     NetworkEvent::BlockReceived { data, source } => {
                         match decode_block_message(&data, protocol) {
                             Some((block, _hash)) => {
-                                let block_hash = grey_crypto::blake2b_256(&scale::Encode::encode(&block.header));
+                                let block_hash = grey_crypto::header_hash(&block.header);
                                 // Skip blocks we've already seen (dedup)
                                 if seen_block_hashes.contains(&block_hash) {
                                     tracing::trace!(

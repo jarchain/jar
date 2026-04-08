@@ -218,7 +218,7 @@ impl Store {
     /// Store a block. Returns the header hash.
     pub fn put_block(&self, block: &Block) -> Result<Hash, StoreError> {
         let encoded = encode_block(block);
-        let hash = grey_crypto::blake2b_256(&scale::Encode::encode(&block.header));
+        let hash = grey_crypto::header_hash(&block.header);
 
         let txn = self.db.begin_write()?;
         {

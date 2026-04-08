@@ -7,6 +7,7 @@ description = "Cryptographic primitives for JAM: Blake2b, Keccak, Ed25519, Bande
 
 [dependencies]
 grey-types = { workspace = true }
+scale = { workspace = true }
 blake2 = { workspace = true }
 sha3 = { workspace = true }
 ed25519-dalek = { workspace = true }

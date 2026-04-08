@@ -1599,6 +1599,7 @@ dependencies = [
  "hex",
  "proptest",
  "rand 0.8.5",
+ "scale",
  "serde",
  "serde_json",
  "sha3",

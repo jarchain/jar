@@ -1936,7 +1936,7 @@ mod tests {
 
         // Store a block and set it as head
         let block = test_block(1);
-        let hash = grey_crypto::blake2b_256(&scale::Encode::encode(&block.header));
+        let hash = grey_crypto::header_hash(&block.header);
         store.put_block(&block).unwrap();
         store.set_head(&hash, 1).unwrap();
 
