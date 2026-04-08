@@ -2107,6 +2107,56 @@ impl InvocationKernel {
         true
     }
 
+    /// Write bytes directly into the active VM's window by address.
+    /// Symmetric with [`Self::read_data_cap_window`]: used by hosts that pass
+    /// flat virtual addresses (rather than `(cap_idx, offset)` pairs) for
+    /// hostcall output buffers. The kernel locates the covering DATA cap and
+    /// writes through it. Returns `false` if `addr..addr+len` does not fall
+    /// within any mapped DATA cap in the active VM.
+    pub fn write_data_cap_window(&mut self, addr: u32, data: &[u8]) -> bool {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            let wb = self.active_window_base();
+            // SAFETY: addr is within the window's 4GB mmap region.
+            unsafe {
+                std::ptr::copy_nonoverlapping(data.as_ptr(), wb.add(addr as usize), data.len());
+            }
+            true
+        }
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        {
+            // On non-Linux the window is not backed by physical pages.
+            // Find the DataCap covering addr and write through the backing store.
+            let addr_page = addr / crate::PVM_PAGE_SIZE;
+            let offset_in_page = (addr % crate::PVM_PAGE_SIZE) as usize;
+            let cap_info = {
+                let vm = &self.vm_arena.vm(self.active_vm);
+                let mut found = None;
+                for slot in 0..=255u8 {
+                    if let Some(Cap::Data(d)) = vm.cap_table.get(slot)
+                        && let Some(base_page) = d.base_offset
+                        && d.has_any_mapped()
+                        && addr_page >= base_page
+                        && addr_page < base_page + d.page_count
+                    {
+                        found = Some((base_page, d.backing_offset));
+                        break;
+                    }
+                }
+                found
+            };
+            let (base_page, backing_offset) = match cap_info {
+                Some(info) => info,
+                None => return false,
+            };
+            let page_in_cap = (addr_page - base_page) as usize;
+            let byte_off = (backing_offset as usize + page_in_cap) * crate::PVM_PAGE_SIZE as usize
+                + offset_in_page;
+            self.backing.write_bytes_at(byte_off, data);
+            true
+        }
+    }
+
     /// Handle a callee halt (exit from VM execution).
     pub fn handle_vm_halt(&mut self, exit_value: u64) -> DispatchResult {
         let callee_id = self.active_vm;
