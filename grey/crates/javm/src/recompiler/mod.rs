@@ -92,26 +92,39 @@ pub struct JitContext {
 }
 
 /// Compiled native code buffer (mmap'd as executable).
+///
+/// The allocation includes a trailing PROT_NONE guard page that catches
+/// wild forward jumps or buffer overruns past the end of the JIT code.
 pub struct NativeCode {
     pub ptr: *mut u8,
     pub len: usize,
-    /// The mmap region capacity (may be > len due to pre-allocation).
+    /// Total mmap size including the trailing guard page.
     pub mmap_cap: usize,
+}
+
+const PAGE_SIZE: usize = 4096;
+
+/// Round `n` up to the next multiple of `PAGE_SIZE`.
+fn page_align(n: usize) -> usize {
+    (n + PAGE_SIZE - 1) & !(PAGE_SIZE - 1)
 }
 
 impl NativeCode {
     /// Allocate an executable code buffer and copy machine code into it.
     /// This is the fallback path; the mmap-direct path skips the copy.
+    /// A trailing PROT_NONE guard page is placed after the code.
     fn new(code: &[u8]) -> Result<Self, String> {
         if code.is_empty() {
             return Err("empty code buffer".into());
         }
         let len = code.len();
+        let code_pages = page_align(len);
+        let total = code_pages + PAGE_SIZE; // + trailing guard page
         // SAFETY: mmap with MAP_ANONYMOUS|MAP_PRIVATE allocates fresh pages. MAP_FAILED checked below.
         let ptr = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
-                len,
+                total,
                 libc::PROT_READ | libc::PROT_WRITE,
                 libc::MAP_ANONYMOUS | libc::MAP_PRIVATE,
                 -1,
@@ -122,25 +135,36 @@ impl NativeCode {
             return Err("mmap failed".into());
         }
         let ptr = ptr as *mut u8;
-        // SAFETY: ptr is a valid mmap'd region of `len` bytes; copy_nonoverlapping is in-bounds.
+        // SAFETY: ptr is a valid mmap'd region of `total` bytes; copy_nonoverlapping is in-bounds.
         // mprotect/munmap operate on the same valid mmap region.
         unsafe {
             std::ptr::copy_nonoverlapping(code.as_ptr(), ptr, len);
-            // Make executable (and read-only)
+            // Make code pages executable (and read-only).
             if libc::mprotect(
                 ptr as *mut libc::c_void,
-                len,
+                code_pages,
                 libc::PROT_READ | libc::PROT_EXEC,
             ) != 0
             {
-                libc::munmap(ptr as *mut libc::c_void, len);
-                return Err("mprotect failed".into());
+                libc::munmap(ptr as *mut libc::c_void, total);
+                return Err("mprotect RX failed".into());
+            }
+            // Trailing guard page: PROT_NONE catches wild forward jumps.
+            // SAFETY: ptr + code_pages is within the mmap'd region (total = code_pages + PAGE_SIZE).
+            if libc::mprotect(
+                ptr.add(code_pages) as *mut libc::c_void,
+                PAGE_SIZE,
+                libc::PROT_NONE,
+            ) != 0
+            {
+                libc::munmap(ptr as *mut libc::c_void, total);
+                return Err("mprotect guard failed".into());
             }
         }
         Ok(Self {
             ptr,
             len,
-            mmap_cap: len,
+            mmap_cap: total,
         })
     }
 
