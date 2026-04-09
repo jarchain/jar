@@ -17,27 +17,23 @@ pub struct ValidatorSecrets {
     pub index: u16,
 }
 
+/// Build a deterministic 32-byte seed from a validator index and a key-type marker.
+///
+/// Layout: `[index_lo, index_hi, 0, …, 0, marker]`.
+fn make_seed(index: u16, marker: u8) -> [u8; 32] {
+    let mut seed = [0u8; 32];
+    seed[0] = index as u8;
+    seed[1] = (index >> 8) as u8;
+    seed[31] = marker;
+    seed
+}
+
 /// Generate deterministic validator secrets for index `i`.
 pub fn make_validator_secrets(index: u16) -> ValidatorSecrets {
-    let mut ed_seed = [0u8; 32];
-    ed_seed[0] = index as u8;
-    ed_seed[1] = (index >> 8) as u8;
-    ed_seed[31] = 0xED; // marker for ed25519
-
-    let mut band_seed = [0u8; 32];
-    band_seed[0] = index as u8;
-    band_seed[1] = (index >> 8) as u8;
-    band_seed[31] = 0xBA; // marker for bandersnatch
-
-    let mut bls_seed = [0u8; 32];
-    bls_seed[0] = index as u8;
-    bls_seed[1] = (index >> 8) as u8;
-    bls_seed[31] = 0xBB; // marker for BLS
-
     ValidatorSecrets {
-        ed25519: grey_crypto::Ed25519Keypair::from_seed(&ed_seed),
-        bandersnatch: grey_crypto::BandersnatchKeypair::from_seed(&band_seed),
-        bls: grey_crypto::BlsKeypair::from_seed(&bls_seed),
+        ed25519: grey_crypto::Ed25519Keypair::from_seed(&make_seed(index, 0xED)),
+        bandersnatch: grey_crypto::BandersnatchKeypair::from_seed(&make_seed(index, 0xBA)),
+        bls: grey_crypto::BlsKeypair::from_seed(&make_seed(index, 0xBB)),
         index,
     }
 }
