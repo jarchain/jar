@@ -93,19 +93,13 @@ pub fn decode_hex_fixed<const N: usize>(s: &str) -> Result<[u8; N], String> {
     Ok(arr)
 }
 
-/// Implement Debug (with truncation), Deserialize, and Default (for large arrays) for crypto types.
-macro_rules! impl_crypto_type {
-    // Fixed-size array with Copy — full hex in Debug
-    ($name:ident, $size:expr, copy, $debug_name:expr) => {
+/// Shared from_hex and Deserialize for all crypto types.
+macro_rules! impl_crypto_common {
+    ($name:ident, $debug_name:expr) => {
         impl $name {
             /// Parse from a hex string (with optional 0x prefix). Panics on invalid input.
             pub fn from_hex(s: &str) -> Self {
                 Self(decode_hex_fixed(s).expect(concat!("invalid hex for ", $debug_name)))
-            }
-        }
-        impl fmt::Debug for $name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(f, "{}({})", $debug_name, hex::encode(self.0))
             }
         }
         impl<'de> serde::Deserialize<'de> for $name {
@@ -117,14 +111,22 @@ macro_rules! impl_crypto_type {
             }
         }
     };
-    // Large array — truncated Debug, manual Default
-    ($name:ident, $size:expr, large, $debug_name:expr) => {
-        impl $name {
-            /// Parse from a hex string (with optional 0x prefix). Panics on invalid input.
-            pub fn from_hex(s: &str) -> Self {
-                Self(decode_hex_fixed(s).expect(concat!("invalid hex for ", $debug_name)))
+}
+
+/// Implement Debug (with truncation), Deserialize, and Default (for large arrays) for crypto types.
+macro_rules! impl_crypto_type {
+    // Fixed-size array with Copy — full hex in Debug
+    ($name:ident, $size:expr, copy, $debug_name:expr) => {
+        impl_crypto_common!($name, $debug_name);
+        impl fmt::Debug for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "{}({})", $debug_name, hex::encode(self.0))
             }
         }
+    };
+    // Large array — truncated Debug, manual Default
+    ($name:ident, $size:expr, large, $debug_name:expr) => {
+        impl_crypto_common!($name, $debug_name);
         impl Default for $name {
             fn default() -> Self {
                 Self([0u8; $size])
@@ -133,14 +135,6 @@ macro_rules! impl_crypto_type {
         impl fmt::Debug for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(f, "{}({}...)", $debug_name, hex::encode(&self.0[..8]))
-            }
-        }
-        impl<'de> serde::Deserialize<'de> for $name {
-            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-                let s: String = serde::Deserialize::deserialize(d)?;
-                Ok($name(
-                    decode_hex_fixed(&s).map_err(serde::de::Error::custom)?,
-                ))
             }
         }
     };
