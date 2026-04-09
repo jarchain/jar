@@ -726,10 +726,8 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                             &[],
                         ) {
                             Ok((new_state, _)) => {
-                                let stf_elapsed = stf_start.elapsed();
                                 if let Some(ref rpc_st) = rpc_state {
-                                    rpc_st.state_transitions_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                    rpc_st.state_transition_last_us.store(stf_elapsed.as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
+                                    rpc_st.record_stf_metrics(stf_start.elapsed());
                                 }
                                 let header_hash = grey_crypto::header_hash(&block.header);
                                 // Capture pre-transition seal mode: the block was sealed under
@@ -977,10 +975,8 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                                 &[],
                             ) {
                                 Ok((new_state, _)) => {
-                                    let stf_elapsed = stf_start.elapsed();
                                     if let Some(ref rpc_st) = rpc_state {
-                                        rpc_st.state_transitions_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                        rpc_st.state_transition_last_us.store(stf_elapsed.as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
+                                        rpc_st.record_stf_metrics(stf_start.elapsed());
                                     }
                                     // Capture pre-transition seal mode: the block was sealed under
                                     // the current epoch's key series, not the post-transition one.

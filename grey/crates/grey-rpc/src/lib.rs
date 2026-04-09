@@ -98,6 +98,16 @@ pub struct RpcState {
 }
 
 impl RpcState {
+    /// Record state transition timing metrics.
+    pub fn record_stf_metrics(&self, elapsed: std::time::Duration) {
+        self.state_transitions_total
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.state_transition_last_us.store(
+            elapsed.as_micros() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
     /// Record accumulation metrics from a block's guarantees.
     pub fn record_accumulation_metrics(&self, guarantees: &[grey_types::header::Guarantee]) {
         let wp_count = guarantees.len() as u64;
