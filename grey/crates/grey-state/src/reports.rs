@@ -181,10 +181,8 @@ pub fn process_reports(
     let epoch_length = config.epoch_length;
 
     // eq 11.24: Guarantees must be sorted by core_index
-    for w in guarantees.windows(2) {
-        if w[0].report.core_index >= w[1].report.core_index {
-            return Err(ReportError::OutOfOrderGuarantee);
-        }
+    if !crate::is_strictly_sorted_by_key(guarantees, |g| g.report.core_index) {
+        return Err(ReportError::OutOfOrderGuarantee);
     }
 
     // Collect all package hashes upfront for dependency/duplicate checking
@@ -248,10 +246,8 @@ pub fn process_reports(
         }
 
         // Credentials must be sorted by validator_index, unique
-        for w in guarantee.signatures.windows(2) {
-            if w[0].0 >= w[1].0 {
-                return Err(ReportError::NotSortedOrUniqueGuarantors);
-            }
+        if !crate::is_strictly_sorted_by_key(&guarantee.signatures, |s| s.0) {
+            return Err(ReportError::NotSortedOrUniqueGuarantors);
         }
 
         // All validator indices must be valid

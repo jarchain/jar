@@ -61,10 +61,8 @@ pub fn process_assurances(
     }
 
     // eq 11.12: Assurances must be sorted by validator index, no duplicates
-    for w in assurances.windows(2) {
-        if w[0].validator_index >= w[1].validator_index {
-            return Err(AssuranceError::NotSortedOrUniqueAssurers);
-        }
+    if !crate::is_strictly_sorted_by_key(assurances, |a| a.validator_index) {
+        return Err(AssuranceError::NotSortedOrUniqueAssurers);
     }
 
     // eq 11.11: All assurance anchors must equal parent hash
