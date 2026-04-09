@@ -23,6 +23,7 @@ import Jar.Proofs.QuotaEcon
 import Jar.Proofs.BalanceEcon
 import Jar.Proofs.Hostcalls
 import Jar.Proofs.Variant
+import Jar.Proofs.Memory
 
 /-!
 # JAR — JAM Axiomatic Reference
