@@ -1135,8 +1135,17 @@ impl Compiler {
                         }
                     } else if *ra == *rb {
                         // add64 D, A, A — D = A * 2 = A << 1
-                        self.reg_defs[*rd] = RegDef::Shifted { src: *ra, shift: 1 };
-                        self.reg_defs_active |= 1u16 << *rd;
+                        // Only track as Shifted when rd != ra; in-place doubling
+                        // (rd == ra) overwrites the original value, making the
+                        // Shifted{src} self-referential — ScaledAdd would then
+                        // double-shift at emit time.
+                        if *rd != *ra {
+                            self.reg_defs[*rd] = RegDef::Shifted { src: *ra, shift: 1 };
+                            self.reg_defs_active |= 1u16 << *rd;
+                        } else {
+                            self.reg_defs[*rd] = RegDef::Unknown;
+                            self.reg_defs_active &= !(1u16 << *rd);
+                        }
                     } else {
                         // add64 D, A, B — check if one operand is Shifted
                         let def = if let RegDef::Shifted { src, shift } = self.reg_defs[*rb] {
@@ -1177,7 +1186,10 @@ impl Compiler {
             Opcode::ShloLImm64 => {
                 if let Args::TwoRegImm { ra, rb, imm } = args {
                     let shift = (*imm as u32 % 64) as u8;
-                    if (1..=3).contains(&shift) {
+                    // Only track as Shifted when ra != rb; in-place shifts
+                    // overwrite the original value, making the Shifted{src}
+                    // self-referential — ScaledAdd would double-shift at emit.
+                    if (1..=3).contains(&shift) && ra != rb {
                         self.reg_defs[*ra] = RegDef::Shifted { src: *rb, shift };
                         self.reg_defs_active |= 1u16 << *ra;
                     } else {
