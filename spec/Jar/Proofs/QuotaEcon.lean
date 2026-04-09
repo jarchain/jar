@@ -67,6 +67,48 @@ theorem quotaEcon_canAffordStorage_mono
   exact ⟨Nat.le_trans h.1 hItems, Nat.le_trans h.2 hBytes⟩
 
 -- ============================================================================
+-- canAffordStorage preservation under all operations
+-- ============================================================================
+
+/-- creditTransfer preserves canAffordStorage (trivially, since creditTransfer is identity). -/
+theorem quotaEcon_creditTransfer_preserves_canAfford
+    (e : QuotaEcon) (t : QuotaTransfer)
+    (items bytes bI bL bS : Nat)
+    (h : @EconModel.canAffordStorage QuotaEcon QuotaTransfer _ e items bytes bI bL bS = true) :
+    @EconModel.canAffordStorage QuotaEcon QuotaTransfer _
+      (@EconModel.creditTransfer QuotaEcon QuotaTransfer _ e t) items bytes bI bL bS = true := by
+  rwa [quotaEcon_creditTransfer_id]
+
+/-- debitTransfer preserves canAffordStorage (trivially, since debitTransfer always returns the input). -/
+theorem quotaEcon_debitTransfer_preserves_canAfford
+    (e e' : QuotaEcon) (amount : UInt64)
+    (items bytes bI bL bS : Nat)
+    (hDebit : @EconModel.debitTransfer QuotaEcon QuotaTransfer _ e amount = some e')
+    (h : @EconModel.canAffordStorage QuotaEcon QuotaTransfer _ e items bytes bI bL bS = true) :
+    @EconModel.canAffordStorage QuotaEcon QuotaTransfer _ e' items bytes bI bL bS = true := by
+  have : e = e' := by simpa [EconModel.debitTransfer] using hDebit
+  rwa [← this]
+
+/-- absorbEjected preserves canAffordStorage (trivially, since absorbEjected is identity). -/
+theorem quotaEcon_absorbEjected_preserves_canAfford
+    (e ejected : QuotaEcon)
+    (items bytes bI bL bS : Nat)
+    (h : @EconModel.canAffordStorage QuotaEcon QuotaTransfer _ e items bytes bI bL bS = true) :
+    @EconModel.canAffordStorage QuotaEcon QuotaTransfer _
+      (@EconModel.absorbEjected QuotaEcon QuotaTransfer _ e ejected) items bytes bI bL bS = true := by
+  rwa [quotaEcon_absorbEjected_id]
+
+/-- debitForNewService preserves canAffordStorage (trivially, since debitForNewService always returns the input). -/
+theorem quotaEcon_debitForNewService_preserves_canAfford
+    (e e' : QuotaEcon) (ni nb : Nat) (ng : UInt64) (ci cb bI bL bS : Nat)
+    (items bytes : Nat)
+    (hDebit : @EconModel.debitForNewService QuotaEcon QuotaTransfer _ e ni nb ng ci cb bI bL bS = some e')
+    (h : @EconModel.canAffordStorage QuotaEcon QuotaTransfer _ e items bytes bI bL bS = true) :
+    @EconModel.canAffordStorage QuotaEcon QuotaTransfer _ e' items bytes bI bL bS = true := by
+  have : e = e' := by simpa [EconModel.debitForNewService] using hDebit
+  rwa [← this]
+
+-- ============================================================================
 -- newServiceEcon properties
 -- ============================================================================
 
