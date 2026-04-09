@@ -31,6 +31,24 @@ theorem balanceEcon_debitTransfer_can_fail :
   exact ⟨{ balance := 0, gratis := 0 }, 1, rfl⟩
 
 -- ============================================================================
+-- creditTransfer ∘ debitTransfer partial inverse
+-- ============================================================================
+
+/-- creditTransfer undoes debitTransfer when balance is sufficient.
+    If debitTransfer succeeds (balance ≥ amount), crediting the same amount
+    recovers the original economic state. -/
+theorem balanceEcon_credit_debit_roundtrip (e e' : BalanceEcon) (amount : UInt64)
+    (h : @EconModel.debitTransfer BalanceEcon BalanceTransfer _ e amount = some e') :
+    @EconModel.creditTransfer BalanceEcon BalanceTransfer _ e' { amount := amount } = e := by
+  simp only [EconModel.debitTransfer, EconModel.creditTransfer] at h ⊢
+  split at h
+  next hge =>
+    simp only [Option.some.injEq] at h; subst h
+    have : e.balance - amount + amount = e.balance := UInt64.sub_add_cancel e.balance amount
+    cases e; simp_all
+  next => simp_all
+
+-- ============================================================================
 -- Serialization size invariants (same as QuotaEcon — both models produce
 -- 16-byte serializeEcon and 24-byte encodeInfo)
 -- ============================================================================
