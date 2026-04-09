@@ -32,6 +32,10 @@ is accepted by the service's authorizer code.
 Refinement transforms a work item into a work result by running the service's
 refine code in the JAVM.
 
+{docstring Jar.Services.RefineContext}
+
+{docstring Jar.Services.ImportResolver}
+
 {docstring Jar.Services.refine}
 
 # Work-Report Computation
@@ -41,9 +45,21 @@ from a work package.
 
 {docstring Jar.Services.computeWorkReport}
 
+# Accumulation Input
+
+{docstring Jar.Services.AccumulationInput}
+
 # On-Transfer
 
 Invoked when a deferred transfer arrives at a service during accumulation.
 
 {docstring Jar.Services.onTransfer}
+
+# Auditing
+
+{docstring Jar.Services.auditWorkReport}
+
+# Host-Call Interface
+
+{docstring Jar.Services.HostCall}
 
