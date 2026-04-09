@@ -225,7 +225,7 @@ impl<T, E: core::fmt::Display> MapInternalErr<T> for Result<T, E> {
 
 /// Parse a hex-encoded 32-byte hash, stripping optional "0x" prefix.
 fn parse_hash_hex(hex_str: &str) -> Result<Hash, ErrorObjectOwned> {
-    let bytes = hex::decode(hex_str.trim_start_matches("0x")).map_internal_err()?;
+    let bytes = grey_types::decode_hex(hex_str).map_internal_err()?;
     if bytes.len() != 32 {
         return Err(internal_error("hash must be 32 bytes"));
     }
@@ -293,7 +293,7 @@ impl JamRpcServer for RpcImpl {
         data_hex: String,
     ) -> Result<serde_json::Value, ErrorObjectOwned> {
         self.track_request("jam_submitWorkPackage");
-        let data = hex::decode(data_hex.trim_start_matches("0x"))
+        let data = grey_types::decode_hex(&data_hex)
             .map_err(|e| internal_error(format!("invalid hex: {}", e)))?;
 
         if data.is_empty() {
@@ -357,7 +357,7 @@ impl JamRpcServer for RpcImpl {
         self.track_request("jam_readStorage");
         let (head_hash, head_slot) = self.state.store.get_head().map_internal_err()?;
 
-        let key_bytes = hex::decode(key_hex.trim_start_matches("0x"))
+        let key_bytes = grey_types::decode_hex(&key_hex)
             .map_err(|e| internal_error(format!("invalid hex key: {}", e)))?;
 
         // Direct lookup via computed state key — avoids full state deserialization
