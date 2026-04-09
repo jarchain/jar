@@ -29,6 +29,7 @@ import Jar.Proofs.Consensus
 import Jar.Proofs.Decode
 import Jar.Proofs.Crypto
 import Jar.Proofs.Erasure
+import Jar.Proofs.State
 
 /-!
 # JAR — JAM Axiomatic Reference
