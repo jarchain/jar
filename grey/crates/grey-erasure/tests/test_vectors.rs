@@ -1,6 +1,7 @@
 //! Test vectors for Reed-Solomon erasure coding (Appendix H).
 
 use grey_erasure::{ErasureParams, encode, recover};
+use grey_types::decode_hex;
 
 #[derive(serde::Deserialize)]
 struct ErasureTestVector {
@@ -8,14 +9,10 @@ struct ErasureTestVector {
     shards: Vec<String>,
 }
 
-fn decode_hex(s: &str) -> Vec<u8> {
-    hex::decode(s.strip_prefix("0x").unwrap_or(s)).unwrap()
-}
-
 fn run_encode_test(params: &ErasureParams, json_str: &str) {
     let tv: ErasureTestVector = serde_json::from_str(json_str).unwrap();
-    let data = decode_hex(&tv.data);
-    let expected_shards: Vec<Vec<u8>> = tv.shards.iter().map(|s| decode_hex(s)).collect();
+    let data = decode_hex(&tv.data).unwrap();
+    let expected_shards: Vec<Vec<u8>> = tv.shards.iter().map(|s| decode_hex(s).unwrap()).collect();
 
     assert_eq!(
         expected_shards.len(),
@@ -45,8 +42,8 @@ fn run_encode_test(params: &ErasureParams, json_str: &str) {
 
 fn run_recover_test(params: &ErasureParams, json_str: &str) {
     let tv: ErasureTestVector = serde_json::from_str(json_str).unwrap();
-    let data = decode_hex(&tv.data);
-    let all_shards: Vec<Vec<u8>> = tv.shards.iter().map(|s| decode_hex(s)).collect();
+    let data = decode_hex(&tv.data).unwrap();
+    let all_shards: Vec<Vec<u8>> = tv.shards.iter().map(|s| decode_hex(s).unwrap()).collect();
 
     // Test recovery using only recovery (parity) shards — worst case.
     // Take exactly data_shards recovery shards from the parity portion.
