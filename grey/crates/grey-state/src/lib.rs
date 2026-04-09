@@ -24,6 +24,14 @@ pub(crate) mod test_helpers {
     }
 }
 
+/// Check that a slice is strictly sorted by the given key (no duplicates).
+///
+/// Returns `true` if `key(items[i]) < key(items[i+1])` for all consecutive pairs.
+/// Empty and single-element slices are trivially sorted.
+pub fn is_strictly_sorted_by_key<T, K: Ord>(items: &[T], key: impl Fn(&T) -> K) -> bool {
+    items.windows(2).all(|w| key(&w[0]) < key(&w[1]))
+}
+
 use grey_types::header::Block;
 use grey_types::state::State;
 use thiserror::Error;

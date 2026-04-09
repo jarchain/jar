@@ -68,12 +68,8 @@ pub fn process_preimages(
     }
 
     // eq 12.36: Preimages must be sorted by (service_id, hash(blob)), no duplicates.
-    for w in hashed.windows(2) {
-        let (s0, h0, _) = &w[0];
-        let (s1, h1, _) = &w[1];
-        if (s0, h0) >= (s1, h1) {
-            return Err(PreimageError::PreimagesNotSortedUnique);
-        }
+    if !crate::is_strictly_sorted_by_key(&hashed, |x| (x.0, x.1)) {
+        return Err(PreimageError::PreimagesNotSortedUnique);
     }
 
     // eq 12.38: Apply changes — store blobs, update request timeslots, track stats.

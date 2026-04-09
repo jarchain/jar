@@ -381,10 +381,8 @@ fn extract_tickets(
     }
 
     // eq 6.32: Must be sorted ascending by ticket ID
-    for w in tickets.windows(2) {
-        if w[0].id.0 >= w[1].id.0 {
-            return Err(SafroleError::BadTicketOrder);
-        }
+    if !crate::is_strictly_sorted_by_key(&tickets, |t| t.id.0) {
+        return Err(SafroleError::BadTicketOrder);
     }
 
     // eq 6.33: No duplicates with existing accumulator
