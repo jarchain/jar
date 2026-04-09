@@ -114,15 +114,7 @@ impl GuarantorState {
         }
 
         // Sign: X_A ⌢ H(E(parent_hash, bitfield))
-        let mut payload = Vec::new();
-        payload.extend_from_slice(&parent_hash.0);
-        payload.extend_from_slice(&bitfield);
-        let payload_hash = grey_crypto::blake2b_256(&payload);
-
-        let mut message = Vec::with_capacity(13 + 32);
-        message.extend_from_slice(signing_contexts::AVAILABLE);
-        message.extend_from_slice(&payload_hash.0);
-
+        let message = grey_crypto::build_assurance_message(&parent_hash.0, &bitfield);
         let signature = secrets.ed25519.sign(&message);
 
         Some(Assurance {

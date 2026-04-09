@@ -3,12 +3,12 @@
 //! Processes availability assurances to determine which pending work reports
 //! have become available.
 
+use grey_types::Hash;
 use grey_types::config::Config;
 use grey_types::header::Assurance;
 use grey_types::state::PendingReport;
 use grey_types::validator::ValidatorKey;
 use grey_types::work::WorkReport;
-use grey_types::{Hash, signing_contexts};
 
 /// Error type for assurances validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,15 +81,7 @@ pub fn process_assurances(
         let ed25519_key = &current_validators[idx].ed25519;
 
         // Encode (parent_hash, bitfield) and hash
-        let mut payload = Vec::new();
-        payload.extend_from_slice(&parent_hash.0);
-        payload.extend_from_slice(&a.bitfield);
-        let payload_hash = grey_crypto::blake2b_256(&payload);
-
-        let mut message = Vec::with_capacity(13 + 32);
-        message.extend_from_slice(signing_contexts::AVAILABLE);
-        message.extend_from_slice(&payload_hash.0);
-
+        let message = grey_crypto::build_assurance_message(&parent_hash.0, &a.bitfield);
         if !grey_crypto::ed25519_verify(ed25519_key, &message, &a.signature) {
             return Err(AssuranceError::BadSignature);
         }

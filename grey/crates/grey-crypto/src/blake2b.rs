@@ -16,6 +16,21 @@ pub fn report_hash(report: &WorkReport) -> Hash {
     blake2b_256(&scale::Encode::encode(report))
 }
 
+/// Build an assurance signing message: X_A ⌢ H(parent_hash ⌢ bitfield).
+///
+/// Used for signing and verifying availability assurances (Section 11).
+pub fn build_assurance_message(parent_hash: &[u8; 32], bitfield: &[u8]) -> Vec<u8> {
+    use grey_types::signing_contexts::AVAILABLE;
+    let mut payload = Vec::new();
+    payload.extend_from_slice(parent_hash);
+    payload.extend_from_slice(bitfield);
+    let payload_hash = blake2b_256(&payload);
+    let mut message = Vec::with_capacity(AVAILABLE.len() + 32);
+    message.extend_from_slice(AVAILABLE);
+    message.extend_from_slice(&payload_hash.0);
+    message
+}
+
 /// Compute the Blake2b-256 hash of the given data.
 ///
 /// H(m ∈ B) ∈ H

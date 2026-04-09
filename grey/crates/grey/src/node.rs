@@ -792,7 +792,7 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                                     .extrinsic
                                     .guarantees
                                     .iter()
-                                    .map(|g| grey_crypto::blake2b_256(&scale::Encode::encode(&g.report)))
+                                    .map(|g| grey_crypto::report_hash(&g.report))
                                     .collect();
                                 grandpa.register_block(
                                     header_hash,
@@ -1048,7 +1048,7 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                                         .extrinsic
                                         .guarantees
                                         .iter()
-                                        .map(|g| grey_crypto::blake2b_256(&scale::Encode::encode(&g.report)))
+                                        .map(|g| grey_crypto::report_hash(&g.report))
                                         .collect();
                                     grandpa.register_block(
                                         import_hash,
