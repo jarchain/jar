@@ -38,6 +38,17 @@ fn broadcast_vote(
     let _ = net_commands.try_send(NetworkCommand::BroadcastFinalityVote { data });
 }
 
+/// Broadcast the most recent pending guarantee to the network.
+fn broadcast_last_guarantee(
+    guarantor_state: &GuarantorState,
+    net_commands: &tokio::sync::mpsc::Sender<NetworkCommand>,
+) {
+    if let Some(g) = guarantor_state.pending_guarantees.last() {
+        let data = guarantor::encode_guarantee(g);
+        let _ = net_commands.try_send(NetworkCommand::BroadcastGuarantee { data });
+    }
+}
+
 /// Node configuration.
 pub struct NodeConfig {
     /// Validator index in the genesis set.
@@ -532,13 +543,7 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                                         config.validator_index,
                                         hex::encode(&report_hash.0[..8])
                                     );
-                                    // Broadcast only the new guarantee to peers
-                                    if let Some(g) = guarantor_state.pending_guarantees.last() {
-                                        let g_data = guarantor::encode_guarantee(g);
-                                        let _ = net_commands.try_send(NetworkCommand::BroadcastGuarantee {
-                                            data: g_data,
-                                        });
-                                    }
+                                    broadcast_last_guarantee(&guarantor_state, &net_commands);
                                     last_wp_slot = current_slot;
                                 }
                                 Err(e) => {
@@ -1381,13 +1386,7 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                                                 config.validator_index,
                                                 &all_secrets,
                                             );
-                                            // Broadcast only the new guarantee to peers
-                                            if let Some(g) = guarantor_state.pending_guarantees.last() {
-                                                let g_data = guarantor::encode_guarantee(g);
-                                                let _ = net_commands.try_send(NetworkCommand::BroadcastGuarantee {
-                                                    data: g_data,
-                                                });
-                                            }
+                                            broadcast_last_guarantee(&guarantor_state, &net_commands);
                                             tracing::info!(
                                                 "RPC work package processed (2 signers), report_hash=0x{}",
                                                 hex::encode(&report_hash.0[..8])
