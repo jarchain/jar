@@ -67,6 +67,38 @@ theorem quotaEcon_canAffordStorage_mono
   exact ⟨Nat.le_trans h.1 hItems, Nat.le_trans h.2 hBytes⟩
 
 -- ============================================================================
+-- newServiceEcon properties
+-- ============================================================================
+
+/-- A new coinless service starts with zero quotas. -/
+theorem quotaEcon_newServiceEcon_zero (items bytes bI bL bS : Nat) (gratis : UInt64) :
+    @EconModel.newServiceEcon QuotaEcon QuotaTransfer _ items bytes gratis bI bL bS
+    = { quotaItems := 0, quotaBytes := 0 } := by
+  rfl
+
+/-- A new coinless service cannot afford any items (quota is zero). -/
+theorem quotaEcon_newServiceEcon_cannot_afford
+    (items bytes bI bL bS : Nat) (gratis : UInt64) (hItems : items > 0) :
+    @EconModel.canAffordStorage QuotaEcon QuotaTransfer _
+      (@EconModel.newServiceEcon QuotaEcon QuotaTransfer _ items bytes gratis bI bL bS)
+      items bytes bI bL bS = false := by
+  simp only [EconModel.newServiceEcon, EconModel.canAffordStorage]
+  simp only [UInt64.toNat_zero, Nat.not_le.mpr hItems, decide_false, Bool.false_and]
+
+/-- After setQuota, a coinless service can afford storage within the granted quotas.
+    This is the key lifecycle property: newServiceEcon → setQuota → canAffordStorage. -/
+theorem quotaEcon_setQuota_then_canAfford
+    (e e' : QuotaEcon) (mi mb : UInt64)
+    (items bytes bI bL bS : Nat)
+    (hSet : @EconModel.setQuota QuotaEcon QuotaTransfer _ e mi mb = some e')
+    (hItems : items ≤ mi.toNat) (hBytes : bytes ≤ mb.toNat) :
+    @EconModel.canAffordStorage QuotaEcon QuotaTransfer _ e' items bytes bI bL bS = true := by
+  simp only [EconModel.setQuota, Option.some.injEq] at hSet
+  subst hSet
+  simp only [EconModel.canAffordStorage, Bool.and_eq_true, decide_eq_true_eq]
+  exact ⟨hItems, hBytes⟩
+
+-- ============================================================================
 -- Serialization size invariants (Merklization correctness)
 -- ============================================================================
 

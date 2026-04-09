@@ -49,6 +49,28 @@ theorem balanceEcon_credit_debit_roundtrip (e e' : BalanceEcon) (amount : UInt64
   next => simp_all
 
 -- ============================================================================
+-- debitTransfer with zero amount
+-- ============================================================================
+
+/-- debitTransfer with zero amount always succeeds and preserves state.
+    This follows from balance ≥ 0 for any UInt64. -/
+theorem balanceEcon_debitTransfer_zero (e : BalanceEcon) :
+    @EconModel.debitTransfer BalanceEcon BalanceTransfer _ e 0 = some e := by
+  show (if e.balance ≥ 0 then some { e with balance := e.balance - 0 } else none) = some e
+  have h0 : e.balance ≥ 0 := Nat.zero_le _
+  simp only [h0, ↓reduceIte, UInt64.sub_zero]
+
+-- ============================================================================
+-- absorbEjected adds balance
+-- ============================================================================
+
+/-- absorbEjected adds the ejected service's balance to the absorber. -/
+theorem balanceEcon_absorbEjected_balance (e ejected : BalanceEcon) :
+    (@EconModel.absorbEjected BalanceEcon BalanceTransfer _ e ejected).balance
+    = e.balance + ejected.balance := by
+  rfl
+
+-- ============================================================================
 -- Serialization size invariants (same as QuotaEcon — both models produce
 -- 16-byte serializeEcon and 24-byte encodeInfo)
 -- ============================================================================
