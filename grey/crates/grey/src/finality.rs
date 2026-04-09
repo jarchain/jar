@@ -702,6 +702,25 @@ fn replay_buffered_votes(
     replayed
 }
 
+/// Build a GRANDPA vote signing message: context ⌢ block_hash ⌢ block_slot ⌢ round.
+fn build_vote_message(
+    vote_type: VoteType,
+    block_hash: &[u8; 32],
+    block_slot: Timeslot,
+    round: u64,
+) -> Vec<u8> {
+    let context = match vote_type {
+        VoteType::Prevote => signing_contexts::PREVOTE,
+        VoteType::Precommit => signing_contexts::PRECOMMIT,
+    };
+    let mut message = Vec::with_capacity(context.len() + 32 + 4 + 8);
+    message.extend_from_slice(context);
+    message.extend_from_slice(block_hash);
+    message.extend_from_slice(&block_slot.to_le_bytes());
+    message.extend_from_slice(&round.to_le_bytes());
+    message
+}
+
 /// Sign a GRANDPA vote.
 fn sign_vote(
     block_hash: &Hash,
@@ -711,17 +730,7 @@ fn sign_vote(
     secrets: &ValidatorSecrets,
     vote_type: VoteType,
 ) -> Vote {
-    let context = match vote_type {
-        VoteType::Prevote => signing_contexts::PREVOTE,
-        VoteType::Precommit => signing_contexts::PRECOMMIT,
-    };
-
-    let mut message = Vec::with_capacity(context.len() + 32 + 4 + 8);
-    message.extend_from_slice(context);
-    message.extend_from_slice(&block_hash.0);
-    message.extend_from_slice(&block_slot.to_le_bytes());
-    message.extend_from_slice(&round.to_le_bytes());
-
+    let message = build_vote_message(vote_type, &block_hash.0, block_slot, round);
     let signature = secrets.ed25519.sign(&message);
 
     Vote {
@@ -740,18 +749,7 @@ pub fn verify_vote(vote: &Vote, vote_type: VoteType, state: &grey_types::state::
         return false;
     }
     let ed25519_key = &state.current_validators[idx].ed25519;
-
-    let context = match vote_type {
-        VoteType::Prevote => signing_contexts::PREVOTE,
-        VoteType::Precommit => signing_contexts::PRECOMMIT,
-    };
-
-    let mut message = Vec::with_capacity(context.len() + 32 + 4 + 8);
-    message.extend_from_slice(context);
-    message.extend_from_slice(&vote.block_hash.0);
-    message.extend_from_slice(&vote.block_slot.to_le_bytes());
-    message.extend_from_slice(&vote.round.to_le_bytes());
-
+    let message = build_vote_message(vote_type, &vote.block_hash.0, vote.block_slot, vote.round);
     grey_crypto::ed25519_verify(ed25519_key, &message, &vote.signature)
 }
 
