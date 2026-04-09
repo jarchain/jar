@@ -28,6 +28,42 @@ const DEFAULT_RATE_LIMIT_MAX_REQUESTS: u64 = 1000;
 /// Rate limit window duration.
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 
+/// Standard Prometheus histogram bucket boundaries for RPC latency (in seconds).
+const LATENCY_BUCKETS: &[f64] = &[0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 5.0];
+
+/// Per-method latency histogram for Prometheus exposition.
+///
+/// Tracks count, sum, and bucket hits for a fixed set of upper bounds.
+pub struct LatencyHistogram {
+    /// Number of observations per bucket (cumulative upper bound).
+    buckets: [u64; 10],
+    /// Total number of observations.
+    count: u64,
+    /// Sum of all observed values (seconds).
+    sum: f64,
+}
+
+impl LatencyHistogram {
+    fn new() -> Self {
+        Self {
+            buckets: [0; 10],
+            count: 0,
+            sum: 0.0,
+        }
+    }
+
+    fn observe(&mut self, seconds: f64) {
+        self.count += 1;
+        self.sum += seconds;
+        for (i, &bound) in LATENCY_BUCKETS.iter().enumerate() {
+            if seconds <= bound {
+                self.buckets[i] += 1;
+                return;
+            }
+        }
+    }
+}
+
 /// Commands sent from RPC to the node event loop.
 #[derive(Debug)]
 pub enum RpcCommand {
@@ -72,6 +108,9 @@ pub struct RpcState {
     pub work_packages_submitted: std::sync::atomic::AtomicU64,
     /// Per-method RPC request counts for Prometheus metrics.
     pub request_counts: std::sync::Mutex<std::collections::HashMap<String, u64>>,
+    /// Per-method RPC request latency observations for Prometheus histogram.
+    pub request_latencies:
+        Arc<std::sync::Mutex<std::collections::HashMap<String, LatencyHistogram>>>,
     /// Total RPC requests received (all methods).
     pub rpc_requests_total: std::sync::atomic::AtomicU64,
     /// Gossipsub messages received per topic.
@@ -220,10 +259,33 @@ struct RpcImpl {
     state: Arc<RpcState>,
 }
 
+/// Guard that records RPC request latency on drop.
+struct LatencyGuard {
+    method: String,
+    start: std::time::Instant,
+    latencies: Arc<std::sync::Mutex<std::collections::HashMap<String, LatencyHistogram>>>,
+}
+
+impl Drop for LatencyGuard {
+    fn drop(&mut self) {
+        let seconds = self.start.elapsed().as_secs_f64();
+        if let Ok(mut map) = self.latencies.lock() {
+            map.entry(self.method.clone())
+                .or_insert_with(LatencyHistogram::new)
+                .observe(seconds);
+        }
+    }
+}
+
 impl RpcImpl {
-    fn track_request(&self, method: &str) {
+    fn track_request(&self, method: &str) -> LatencyGuard {
         if let Ok(mut counts) = self.state.request_counts.lock() {
             *counts.entry(method.to_string()).or_insert(0) += 1;
+        }
+        LatencyGuard {
+            method: method.to_string(),
+            start: std::time::Instant::now(),
+            latencies: Arc::clone(&self.state.request_latencies),
         }
     }
 }
@@ -263,13 +325,13 @@ fn parse_hash_hex(hex_str: &str) -> Result<Hash, ErrorObjectOwned> {
 #[async_trait]
 impl JamRpcServer for RpcImpl {
     async fn get_status(&self) -> Result<serde_json::Value, ErrorObjectOwned> {
-        self.track_request("jam_getStatus");
+        let _latency = self.track_request("jam_getStatus");
         let status = self.state.status.read().await;
         serde_json::to_value(&*status).map_internal_err()
     }
 
     async fn get_head(&self) -> Result<serde_json::Value, ErrorObjectOwned> {
-        self.track_request("jam_getHead");
+        let _latency = self.track_request("jam_getHead");
         match self.state.store.get_head() {
             Ok((hash, slot)) => Ok(serde_json::json!({
                 "hash": hex::encode(hash.0),
@@ -283,7 +345,7 @@ impl JamRpcServer for RpcImpl {
     }
 
     async fn get_block(&self, hash_hex: String) -> Result<serde_json::Value, ErrorObjectOwned> {
-        self.track_request("jam_getBlock");
+        let _latency = self.track_request("jam_getBlock");
         let hash = parse_hash_hex(&hash_hex)?;
 
         match self.state.store.get_block(&hash) {
@@ -303,7 +365,7 @@ impl JamRpcServer for RpcImpl {
     }
 
     async fn get_block_by_slot(&self, slot: u32) -> Result<serde_json::Value, ErrorObjectOwned> {
-        self.track_request("jam_getBlockBySlot");
+        let _latency = self.track_request("jam_getBlockBySlot");
         match self.state.store.get_block_hash_by_slot(slot) {
             Ok(hash) => Ok(serde_json::json!({
                 "hash": hex::encode(hash.0),
@@ -318,7 +380,7 @@ impl JamRpcServer for RpcImpl {
         &self,
         data_hex: String,
     ) -> Result<serde_json::Value, ErrorObjectOwned> {
-        self.track_request("jam_submitWorkPackage");
+        let _latency = self.track_request("jam_submitWorkPackage");
         let data = grey_types::decode_hex(&data_hex)
             .map_err(|e| internal_error(format!("invalid hex: {}", e)))?;
 
@@ -362,7 +424,7 @@ impl JamRpcServer for RpcImpl {
     }
 
     async fn get_finalized(&self) -> Result<serde_json::Value, ErrorObjectOwned> {
-        self.track_request("jam_getFinalized");
+        let _latency = self.track_request("jam_getFinalized");
         match self.state.store.get_finalized() {
             Ok((hash, slot)) => Ok(serde_json::json!({
                 "hash": hex::encode(hash.0),
@@ -380,7 +442,7 @@ impl JamRpcServer for RpcImpl {
         service_id: u32,
         key_hex: String,
     ) -> Result<serde_json::Value, ErrorObjectOwned> {
-        self.track_request("jam_readStorage");
+        let _latency = self.track_request("jam_readStorage");
         let (head_hash, head_slot) = self.state.store.get_head().map_internal_err()?;
 
         let key_bytes = grey_types::decode_hex(&key_hex)
@@ -412,7 +474,7 @@ impl JamRpcServer for RpcImpl {
     }
 
     async fn get_context(&self, service_id: u32) -> Result<serde_json::Value, ErrorObjectOwned> {
-        self.track_request("jam_getContext");
+        let _latency = self.track_request("jam_getContext");
         let (head_hash, head_slot) = self.state.store.get_head().map_internal_err()?;
 
         // Get block header for state_root
@@ -449,7 +511,7 @@ impl JamRpcServer for RpcImpl {
         &self,
         service_id: u32,
     ) -> Result<serde_json::Value, ErrorObjectOwned> {
-        self.track_request("jam_getServiceAccount");
+        let _latency = self.track_request("jam_getServiceAccount");
         let (head_hash, head_slot) = self.state.store.get_head().map_internal_err()?;
 
         match self
@@ -477,7 +539,7 @@ impl JamRpcServer for RpcImpl {
     }
 
     async fn get_chain_spec(&self) -> Result<serde_json::Value, ErrorObjectOwned> {
-        self.track_request("jam_getChainSpec");
+        let _latency = self.track_request("jam_getChainSpec");
         let c = &self.state.config;
         let config_blob = c.encode_config_blob();
         let genesis_hash = grey_crypto::blake2b_256(&config_blob);
@@ -507,7 +569,7 @@ impl JamRpcServer for RpcImpl {
         &self,
         block_hash_hex: Option<String>,
     ) -> Result<serde_json::Value, ErrorObjectOwned> {
-        self.track_request("jam_getStateSummary");
+        let _latency = self.track_request("jam_getStateSummary");
         // Resolve block hash: use provided hash or default to head
         let (block_hash, slot) = if let Some(hex) = block_hash_hex {
             let hash = parse_hash_hex(&hex)?;
@@ -562,7 +624,7 @@ impl JamRpcServer for RpcImpl {
         &self,
         set: Option<String>,
     ) -> Result<serde_json::Value, ErrorObjectOwned> {
-        self.track_request("jam_getValidators");
+        let _latency = self.track_request("jam_getValidators");
         let set_name = set.as_deref().unwrap_or("current");
 
         // Component indices: 7=pending (ι), 8=current (κ), 9=previous (λ)
@@ -625,7 +687,7 @@ impl JamRpcServer for RpcImpl {
         from_slot: u32,
         to_slot: u32,
     ) -> Result<serde_json::Value, ErrorObjectOwned> {
-        self.track_request("jam_getBlockRange");
+        let _latency = self.track_request("jam_getBlockRange");
         if to_slot < from_slot {
             return Err(internal_error("to_slot must be >= from_slot"));
         }
@@ -654,7 +716,7 @@ impl JamRpcServer for RpcImpl {
     }
 
     async fn get_peers(&self) -> Result<serde_json::Value, ErrorObjectOwned> {
-        self.track_request("jam_getPeers");
+        let _latency = self.track_request("jam_getPeers");
         let peer_count = self
             .state
             .peer_count
@@ -1098,6 +1160,37 @@ pub async fn format_metrics(state: &RpcState) -> String {
         }
     }
 
+    // Append per-method RPC latency histogram
+    if let Ok(latencies) = state.request_latencies.lock()
+        && !latencies.is_empty()
+    {
+        base.push_str("# HELP grey_rpc_request_seconds RPC request latency per method.\n");
+        base.push_str("# TYPE grey_rpc_request_seconds histogram\n");
+        let mut sorted: Vec<_> = latencies.iter().collect();
+        sorted.sort_by_key(|(k, _)| (*k).clone());
+        for (method, hist) in sorted {
+            let mut cumulative = 0u64;
+            for (i, &bound) in LATENCY_BUCKETS.iter().enumerate() {
+                cumulative += hist.buckets[i];
+                base.push_str(&format!(
+                    "grey_rpc_request_seconds_bucket{{method=\"{method}\",le=\"{bound}\"}} {cumulative}\n"
+                ));
+            }
+            base.push_str(&format!(
+                "grey_rpc_request_seconds_bucket{{method=\"{method}\",le=\"+Inf\"}} {}\n",
+                hist.count
+            ));
+            base.push_str(&format!(
+                "grey_rpc_request_seconds_sum{{method=\"{method}\"}} {:.6}\n",
+                hist.sum
+            ));
+            base.push_str(&format!(
+                "grey_rpc_request_seconds_count{{method=\"{method}\"}} {}\n",
+                hist.count
+            ));
+        }
+    }
+
     base
 }
 
@@ -1256,6 +1349,7 @@ pub fn create_rpc_channel(
         pending_blocks_depth: std::sync::atomic::AtomicU32::new(0),
         work_packages_submitted: std::sync::atomic::AtomicU64::new(0),
         request_counts: std::sync::Mutex::new(std::collections::HashMap::new()),
+        request_latencies: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         rpc_requests_total: std::sync::atomic::AtomicU64::new(0),
         gossip_blocks_received: std::sync::atomic::AtomicU64::new(0),
         gossip_finality_received: std::sync::atomic::AtomicU64::new(0),
@@ -2323,5 +2417,64 @@ mod tests {
         let body = format_metrics(&state).await;
         assert!(body.contains("grey_pvm_gas_used_total 50000"));
         assert!(body.contains("grey_work_packages_accumulated_total 7"));
+    }
+
+    #[tokio::test]
+    async fn test_rpc_latency_histogram() {
+        let (url, state, _rx, _store, _dir) = setup().await;
+        let client = HttpClientBuilder::default().build(&url).unwrap();
+
+        // Make a few requests to generate latency data
+        let _: serde_json::Value = client
+            .request("jam_getStatus", rpc_params![])
+            .await
+            .unwrap();
+        let _: serde_json::Value = client
+            .request("jam_getStatus", rpc_params![])
+            .await
+            .unwrap();
+
+        let body = format_metrics(&state).await;
+        assert!(
+            body.contains("# HELP grey_rpc_request_seconds"),
+            "should have histogram HELP"
+        );
+        assert!(
+            body.contains("# TYPE grey_rpc_request_seconds histogram"),
+            "should have histogram TYPE"
+        );
+        assert!(
+            body.contains(
+                "grey_rpc_request_seconds_bucket{method=\"jam_getStatus\",le=\"+Inf\"} 2"
+            ),
+            "should have +Inf bucket with count 2"
+        );
+        assert!(
+            body.contains("grey_rpc_request_seconds_count{method=\"jam_getStatus\"} 2"),
+            "should have count 2"
+        );
+        assert!(
+            body.contains("grey_rpc_request_seconds_sum{method=\"jam_getStatus\"}"),
+            "should have sum"
+        );
+    }
+
+    #[test]
+    fn test_latency_histogram_observe() {
+        let mut hist = LatencyHistogram::new();
+        hist.observe(0.003); // fits in 0.005 bucket
+        hist.observe(0.02); // fits in 0.025 bucket
+        hist.observe(2.0); // fits in 5.0 bucket
+
+        assert_eq!(hist.count, 3);
+        assert!((hist.sum - 2.023).abs() < 0.001);
+        // Bucket[0] = 0.001: 0 observations <= 0.001
+        assert_eq!(hist.buckets[0], 0);
+        // Bucket[1] = 0.005: 1 observation (0.003)
+        assert_eq!(hist.buckets[1], 1);
+        // Bucket[3] = 0.025: 1 observation (0.02)
+        assert_eq!(hist.buckets[3], 1);
+        // Bucket[9] = 5.0: 1 observation (2.0)
+        assert_eq!(hist.buckets[9], 1);
     }
 }
