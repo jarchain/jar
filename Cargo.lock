@@ -1642,6 +1642,7 @@ dependencies = [
  "grey-crypto",
  "grey-types",
  "libp2p",
+ "proptest",
  "serde",
  "serde_json",
  "tokio",
