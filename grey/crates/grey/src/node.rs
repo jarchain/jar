@@ -788,6 +788,11 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                                 );
                                 grandpa.update_best_block(header_hash, &audit_state.completed_audits);
 
+                                // TODO(§17): when block equivocation evidence arrives from the
+                                // network and a quorum of validators has countersigned it, call:
+                                //   crate::disputes::report_loser(losing_block_hash, &mut grandpa);
+                                // This un-poisons the slot and lets the surviving fork finalize.
+
                                 // Send prevote for the new block
                                 if let Some(prevote_msg) = grandpa.create_prevote(
                                     config.validator_index,
@@ -1033,6 +1038,8 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                                         imported_report_hashes,
                                     );
                                     grandpa.update_best_block(import_hash, &audit_state.completed_audits);
+                                    // TODO(§17): same as above — wire crate::disputes::report_loser
+                                    // here once the block equivocation reporting protocol exists.
                                     if let Some(prevote_msg) = grandpa.create_prevote(
                                         config.validator_index,
                                         my_secrets,

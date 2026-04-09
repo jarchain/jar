@@ -8,6 +8,8 @@ mod audit;
 mod chainspec;
 mod config;
 #[allow(dead_code)]
+mod disputes;
+#[allow(dead_code)]
 mod finality;
 mod guarantor;
 #[allow(dead_code)]
