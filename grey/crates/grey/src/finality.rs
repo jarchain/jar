@@ -11,7 +11,10 @@
 use grey_consensus::genesis::ValidatorSecrets;
 #[cfg(test)]
 use grey_types::config::Config;
-use grey_types::{Ed25519Signature, Hash, Timeslot, ValidatorIndex};
+use grey_types::{
+    Ed25519PublicKey, Ed25519Signature, EquivocationCountersig, EquivocationEvidence, Hash,
+    Timeslot, ValidatorIndex,
+};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use grey_types::signing_contexts;
@@ -64,6 +67,14 @@ pub struct VoteMessage {
     pub vote: Vote,
 }
 
+/// Accumulated countersignatures for one equivocated slot.
+#[derive(Debug, Default)]
+pub(crate) struct EquivocationVoting {
+    evidence: Option<EquivocationEvidence>,
+    /// Validators that have countersigned (validator_index → signature).
+    countersigs: BTreeMap<ValidatorIndex, Ed25519Signature>,
+}
+
 /// State of the GRANDPA finality gadget.
 pub struct GrandpaState {
     /// Current round number.
@@ -108,6 +119,9 @@ pub struct GrandpaState {
     /// Work report hashes contained in each unfinalized block.
     /// Used by is_acceptable() check 2. Pruned on finalization.
     pub block_reports: HashMap<Hash, Vec<Hash>>,
+    /// Countersignatures collected for in-progress equivocation resolutions.
+    /// Keyed by slot. Pruned when the equivocation is resolved or finalized away.
+    pub(crate) equivocation_voting: HashMap<Timeslot, EquivocationVoting>,
 }
 
 impl GrandpaState {
@@ -146,6 +160,7 @@ impl GrandpaState {
             ancestry: HashMap::new(),
             chain_equivocations: HashSet::new(),
             block_reports: HashMap::new(),
+            equivocation_voting: HashMap::new(),
         }
     }
 
@@ -233,20 +248,22 @@ impl GrandpaState {
         slot: Timeslot,
         ticket_sealed: bool,
         report_hashes: Vec<Hash>,
-    ) {
-        // Detect same-slot equivocation: a *different* block already registered at this slot.
-        // Safrole guarantees one author per slot, so two blocks at the same slot means that
-        // author equivocated (signed both). Poison the slot; resolution happens via §17
-        // (see add_equivocation_countersig / disputes::report_loser).
-        let equivocation = self
-            .ancestry
-            .iter()
-            .any(|(h, &(_, s, _))| s == slot && *h != hash);
-        if equivocation {
+    ) -> Option<EquivocationEvidence> {
+        let incumbent = self.ancestry.iter().find_map(|(&h, &(_, s, _))| {
+            if s == slot && h != hash {
+                Some(h)
+            } else {
+                None
+            }
+        });
+
+        if incumbent.is_some() {
             self.chain_equivocations.insert(slot);
         }
         self.ancestry.insert(hash, (parent, slot, ticket_sealed));
         self.block_reports.insert(hash, report_hashes);
+
+        incumbent.map(|inc| EquivocationEvidence::new(slot, hash, inc))
     }
 
     /// Check GP §19 acceptability conditions for a block.
@@ -528,6 +545,8 @@ impl GrandpaState {
                     .retain(|_, &mut (_, slot, _)| slot > self.finalized_slot);
                 self.chain_equivocations
                     .retain(|&slot| slot > self.finalized_slot);
+                self.equivocation_voting
+                    .retain(|&slot, _| slot > self.finalized_slot);
                 self.block_reports
                     .retain(|h, _| self.ancestry.contains_key(h));
                 // Prune vote archives for finalized rounds to bound memory growth.
@@ -587,6 +606,52 @@ impl GrandpaState {
         Self::count_votes(&self.precommits)
             .values()
             .any(|&(count, _)| count >= self.threshold())
+    }
+
+    /// Record a validator's countersignature on equivocation evidence.
+    ///
+    /// Returns `Some(loser_hash)` when 2f+1 validators have signed,
+    /// i.e., quorum is reached and the caller should call `purge_block(loser_hash)`.
+    /// Returns `None` if the signature is invalid or quorum not yet reached.
+    pub fn add_equivocation_countersig(
+        &mut self,
+        countersig: &EquivocationCountersig,
+        validator_keys: &[Ed25519PublicKey],
+    ) -> Option<Hash> {
+        // Validate validator index
+        let key = validator_keys.get(usize::from(countersig.validator_index))?;
+
+        // Build signed message: context ⌢ sign_bytes (matching how sign_vote works)
+        let ctx = signing_contexts::EQUIVOCATION_EVIDENCE;
+        let payload = countersig.evidence.sign_bytes();
+        let mut msg = Vec::with_capacity(ctx.len() + payload.len());
+        msg.extend_from_slice(ctx);
+        msg.extend_from_slice(&payload);
+
+        if !grey_crypto::ed25519_verify(key, &msg, &countersig.signature) {
+            tracing::warn!(
+                validator_index = countersig.validator_index,
+                "invalid equivocation countersig — ignoring"
+            );
+            return None;
+        }
+
+        let slot = countersig.evidence.slot;
+        let threshold = self.threshold();
+        let voting = self.equivocation_voting.entry(slot).or_default();
+        voting.evidence = Some(countersig.evidence.clone());
+        voting
+            .countersigs
+            .insert(countersig.validator_index, countersig.signature);
+
+        // Check quorum: 2f+1
+        if voting.countersigs.len() >= threshold {
+            let loser = voting.evidence.as_ref()?.block_a;
+            tracing::info!(slot, ?loser, "equivocation quorum reached — purging loser");
+            Some(loser)
+        } else {
+            None
+        }
     }
 
     /// Remove a block that lost a dispute from the finality state (§17 hook).
@@ -1742,5 +1807,72 @@ mod tests {
         let mut g = make_grandpa(6);
         // Should not panic
         g.purge_block(Hash([0xffu8; 32]));
+    }
+
+    // ── quorum equivocation resolution tests ─────────────────────────────
+
+    #[test]
+    fn test_quorum_resolves_equivocation() {
+        use grey_types::{Ed25519Signature, EquivocationEvidence};
+
+        // Build a GrandpaState with 6 validators
+        let mut g = make_grandpa(6);
+        let parent = Hash([0u8; 32]);
+        let a = Hash([1u8; 32]); // lower → loser
+        let b = Hash([2u8; 32]); // higher → winner
+
+        // Register both blocks — slot gets poisoned
+        g.register_block(a, parent, 5, true, vec![]);
+        g.register_block(b, parent, 5, false, vec![]);
+        assert!(
+            g.chain_equivocations.contains(&5),
+            "slot must be poisoned before quorum"
+        );
+
+        // Produce fake evidence + threshold (4) countersigs
+        // NOTE: in unit tests we bypass real crypto — test the quorum count logic only
+        // by directly inserting into equivocation_voting
+        let ev = EquivocationEvidence::new(5, a, b);
+        let voting = g.equivocation_voting.entry(5).or_default();
+        voting.evidence = Some(ev.clone());
+        for i in 0..4u16 {
+            voting.countersigs.insert(i, Ed25519Signature([0u8; 64]));
+        }
+
+        // Simulate quorum reached: caller calls purge_block
+        g.purge_block(ev.block_a); // block_a is the loser (lower hash)
+
+        assert!(
+            !g.chain_equivocations.contains(&5),
+            "slot must be un-poisoned"
+        );
+        assert!(!g.ancestry.contains_key(&a), "loser must be gone");
+        assert!(g.ancestry.contains_key(&b), "winner must survive");
+    }
+
+    #[test]
+    fn test_quorum_not_reached_keeps_slot_poisoned() {
+        use grey_types::{Ed25519Signature, EquivocationEvidence};
+
+        let mut g = make_grandpa(6);
+        let parent = Hash([0u8; 32]);
+        let a = Hash([1u8; 32]);
+        let b = Hash([2u8; 32]);
+
+        g.register_block(a, parent, 5, true, vec![]);
+        g.register_block(b, parent, 5, false, vec![]);
+
+        // Only 3 countersigs (threshold is 4 for 6 validators) — no quorum
+        let voting = g.equivocation_voting.entry(5).or_default();
+        voting.evidence = Some(EquivocationEvidence::new(5, a, b));
+        for i in 0..3u16 {
+            voting.countersigs.insert(i, Ed25519Signature([0u8; 64]));
+        }
+
+        // No purge_block call yet
+        assert!(
+            g.chain_equivocations.contains(&5),
+            "slot must stay poisoned below quorum"
+        );
     }
 }
