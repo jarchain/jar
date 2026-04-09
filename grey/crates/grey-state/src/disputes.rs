@@ -10,13 +10,12 @@ use grey_types::{Ed25519PublicKey, Hash, signing_contexts};
 use std::collections::BTreeSet;
 
 /// Check that a slice is strictly sorted (no duplicates).
-fn check_sorted_unique<T: Ord>(items: &[T], err: DisputeError) -> Result<(), DisputeError> {
-    for w in items.windows(2) {
-        if w[0] >= w[1] {
-            return Err(err);
-        }
+fn check_sorted_unique<T: Ord + Clone>(items: &[T], err: DisputeError) -> Result<(), DisputeError> {
+    if crate::is_strictly_sorted_by_key(items, |x| x.clone()) {
+        Ok(())
+    } else {
+        Err(err)
     }
-    Ok(())
 }
 
 /// Error type for disputes validation.
