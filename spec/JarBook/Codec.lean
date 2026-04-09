@@ -116,6 +116,46 @@ Numeric fields (service IDs, gas values, etc.) use fixed-width LE encoding throu
 
 {docstring Jar.Codec.Jar1.encodeLengthPrefixed}
 
+## jar1 Extrinsic Encoders
+
+{docstring Jar.Codec.Jar1.encodeTicket}
+
+{docstring Jar.Codec.Jar1.encodeTicketProof}
+
+{docstring Jar.Codec.Jar1.encodeAssurance}
+
+{docstring Jar.Codec.Jar1.encodeJudgment}
+
+{docstring Jar.Codec.Jar1.encodeVerdict}
+
+{docstring Jar.Codec.Jar1.encodeCulprit}
+
+{docstring Jar.Codec.Jar1.encodeFault}
+
+{docstring Jar.Codec.Jar1.encodeDisputes}
+
+{docstring Jar.Codec.Jar1.encodePreimages}
+
+## jar1 Work Type Encoders
+
+{docstring Jar.Codec.Jar1.encodeAvailSpec}
+
+{docstring Jar.Codec.Jar1.encodeRefinementContext}
+
+{docstring Jar.Codec.Jar1.encodeWorkDigest}
+
 {docstring Jar.Codec.Jar1.encodeWorkReport}
+
+{docstring Jar.Codec.Jar1.encodeGuarantee}
+
+## jar1 Block Encoders
+
+{docstring Jar.Codec.Jar1.encodeEpochMarker}
+
+{docstring Jar.Codec.Jar1.encodeUnsignedHeader}
+
+{docstring Jar.Codec.Jar1.encodeHeader}
+
+{docstring Jar.Codec.Jar1.encodeExtrinsic}
 
 {docstring Jar.Codec.Jar1.encodeBlock}
