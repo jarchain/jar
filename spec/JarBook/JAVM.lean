@@ -139,11 +139,71 @@ In jar1, the JAVM is configured differently from the base Gray Paper PVM specifi
 
 {docstring Jar.JAVM.sext}
 
+{docstring Jar.JAVM.sext32}
+
 {docstring Jar.JAVM.toSigned}
 
 {docstring Jar.JAVM.toUnsigned}
 
 {docstring Jar.JAVM.djump}
+
+## Register Extraction
+
+{docstring Jar.JAVM.regA}
+
+{docstring Jar.JAVM.regB}
+
+{docstring Jar.JAVM.regD}
+
+## Immediate Extraction
+
+{docstring Jar.JAVM.readImmBytes}
+
+{docstring Jar.JAVM.readSignedAt}
+
+{docstring Jar.JAVM.extractImm}
+
+{docstring Jar.JAVM.extractImm64}
+
+{docstring Jar.JAVM.extractOffset}
+
+## Operand Format Decoders
+
+{docstring Jar.JAVM.extractOneImm}
+
+{docstring Jar.JAVM.extractRegImm}
+
+{docstring Jar.JAVM.extractRegImmOffset}
+
+{docstring Jar.JAVM.extractRegTwoImm}
+
+{docstring Jar.JAVM.extractTwoImm}
+
+{docstring Jar.JAVM.extractTwoRegImm}
+
+{docstring Jar.JAVM.extractTwoRegOffset}
+
+{docstring Jar.JAVM.extractTwoRegTwoImm}
+
+## Decode Utilities
+
+{docstring Jar.JAVM.skipDistance}
+
+{docstring Jar.JAVM.isTerminator}
+
+{docstring Jar.JAVM.zeta}
+
+{docstring Jar.JAVM.bitmaskGet}
+
+{docstring Jar.JAVM.decodeLEn}
+
+{docstring Jar.JAVM.decodeJamNatural}
+
+{docstring Jar.JAVM.decodeDeBlobNat}
+
+{docstring Jar.JAVM.gasPerPage}
+
+{docstring Jar.JAVM.computeMemCycles}
 
 # Host-Call Result Sentinels (Appendix B)
 
@@ -167,6 +227,14 @@ and sub-blobs for CODE caps.
 {docstring Jar.JAVM.parseCodeSubBlob}
 
 # Instruction Execution (Appendix A.6)
+
+{docstring Jar.JAVM.getReg}
+
+{docstring Jar.JAVM.setReg}
+
+{docstring Jar.JAVM.nextPC}
+
+{docstring Jar.JAVM.opcodeName}
 
 {docstring Jar.JAVM.StepResult}
 
@@ -214,6 +282,39 @@ unit requirements.
 {docstring Jar.JAVM.branchCost}
 
 {docstring Jar.JAVM.instructionCost}
+
+## Full Pipeline Gas Model
+
+The full pipeline gas model simulates an out-of-order processor with a
+reorder buffer (ROB), tracking instruction decode, dispatch, execution,
+and retirement. This is the reference model — it produces the same results
+as single-pass for the rv64em ISA but at higher computational cost.
+
+{docstring Jar.JAVM.RobEntry}
+
+{docstring Jar.JAVM.RobState}
+
+{docstring Jar.JAVM.GasSimState}
+
+{docstring Jar.JAVM.canDecode}
+
+{docstring Jar.JAVM.decodeInstr}
+
+{docstring Jar.JAVM.canDispatch}
+
+{docstring Jar.JAVM.dispatch}
+
+{docstring Jar.JAVM.findReadyEntry}
+
+{docstring Jar.JAVM.allDepsFinished}
+
+{docstring Jar.JAVM.advanceCycle}
+
+{docstring Jar.JAVM.robAllFinished}
+
+{docstring Jar.JAVM.gasCostForBlockFull}
+
+## Single-Pass Gas Model
 
 In jar1, gas costs are computed by the single-pass model — an O(n) pipeline
 simulation that tracks per-register readiness cycles. This omits execution unit
