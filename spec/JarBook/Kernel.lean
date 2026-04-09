@@ -22,11 +22,19 @@ context switches within the kernel.
 
 # Kernel State
 
+{docstring CodeCapData}
+
+{docstring BackingStore}
+
 {docstring KernelState}
 
 The kernel maintains a pool of VM instances, a call stack for CALL/REPLY
 routing, compiled CODE caps, a shared backing store for physical pages,
 and the UNTYPED bump allocator.
+
+{docstring KernelState.chargeGas}
+
+{docstring KernelState.activeGas}
 
 # Kernel Results
 
@@ -51,12 +59,16 @@ HANDLE's target VM is accessible (non-RUNNING, non-WAITING).
 
 {docstring resolveCapRef}
 
+{docstring resolveOrWhat}
+
 # CALL and REPLY
 
 CALL on a HANDLE or CALLABLE suspends the caller (RUNNING to WAITING\_FOR\_REPLY),
 transfers gas to the callee, and starts the callee (IDLE to RUNNING). Arguments
 pass via phi\[7..10\]. REPLY pops the call frame, returns unused gas, and resumes
 the caller.
+
+{docstring handleVmFaultWith}
 
 # VM Creation (RETYPE + CREATE)
 
