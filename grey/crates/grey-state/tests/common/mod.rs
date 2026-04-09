@@ -325,3 +325,16 @@ macro_rules! discover_all_test {
         }
     };
 }
+
+/// Generate a named test that runs a single STF test vector through a runner function.
+///
+/// Usage: `stf_test!(test_name, "vector-stem", DIR, run_my_test);`
+#[macro_export]
+macro_rules! stf_test {
+    ($name:ident, $stem:expr, $dir:expr, $runner:path) => {
+        #[test]
+        fn $name() {
+            $runner($dir, $stem);
+        }
+    };
+}

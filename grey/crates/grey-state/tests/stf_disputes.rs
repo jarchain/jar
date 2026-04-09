@@ -193,65 +193,180 @@ fn run_disputes_test(dir: &str, stem: &str) {
 
 const DIR: &str = "../../../spec/tests/vectors/disputes";
 
-// Generate test functions for all dispute test vectors
-macro_rules! dispute_test {
-    ($name:ident, $stem:expr) => {
-        #[test]
-        fn $name() {
-            run_disputes_test(DIR, $stem);
-        }
-    };
-}
+stf_test!(
+    test_disputes_verdicts_1,
+    "progress_with_verdicts-1",
+    DIR,
+    run_disputes_test
+);
+stf_test!(
+    test_disputes_verdicts_2,
+    "progress_with_verdicts-2",
+    DIR,
+    run_disputes_test
+);
+stf_test!(
+    test_disputes_verdicts_3,
+    "progress_with_verdicts-3",
+    DIR,
+    run_disputes_test
+);
+stf_test!(
+    test_disputes_verdicts_4,
+    "progress_with_verdicts-4",
+    DIR,
+    run_disputes_test
+);
+stf_test!(
+    test_disputes_verdicts_5,
+    "progress_with_verdicts-5",
+    DIR,
+    run_disputes_test
+);
+stf_test!(
+    test_disputes_verdicts_6,
+    "progress_with_verdicts-6",
+    DIR,
+    run_disputes_test
+);
 
-dispute_test!(test_disputes_verdicts_1, "progress_with_verdicts-1");
-dispute_test!(test_disputes_verdicts_2, "progress_with_verdicts-2");
-dispute_test!(test_disputes_verdicts_3, "progress_with_verdicts-3");
-dispute_test!(test_disputes_verdicts_4, "progress_with_verdicts-4");
-dispute_test!(test_disputes_verdicts_5, "progress_with_verdicts-5");
-dispute_test!(test_disputes_verdicts_6, "progress_with_verdicts-6");
+stf_test!(
+    test_disputes_culprits_1,
+    "progress_with_culprits-1",
+    DIR,
+    run_disputes_test
+);
+stf_test!(
+    test_disputes_culprits_2,
+    "progress_with_culprits-2",
+    DIR,
+    run_disputes_test
+);
+stf_test!(
+    test_disputes_culprits_3,
+    "progress_with_culprits-3",
+    DIR,
+    run_disputes_test
+);
+stf_test!(
+    test_disputes_culprits_4,
+    "progress_with_culprits-4",
+    DIR,
+    run_disputes_test
+);
+stf_test!(
+    test_disputes_culprits_5,
+    "progress_with_culprits-5",
+    DIR,
+    run_disputes_test
+);
+stf_test!(
+    test_disputes_culprits_6,
+    "progress_with_culprits-6",
+    DIR,
+    run_disputes_test
+);
+stf_test!(
+    test_disputes_culprits_7,
+    "progress_with_culprits-7",
+    DIR,
+    run_disputes_test
+);
 
-dispute_test!(test_disputes_culprits_1, "progress_with_culprits-1");
-dispute_test!(test_disputes_culprits_2, "progress_with_culprits-2");
-dispute_test!(test_disputes_culprits_3, "progress_with_culprits-3");
-dispute_test!(test_disputes_culprits_4, "progress_with_culprits-4");
-dispute_test!(test_disputes_culprits_5, "progress_with_culprits-5");
-dispute_test!(test_disputes_culprits_6, "progress_with_culprits-6");
-dispute_test!(test_disputes_culprits_7, "progress_with_culprits-7");
+stf_test!(
+    test_disputes_faults_1,
+    "progress_with_faults-1",
+    DIR,
+    run_disputes_test
+);
+stf_test!(
+    test_disputes_faults_2,
+    "progress_with_faults-2",
+    DIR,
+    run_disputes_test
+);
+stf_test!(
+    test_disputes_faults_3,
+    "progress_with_faults-3",
+    DIR,
+    run_disputes_test
+);
+stf_test!(
+    test_disputes_faults_4,
+    "progress_with_faults-4",
+    DIR,
+    run_disputes_test
+);
+stf_test!(
+    test_disputes_faults_5,
+    "progress_with_faults-5",
+    DIR,
+    run_disputes_test
+);
+stf_test!(
+    test_disputes_faults_6,
+    "progress_with_faults-6",
+    DIR,
+    run_disputes_test
+);
+stf_test!(
+    test_disputes_faults_7,
+    "progress_with_faults-7",
+    DIR,
+    run_disputes_test
+);
 
-dispute_test!(test_disputes_faults_1, "progress_with_faults-1");
-dispute_test!(test_disputes_faults_2, "progress_with_faults-2");
-dispute_test!(test_disputes_faults_3, "progress_with_faults-3");
-dispute_test!(test_disputes_faults_4, "progress_with_faults-4");
-dispute_test!(test_disputes_faults_5, "progress_with_faults-5");
-dispute_test!(test_disputes_faults_6, "progress_with_faults-6");
-dispute_test!(test_disputes_faults_7, "progress_with_faults-7");
-
-dispute_test!(
+stf_test!(
     test_disputes_bad_signatures_1,
-    "progress_with_bad_signatures-1"
+    "progress_with_bad_signatures-1",
+    DIR,
+    run_disputes_test
 );
-dispute_test!(
+stf_test!(
     test_disputes_bad_signatures_2,
-    "progress_with_bad_signatures-2"
+    "progress_with_bad_signatures-2",
+    DIR,
+    run_disputes_test
 );
 
-dispute_test!(test_disputes_invalid_keys_1, "progress_with_invalid_keys-1");
-dispute_test!(test_disputes_invalid_keys_2, "progress_with_invalid_keys-2");
+stf_test!(
+    test_disputes_invalid_keys_1,
+    "progress_with_invalid_keys-1",
+    DIR,
+    run_disputes_test
+);
+stf_test!(
+    test_disputes_invalid_keys_2,
+    "progress_with_invalid_keys-2",
+    DIR,
+    run_disputes_test
+);
 
-dispute_test!(test_disputes_no_verdicts_1, "progress_with_no_verdicts-1");
+stf_test!(
+    test_disputes_no_verdicts_1,
+    "progress_with_no_verdicts-1",
+    DIR,
+    run_disputes_test
+);
 
-dispute_test!(
+stf_test!(
     test_disputes_prev_set_sigs_1,
-    "progress_with_verdict_signatures_from_previous_set-1"
+    "progress_with_verdict_signatures_from_previous_set-1",
+    DIR,
+    run_disputes_test
 );
-dispute_test!(
+stf_test!(
     test_disputes_prev_set_sigs_2,
-    "progress_with_verdict_signatures_from_previous_set-2"
+    "progress_with_verdict_signatures_from_previous_set-2",
+    DIR,
+    run_disputes_test
 );
 
-dispute_test!(
+stf_test!(
     test_disputes_invalidates_avail_1,
-    "progress_invalidates_avail_assignments-1"
+    "progress_invalidates_avail_assignments-1",
+    DIR,
+    run_disputes_test
 );
 
 discover_all_test!(DIR, run_disputes_test);

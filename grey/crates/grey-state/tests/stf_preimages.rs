@@ -157,22 +157,53 @@ fn run_preimages_test(dir: &str, stem: &str) {
 
 const DIR: &str = "../../../spec/tests/vectors/preimages";
 
-macro_rules! preimage_test {
-    ($name:ident, $stem:expr) => {
-        #[test]
-        fn $name() {
-            run_preimages_test(DIR, $stem);
-        }
-    };
-}
-
-preimage_test!(test_preimage_needed_1, "preimage_needed-1");
-preimage_test!(test_preimage_needed_2, "preimage_needed-2");
-preimage_test!(test_preimage_not_needed_1, "preimage_not_needed-1");
-preimage_test!(test_preimage_not_needed_2, "preimage_not_needed-2");
-preimage_test!(test_preimages_order_check_1, "preimages_order_check-1");
-preimage_test!(test_preimages_order_check_2, "preimages_order_check-2");
-preimage_test!(test_preimages_order_check_3, "preimages_order_check-3");
-preimage_test!(test_preimages_order_check_4, "preimages_order_check-4");
+stf_test!(
+    test_preimage_needed_1,
+    "preimage_needed-1",
+    DIR,
+    run_preimages_test
+);
+stf_test!(
+    test_preimage_needed_2,
+    "preimage_needed-2",
+    DIR,
+    run_preimages_test
+);
+stf_test!(
+    test_preimage_not_needed_1,
+    "preimage_not_needed-1",
+    DIR,
+    run_preimages_test
+);
+stf_test!(
+    test_preimage_not_needed_2,
+    "preimage_not_needed-2",
+    DIR,
+    run_preimages_test
+);
+stf_test!(
+    test_preimages_order_check_1,
+    "preimages_order_check-1",
+    DIR,
+    run_preimages_test
+);
+stf_test!(
+    test_preimages_order_check_2,
+    "preimages_order_check-2",
+    DIR,
+    run_preimages_test
+);
+stf_test!(
+    test_preimages_order_check_3,
+    "preimages_order_check-3",
+    DIR,
+    run_preimages_test
+);
+stf_test!(
+    test_preimages_order_check_4,
+    "preimages_order_check-4",
+    DIR,
+    run_preimages_test
+);
 
 discover_all_test!(DIR, run_preimages_test);

@@ -379,95 +379,237 @@ fn run_reports_test(dir: &str, stem: &str) {
 
 const DIR: &str = "../../../spec/tests/vectors/reports";
 
-macro_rules! report_test {
-    ($name:ident, $stem:expr) => {
-        #[test]
-        fn $name() {
-            run_reports_test(DIR, $stem);
-        }
-    };
-}
-
-report_test!(test_anchor_not_recent, "anchor_not_recent-1");
-report_test!(test_bad_beefy_mmr, "bad_beefy_mmr-1");
-report_test!(test_bad_code_hash, "bad_code_hash-1");
-report_test!(test_bad_core_index, "bad_core_index-1");
-report_test!(test_bad_service_id, "bad_service_id-1");
-report_test!(test_bad_signature, "bad_signature-1");
-report_test!(test_bad_state_root, "bad_state_root-1");
-report_test!(test_bad_validator_index, "bad_validator_index-1");
-report_test!(test_banned_validator, "banned_validator_guarantee-1");
-report_test!(test_big_work_report_output, "big_work_report_output-1");
-report_test!(test_core_engaged, "core_engaged-1");
-report_test!(test_dependency_missing, "dependency_missing-1");
-report_test!(
+stf_test!(
+    test_anchor_not_recent,
+    "anchor_not_recent-1",
+    DIR,
+    run_reports_test
+);
+stf_test!(test_bad_beefy_mmr, "bad_beefy_mmr-1", DIR, run_reports_test);
+stf_test!(test_bad_code_hash, "bad_code_hash-1", DIR, run_reports_test);
+stf_test!(
+    test_bad_core_index,
+    "bad_core_index-1",
+    DIR,
+    run_reports_test
+);
+stf_test!(
+    test_bad_service_id,
+    "bad_service_id-1",
+    DIR,
+    run_reports_test
+);
+stf_test!(test_bad_signature, "bad_signature-1", DIR, run_reports_test);
+stf_test!(
+    test_bad_state_root,
+    "bad_state_root-1",
+    DIR,
+    run_reports_test
+);
+stf_test!(
+    test_bad_validator_index,
+    "bad_validator_index-1",
+    DIR,
+    run_reports_test
+);
+stf_test!(
+    test_banned_validator,
+    "banned_validator_guarantee-1",
+    DIR,
+    run_reports_test
+);
+stf_test!(
+    test_big_work_report_output,
+    "big_work_report_output-1",
+    DIR,
+    run_reports_test
+);
+stf_test!(test_core_engaged, "core_engaged-1", DIR, run_reports_test);
+stf_test!(
+    test_dependency_missing,
+    "dependency_missing-1",
+    DIR,
+    run_reports_test
+);
+stf_test!(
     test_different_core_same_guarantors,
-    "different_core_same_guarantors-1"
+    "different_core_same_guarantors-1",
+    DIR,
+    run_reports_test
 );
-report_test!(
+stf_test!(
     test_duplicate_package_in_recent_history,
-    "duplicate_package_in_recent_history-1"
+    "duplicate_package_in_recent_history-1",
+    DIR,
+    run_reports_test
 );
-report_test!(
+stf_test!(
     test_duplicated_package_in_report,
-    "duplicated_package_in_report-1"
+    "duplicated_package_in_report-1",
+    DIR,
+    run_reports_test
 );
-report_test!(test_future_report_slot, "future_report_slot-1");
-report_test!(test_high_work_report_gas, "high_work_report_gas-1");
-report_test!(test_many_dependencies, "many_dependencies-1");
-report_test!(test_multiple_reports, "multiple_reports-1");
-report_test!(test_no_enough_guarantees, "no_enough_guarantees-1");
-report_test!(test_not_authorized, "not_authorized-1");
-report_test!(test_not_authorized_2, "not_authorized-2");
-report_test!(test_not_sorted_guarantor, "not_sorted_guarantor-1");
-report_test!(test_out_of_order_guarantees, "out_of_order_guarantees-1");
-report_test!(
+stf_test!(
+    test_future_report_slot,
+    "future_report_slot-1",
+    DIR,
+    run_reports_test
+);
+stf_test!(
+    test_high_work_report_gas,
+    "high_work_report_gas-1",
+    DIR,
+    run_reports_test
+);
+stf_test!(
+    test_many_dependencies,
+    "many_dependencies-1",
+    DIR,
+    run_reports_test
+);
+stf_test!(
+    test_multiple_reports,
+    "multiple_reports-1",
+    DIR,
+    run_reports_test
+);
+stf_test!(
+    test_no_enough_guarantees,
+    "no_enough_guarantees-1",
+    DIR,
+    run_reports_test
+);
+stf_test!(
+    test_not_authorized,
+    "not_authorized-1",
+    DIR,
+    run_reports_test
+);
+stf_test!(
+    test_not_authorized_2,
+    "not_authorized-2",
+    DIR,
+    run_reports_test
+);
+stf_test!(
+    test_not_sorted_guarantor,
+    "not_sorted_guarantor-1",
+    DIR,
+    run_reports_test
+);
+stf_test!(
+    test_out_of_order_guarantees,
+    "out_of_order_guarantees-1",
+    DIR,
+    run_reports_test
+);
+stf_test!(
     test_report_before_last_rotation,
-    "report_before_last_rotation-1"
+    "report_before_last_rotation-1",
+    DIR,
+    run_reports_test
 );
-report_test!(test_report_curr_rotation, "report_curr_rotation-1");
-report_test!(test_report_prev_rotation, "report_prev_rotation-1");
-report_test!(test_report_with_no_results, "report_with_no_results-1");
-report_test!(
+stf_test!(
+    test_report_curr_rotation,
+    "report_curr_rotation-1",
+    DIR,
+    run_reports_test
+);
+stf_test!(
+    test_report_prev_rotation,
+    "report_prev_rotation-1",
+    DIR,
+    run_reports_test
+);
+stf_test!(
+    test_report_with_no_results,
+    "report_with_no_results-1",
+    DIR,
+    run_reports_test
+);
+stf_test!(
     test_reports_with_dependencies_1,
-    "reports_with_dependencies-1"
+    "reports_with_dependencies-1",
+    DIR,
+    run_reports_test
 );
-report_test!(
+stf_test!(
     test_reports_with_dependencies_2,
-    "reports_with_dependencies-2"
+    "reports_with_dependencies-2",
+    DIR,
+    run_reports_test
 );
-report_test!(
+stf_test!(
     test_reports_with_dependencies_3,
-    "reports_with_dependencies-3"
+    "reports_with_dependencies-3",
+    DIR,
+    run_reports_test
 );
-report_test!(
+stf_test!(
     test_reports_with_dependencies_4,
-    "reports_with_dependencies-4"
+    "reports_with_dependencies-4",
+    DIR,
+    run_reports_test
 );
-report_test!(
+stf_test!(
     test_reports_with_dependencies_5,
-    "reports_with_dependencies-5"
+    "reports_with_dependencies-5",
+    DIR,
+    run_reports_test
 );
-report_test!(
+stf_test!(
     test_reports_with_dependencies_6,
-    "reports_with_dependencies-6"
+    "reports_with_dependencies-6",
+    DIR,
+    run_reports_test
 );
-report_test!(
+stf_test!(
     test_segment_root_lookup_invalid_1,
-    "segment_root_lookup_invalid-1"
+    "segment_root_lookup_invalid-1",
+    DIR,
+    run_reports_test
 );
-report_test!(
+stf_test!(
     test_segment_root_lookup_invalid_2,
-    "segment_root_lookup_invalid-2"
+    "segment_root_lookup_invalid-2",
+    DIR,
+    run_reports_test
 );
-report_test!(test_service_item_gas_too_low, "service_item_gas_too_low-1");
-report_test!(
+stf_test!(
+    test_service_item_gas_too_low,
+    "service_item_gas_too_low-1",
+    DIR,
+    run_reports_test
+);
+stf_test!(
     test_too_big_work_report_output,
-    "too_big_work_report_output-1"
+    "too_big_work_report_output-1",
+    DIR,
+    run_reports_test
 );
-report_test!(test_too_high_work_report_gas, "too_high_work_report_gas-1");
-report_test!(test_too_many_dependencies, "too_many_dependencies-1");
-report_test!(test_with_avail_assignments, "with_avail_assignments-1");
-report_test!(test_wrong_assignment, "wrong_assignment-1");
+stf_test!(
+    test_too_high_work_report_gas,
+    "too_high_work_report_gas-1",
+    DIR,
+    run_reports_test
+);
+stf_test!(
+    test_too_many_dependencies,
+    "too_many_dependencies-1",
+    DIR,
+    run_reports_test
+);
+stf_test!(
+    test_with_avail_assignments,
+    "with_avail_assignments-1",
+    DIR,
+    run_reports_test
+);
+stf_test!(
+    test_wrong_assignment,
+    "wrong_assignment-1",
+    DIR,
+    run_reports_test
+);
 
 discover_all_test!(DIR, run_reports_test);

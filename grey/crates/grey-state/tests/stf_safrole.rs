@@ -366,55 +366,136 @@ fn run_safrole_test(dir: &str, stem: &str) {
 
 const DIR: &str = "../../../spec/tests/vectors/safrole";
 
-macro_rules! safrole_test {
-    ($name:ident, $stem:expr) => {
-        #[test]
-        fn $name() {
-            run_safrole_test(DIR, $stem);
-        }
-    };
-}
-
 // Non-ticket tests (no Ring VRF needed)
-safrole_test!(
+stf_test!(
     test_safrole_no_tickets_1,
-    "enact-epoch-change-with-no-tickets-1"
+    "enact-epoch-change-with-no-tickets-1",
+    DIR,
+    run_safrole_test
 );
-safrole_test!(
+stf_test!(
     test_safrole_no_tickets_2,
-    "enact-epoch-change-with-no-tickets-2"
+    "enact-epoch-change-with-no-tickets-2",
+    DIR,
+    run_safrole_test
 );
-safrole_test!(
+stf_test!(
     test_safrole_no_tickets_3,
-    "enact-epoch-change-with-no-tickets-3"
+    "enact-epoch-change-with-no-tickets-3",
+    DIR,
+    run_safrole_test
 );
-safrole_test!(
+stf_test!(
     test_safrole_no_tickets_4,
-    "enact-epoch-change-with-no-tickets-4"
+    "enact-epoch-change-with-no-tickets-4",
+    DIR,
+    run_safrole_test
 );
-safrole_test!(test_safrole_padding_1, "enact-epoch-change-with-padding-1");
-safrole_test!(test_safrole_skip_epochs_1, "skip-epochs-1");
-safrole_test!(test_safrole_skip_epoch_tail_1, "skip-epoch-tail-1");
+stf_test!(
+    test_safrole_padding_1,
+    "enact-epoch-change-with-padding-1",
+    DIR,
+    run_safrole_test
+);
+stf_test!(
+    test_safrole_skip_epochs_1,
+    "skip-epochs-1",
+    DIR,
+    run_safrole_test
+);
+stf_test!(
+    test_safrole_skip_epoch_tail_1,
+    "skip-epoch-tail-1",
+    DIR,
+    run_safrole_test
+);
 
 // Ticket tests that fail before VRF (no Ring VRF needed)
-safrole_test!(test_safrole_bad_ticket_attempt, "publish-tickets-no-mark-1");
-safrole_test!(test_safrole_unexpected_ticket, "publish-tickets-no-mark-7");
-safrole_test!(
+stf_test!(
+    test_safrole_bad_ticket_attempt,
+    "publish-tickets-no-mark-1",
+    DIR,
+    run_safrole_test
+);
+stf_test!(
+    test_safrole_unexpected_ticket,
+    "publish-tickets-no-mark-7",
+    DIR,
+    run_safrole_test
+);
+stf_test!(
     test_safrole_no_tickets_in_sealing_phase,
-    "publish-tickets-no-mark-8"
+    "publish-tickets-no-mark-8",
+    DIR,
+    run_safrole_test
 );
 
 // Ticket tests (with real Bandersnatch Ring VRF verification)
-safrole_test!(test_safrole_tickets_ok_1, "publish-tickets-no-mark-2");
-safrole_test!(test_safrole_tickets_duplicate, "publish-tickets-no-mark-3");
-safrole_test!(test_safrole_tickets_bad_order, "publish-tickets-no-mark-4");
-safrole_test!(test_safrole_tickets_bad_proof, "publish-tickets-no-mark-5");
-safrole_test!(test_safrole_tickets_ok_2, "publish-tickets-no-mark-6");
-safrole_test!(test_safrole_tickets_epoch_mark, "publish-tickets-no-mark-9");
-safrole_test!(test_safrole_with_mark_1, "publish-tickets-with-mark-1");
-safrole_test!(test_safrole_with_mark_2, "publish-tickets-with-mark-2");
-safrole_test!(test_safrole_with_mark_3, "publish-tickets-with-mark-3");
-safrole_test!(test_safrole_with_mark_4, "publish-tickets-with-mark-4");
-safrole_test!(test_safrole_with_mark_5, "publish-tickets-with-mark-5");
+stf_test!(
+    test_safrole_tickets_ok_1,
+    "publish-tickets-no-mark-2",
+    DIR,
+    run_safrole_test
+);
+stf_test!(
+    test_safrole_tickets_duplicate,
+    "publish-tickets-no-mark-3",
+    DIR,
+    run_safrole_test
+);
+stf_test!(
+    test_safrole_tickets_bad_order,
+    "publish-tickets-no-mark-4",
+    DIR,
+    run_safrole_test
+);
+stf_test!(
+    test_safrole_tickets_bad_proof,
+    "publish-tickets-no-mark-5",
+    DIR,
+    run_safrole_test
+);
+stf_test!(
+    test_safrole_tickets_ok_2,
+    "publish-tickets-no-mark-6",
+    DIR,
+    run_safrole_test
+);
+stf_test!(
+    test_safrole_tickets_epoch_mark,
+    "publish-tickets-no-mark-9",
+    DIR,
+    run_safrole_test
+);
+stf_test!(
+    test_safrole_with_mark_1,
+    "publish-tickets-with-mark-1",
+    DIR,
+    run_safrole_test
+);
+stf_test!(
+    test_safrole_with_mark_2,
+    "publish-tickets-with-mark-2",
+    DIR,
+    run_safrole_test
+);
+stf_test!(
+    test_safrole_with_mark_3,
+    "publish-tickets-with-mark-3",
+    DIR,
+    run_safrole_test
+);
+stf_test!(
+    test_safrole_with_mark_4,
+    "publish-tickets-with-mark-4",
+    DIR,
+    run_safrole_test
+);
+stf_test!(
+    test_safrole_with_mark_5,
+    "publish-tickets-with-mark-5",
+    DIR,
+    run_safrole_test
+);
 
 discover_all_test!(DIR, run_safrole_test);
