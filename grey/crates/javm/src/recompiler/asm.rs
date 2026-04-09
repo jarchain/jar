@@ -1774,6 +1774,8 @@ impl Assembler {
                         libc::mremap(p as *mut libc::c_void, cap, needed, libc::MREMAP_MAYMOVE)
                     };
                     if new_ptr == libc::MAP_FAILED {
+                        // SAFETY: p/cap are from the original valid mmap (mremap failed,
+                        // so the original mapping is still intact and must be freed).
                         unsafe {
                             libc::munmap(p as *mut libc::c_void, cap);
                         }

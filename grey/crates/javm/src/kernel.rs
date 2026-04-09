@@ -1710,6 +1710,10 @@ impl InvocationKernel {
                 let addr = base_page as usize * crate::PVM_PAGE_SIZE as usize;
                 let len = d.page_count as usize * crate::PVM_PAGE_SIZE as usize;
                 if addr + len <= flat_mem.len() {
+                    // SAFETY: window_base points to the 4GB mmap CODE window.
+                    // addr + len <= flat_mem.len() <= max_addr (computed from
+                    // the same cap table), so both source and destination ranges
+                    // are in bounds. The regions don't overlap (window vs heap).
                     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
                     unsafe {
                         std::ptr::copy_nonoverlapping(
