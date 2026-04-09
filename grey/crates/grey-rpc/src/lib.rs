@@ -74,6 +74,13 @@ pub struct RpcState {
     pub request_counts: std::sync::Mutex<std::collections::HashMap<String, u64>>,
     /// Total RPC requests received (all methods).
     pub rpc_requests_total: std::sync::atomic::AtomicU64,
+    /// Gossipsub messages received per topic.
+    pub gossip_blocks_received: std::sync::atomic::AtomicU64,
+    pub gossip_finality_received: std::sync::atomic::AtomicU64,
+    pub gossip_guarantees_received: std::sync::atomic::AtomicU64,
+    pub gossip_assurances_received: std::sync::atomic::AtomicU64,
+    pub gossip_announcements_received: std::sync::atomic::AtomicU64,
+    pub gossip_tickets_received: std::sync::atomic::AtomicU64,
 }
 
 #[rpc(server)]
@@ -894,6 +901,24 @@ pub async fn format_metrics(state: &RpcState) -> String {
     let rpc_total = state
         .rpc_requests_total
         .load(std::sync::atomic::Ordering::Relaxed);
+    let gossip_blocks = state
+        .gossip_blocks_received
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let gossip_finality = state
+        .gossip_finality_received
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let gossip_guarantees = state
+        .gossip_guarantees_received
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let gossip_assurances = state
+        .gossip_assurances_received
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let gossip_announcements = state
+        .gossip_announcements_received
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let gossip_tickets = state
+        .gossip_tickets_received
+        .load(std::sync::atomic::Ordering::Relaxed);
     drop(status);
 
     let stored_blocks = state.store.block_count().unwrap_or(0);
@@ -955,7 +980,15 @@ pub async fn format_metrics(state: &RpcState) -> String {
          grey_work_packages_submitted_total {wp_submitted}\n\
          # HELP grey_rpc_requests_total Total RPC requests received.\n\
          # TYPE grey_rpc_requests_total counter\n\
-         grey_rpc_requests_total {rpc_total}\n"
+         grey_rpc_requests_total {rpc_total}\n\
+         # HELP grey_gossipsub_messages_total Gossipsub messages received per topic.\n\
+         # TYPE grey_gossipsub_messages_total counter\n\
+         grey_gossipsub_messages_total{{topic=\"blocks\"}} {gossip_blocks}\n\
+         grey_gossipsub_messages_total{{topic=\"finality\"}} {gossip_finality}\n\
+         grey_gossipsub_messages_total{{topic=\"guarantees\"}} {gossip_guarantees}\n\
+         grey_gossipsub_messages_total{{topic=\"assurances\"}} {gossip_assurances}\n\
+         grey_gossipsub_messages_total{{topic=\"announcements\"}} {gossip_announcements}\n\
+         grey_gossipsub_messages_total{{topic=\"tickets\"}} {gossip_tickets}\n"
     );
 
     // Append per-method request counts
@@ -1132,6 +1165,12 @@ pub fn create_rpc_channel(
         work_packages_submitted: std::sync::atomic::AtomicU64::new(0),
         request_counts: std::sync::Mutex::new(std::collections::HashMap::new()),
         rpc_requests_total: std::sync::atomic::AtomicU64::new(0),
+        gossip_blocks_received: std::sync::atomic::AtomicU64::new(0),
+        gossip_finality_received: std::sync::atomic::AtomicU64::new(0),
+        gossip_guarantees_received: std::sync::atomic::AtomicU64::new(0),
+        gossip_assurances_received: std::sync::atomic::AtomicU64::new(0),
+        gossip_announcements_received: std::sync::atomic::AtomicU64::new(0),
+        gossip_tickets_received: std::sync::atomic::AtomicU64::new(0),
     });
 
     (state, rx)
@@ -1994,5 +2033,28 @@ mod tests {
         assert!(body.contains("# TYPE grey_block_height gauge"));
         assert!(body.contains("grey_finalized_height"));
         assert!(body.contains("grey_work_packages_submitted_total"));
+    }
+
+    #[tokio::test]
+    async fn test_gossipsub_metrics() {
+        let (_url, state, _rx, _store, _dir) = setup().await;
+
+        // Increment some counters
+        state
+            .gossip_blocks_received
+            .fetch_add(5, std::sync::atomic::Ordering::Relaxed);
+        state
+            .gossip_tickets_received
+            .fetch_add(3, std::sync::atomic::Ordering::Relaxed);
+
+        let body = format_metrics(&state).await;
+        assert!(body.contains("# HELP grey_gossipsub_messages_total"));
+        assert!(body.contains("# TYPE grey_gossipsub_messages_total counter"));
+        assert!(body.contains("grey_gossipsub_messages_total{topic=\"blocks\"} 5"));
+        assert!(body.contains("grey_gossipsub_messages_total{topic=\"tickets\"} 3"));
+        assert!(body.contains("grey_gossipsub_messages_total{topic=\"finality\"} 0"));
+        assert!(body.contains("grey_gossipsub_messages_total{topic=\"guarantees\"} 0"));
+        assert!(body.contains("grey_gossipsub_messages_total{topic=\"assurances\"} 0"));
+        assert!(body.contains("grey_gossipsub_messages_total{topic=\"announcements\"} 0"));
     }
 }
