@@ -11,10 +11,18 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use grey_bench::mem::*;
 
 /// Compute gas limit proportional to working set size.
+///
+/// Each loop iteration has multiple instructions (load/store + add + add +
+/// branch), and there is both an init loop (n_elems stores) and sweep loops
+/// (n_elems * SWEEPS loads). Budget generously to avoid OutOfGas on large
+/// working sets.
 fn gas_for_size(size_bytes: u64) -> u64 {
     let n_elems = size_bytes / 4;
-    let loads = n_elems * 15; // SWEEPS
-    loads * 100 + 10_000_000
+    let sweeps = 15u64;
+    // ~4 instructions per iteration, ~100 gas each, plus 2x headroom
+    let init_cost = n_elems * 800;
+    let sweep_cost = n_elems * sweeps * 800;
+    init_cost + sweep_cost + 10_000_000
 }
 
 const SIZES: &[(&str, u64)] = &[
