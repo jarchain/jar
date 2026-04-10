@@ -20,10 +20,9 @@ pub struct ValidatorSecrets {
 /// Build a deterministic 32-byte seed from a validator index and a key-type marker.
 ///
 /// Layout: `[index_lo, index_hi, 0, …, 0, marker]`.
-fn make_seed(index: u16, marker: u8) -> [u8; 32] {
+pub fn make_seed(index: u16, marker: u8) -> [u8; 32] {
     let mut seed = [0u8; 32];
-    seed[0] = index as u8;
-    seed[1] = (index >> 8) as u8;
+    seed[0..2].copy_from_slice(&index.to_le_bytes());
     seed[31] = marker;
     seed
 }
@@ -49,16 +48,14 @@ pub fn make_validator_key(secrets: &ValidatorSecrets) -> ValidatorKey {
     // Uses loopback (127.0.0.1) for local testnets; production genesis
     // would use actual public addresses.
     let mut metadata = [0u8; 128];
-    metadata[0] = secrets.index as u8;
-    metadata[1] = (secrets.index >> 8) as u8;
+    metadata[0..2].copy_from_slice(&secrets.index.to_le_bytes());
     // Bytes 2..6: IP address (loopback for testnet)
     metadata[2] = 127;
     metadata[3] = 0;
     metadata[4] = 0;
     metadata[5] = 1;
     let port = 9000u16 + secrets.index;
-    metadata[6] = port as u8;
-    metadata[7] = (port >> 8) as u8;
+    metadata[6..8].copy_from_slice(&port.to_le_bytes());
 
     ValidatorKey {
         bandersnatch,

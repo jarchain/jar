@@ -212,9 +212,9 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
             crate::keystore::Keystore::open(ks_path).map_err(|e| format!("keystore error: {e}"))?;
         if !ks.has_keys(config.validator_index) {
             // Derive seeds for persistence (same deterministic derivation as genesis)
-            let ed_seed = make_validator_seed(config.validator_index, 0xED);
-            let band_seed = make_validator_seed(config.validator_index, 0xBA);
-            let bls_seed = make_validator_seed(config.validator_index, 0xBB);
+            let ed_seed = grey_consensus::genesis::make_seed(config.validator_index, 0xED);
+            let band_seed = grey_consensus::genesis::make_seed(config.validator_index, 0xBA);
+            let bls_seed = grey_consensus::genesis::make_seed(config.validator_index, 0xBB);
             let ed_public = my_secrets.ed25519.public_key().0;
             ks.save_seeds(
                 config.validator_index,
@@ -1456,15 +1456,6 @@ fn broadcast_equivocation(
     let _ = net_commands.try_send(NetworkCommand::BroadcastEquivocation {
         data: countersig.encode(),
     });
-}
-
-/// Build a deterministic 32-byte seed from a validator index and a key-type tag.
-fn make_validator_seed(index: u16, tag: u8) -> [u8; 32] {
-    let mut seed = [0u8; 32];
-    seed[0] = index as u8;
-    seed[1] = (index >> 8) as u8;
-    seed[31] = tag;
-    seed
 }
 
 fn insert_bounded(set: &mut std::collections::HashSet<Hash>, item: Hash, cap: usize) {
