@@ -973,3 +973,91 @@ mod tests {
         assert_eq!(tracker.counters.len(), 0);
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        /// parse_validator_index always returns None for strings without the prefix.
+        #[test]
+        fn parse_rejects_arbitrary_strings(s in "[a-z0-9 _-]{0,50}") {
+            if !s.starts_with("jam-validator-") {
+                prop_assert!(parse_validator_index_from_agent(&s).is_none());
+            }
+        }
+
+        /// parse_validator_index roundtrips: formatting as "jam-validator-N"
+        /// then parsing always recovers N.
+        #[test]
+        fn parse_roundtrips_valid_index(idx in 0u16..=u16::MAX) {
+            let agent = format!("jam-validator-{idx}");
+            prop_assert_eq!(parse_validator_index_from_agent(&agent), Some(idx));
+        }
+
+        /// PeerTracker: add then remove leaves count at zero.
+        #[test]
+        fn peer_tracker_add_remove_empty(n in 1usize..20) {
+            let mut tracker = PeerTracker::new();
+            let peers: Vec<PeerId> = (0..n).map(|_| PeerId::random()).collect();
+            for p in &peers {
+                tracker.add_peer(*p);
+            }
+            prop_assert_eq!(tracker.peer_count(), n);
+            for p in &peers {
+                tracker.remove_peer(p);
+            }
+            prop_assert_eq!(tracker.peer_count(), 0);
+        }
+
+        /// PeerTracker: set_validator is retrievable via get_peer_for_validator.
+        #[test]
+        fn peer_tracker_validator_lookup(idx in 0u16..1000) {
+            let mut tracker = PeerTracker::new();
+            let peer = PeerId::random();
+            tracker.add_peer(peer);
+            tracker.set_validator(peer, idx);
+            prop_assert_eq!(tracker.get_peer_for_validator(idx), Some(&peer));
+        }
+
+        /// PeerTracker: removing a peer clears its validator mapping.
+        #[test]
+        fn peer_tracker_remove_clears_validator(idx in 0u16..1000) {
+            let mut tracker = PeerTracker::new();
+            let peer = PeerId::random();
+            tracker.add_peer(peer);
+            tracker.set_validator(peer, idx);
+            tracker.remove_peer(&peer);
+            prop_assert_eq!(tracker.get_peer_for_validator(idx), None);
+            prop_assert_eq!(tracker.peer_count(), 0);
+        }
+
+        /// PeerRateTracker: first N messages within limit always pass.
+        #[test]
+        fn rate_tracker_allows_up_to_limit(count in 1u64..=5) {
+            let mut tracker = PeerRateTracker::new(Duration::from_secs(60));
+            let peer = PeerId::random();
+            for _ in 0..count {
+                prop_assert!(tracker.record(&peer, BLOCKS_TOPIC));
+            }
+        }
+
+        /// PeerRateTracker: message N+1 over the limit is rejected.
+        #[test]
+        fn rate_tracker_rejects_over_limit(extra in 1u64..10) {
+            let mut tracker = PeerRateTracker::new(Duration::from_secs(60));
+            let peer = PeerId::random();
+            // Fill to the blocks limit (5)
+            for _ in 0..5 {
+                tracker.record(&peer, BLOCKS_TOPIC);
+            }
+            // Every additional message should be rejected
+            for _ in 0..extra {
+                prop_assert!(!tracker.record(&peer, BLOCKS_TOPIC));
+            }
+        }
+    }
+}
