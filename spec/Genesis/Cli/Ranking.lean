@@ -31,11 +31,15 @@ def rankingMainWith (forceVariant : Option String := none) : IO UInt32 := runJso
   let indices ← IO.ofExcept (j.getObjValAs? (List CommitIndex) "indices")
   -- Resolve forced variant (if any)
   let forcedV := forceVariant.bind resolveVariantName
-  -- Build per-commit contexts (variant + weight function)
+  -- Use a single global variant for ranking (ranking is a property of the
+  -- state, not per-commit). When v3 activates, all commits are reranked
+  -- under v3 rules — there are no "v2 commits" in v3's eyes.
+  let globalV := forcedV.getD
+    (activeVariant (indices.getLast?.map (·.epoch) |>.getD 0))
+  -- Build per-commit contexts (global variant + per-commit weight function)
   let (contexts, _) := signedCommits.zip indices |>.foldl
-    (fun (ctxs, state) (commit, idx) =>
-      let v := forcedV.getD (activeVariant commit.prCreatedAt)
-      let ctx : RankingCommitCtx := { variant := v, getWeight := state.reviewerWeight }
+    (fun (ctxs, state) (_, idx) =>
+      let ctx : RankingCommitCtx := { variant := globalV, getWeight := state.reviewerWeight }
       let nextState := @stepState (activeVariant idx.epoch) state idx
       (ctxs ++ [ctx], nextState)
     ) (([] : List RankingCommitCtx), initEvalState)

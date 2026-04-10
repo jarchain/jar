@@ -562,13 +562,22 @@ def selectComparisonTargetsRanked
 
 /-- Validate comparison targets in a signed commit.
     For v1 (useRankedTargets=false): validates against time-based selection.
-    For v2 (useRankedTargets=true): validates against rank-based selection. -/
+    For v2 (useRankedTargets=true): validates against rank-based selection.
+    For v3 (useBradleyTerry=true): validates against variance-weighted selection. -/
 def validateComparisonTargets [gv : GenesisVariant]
     (commit : SignedCommit)
     (scoredCommits : List (CommitId × Epoch))
-    (ranking : Option (List CommitId) := none) : Bool :=
+    (ranking : Option (List CommitId) := none)
+    (variances : Option (List (CommitId × Nat)) := none) : Bool :=
   let eligible := scoredCommits.filter (fun (_, epoch) => epoch < commit.prCreatedAt)
   if eligible.isEmpty then commit.comparisonTargets.isEmpty
+  else if gv.useBradleyTerry then
+    match ranking, variances with
+    | some r, some v =>
+      let expected := selectComparisonTargetsVariance r v scoredCommits
+        (min gv.rankingSize eligible.length) commit.prId commit.prCreatedAt
+      commit.comparisonTargets == expected
+    | _, _ => false  -- v3 requires both ranking and variances
   else if gv.useRankedTargets then
     match ranking with
     | some r =>
@@ -582,15 +591,17 @@ def validateComparisonTargets [gv : GenesisVariant]
     commit.comparisonTargets == expected
 
 /-- Compute the score for a single signed commit.
-    For v2, ranking is required for target validation. -/
+    For v2, ranking is required for target validation.
+    For v3, both ranking and variances are required. -/
 def commitScore [gv : GenesisVariant]
     (commit : SignedCommit)
     (scoredCommits : List (CommitId × Epoch))
     (ranking : Option (List CommitId))
     (getWeight : ContributorId → Nat)
+    (variances : Option (List (CommitId × Nat)) := none)
     : CommitScore :=
   let zeroScore : CommitScore := { difficulty := 0, novelty := 0, designQuality := 0 }
-  if !(validateComparisonTargets commit scoredCommits ranking) then
+  if !(validateComparisonTargets commit scoredCommits ranking variances) then
     zeroScore
   else
     let approvedReviews := filterReviews commit.reviews commit.metaReviews getWeight
@@ -636,9 +647,10 @@ def commitScoreWithWarnings [gv : GenesisVariant]
     (scoredCommits : List (CommitId × Epoch))
     (ranking : Option (List CommitId))
     (getWeight : ContributorId → Nat)
+    (variances : Option (List (CommitId × Nat)) := none)
     : CommitScore × List String :=
   let zeroScore : CommitScore := { difficulty := 0, novelty := 0, designQuality := 0 }
-  if !(validateComparisonTargets commit scoredCommits ranking) then
+  if !(validateComparisonTargets commit scoredCommits ranking variances) then
     (zeroScore, ["score is zero: comparison targets validation failed"])
   else
     let reviewWarnings := commit.reviews.foldl (fun acc r =>

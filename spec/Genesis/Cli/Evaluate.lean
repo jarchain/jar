@@ -1,11 +1,14 @@
 /-
   genesis_evaluate CLI
 
-  Input:  {"commit": {...}, "pastIndices": [...], "ranking": [...] (required for v2)}
+  Input:  {"commit": {...}, "pastIndices": [...],
+           "ranking": [...] (required for v2+),
+           "variances": [...] (required for v3)}
   Output: CommitIndex JSON
 
   For v2 (useRankedTargets), the "ranking" field is REQUIRED.
-  Missing ranking for a v2 commit is a fatal error.
+  For v3 (useBradleyTerry), the "variances" field is also REQUIRED.
+  Missing fields for the active variant are fatal errors.
 -/
 
 import Genesis.Cli.Common
@@ -23,7 +26,13 @@ def evaluateMain : IO UInt32 := runJsonPipe fun j => do
     |>.map some
   else
     pure none
-  let (idx, warnings) := evaluateWithWarnings pastIndices commit ranking
+  let variances ← if v.useBradleyTerry then
+    IO.ofExcept (j.getObjValAs? (List (CommitId × Nat)) "variances"
+      |>.mapError (s!"v3 variant active (useBradleyTerry=true) but variances field missing: " ++ ·))
+    |>.map some
+  else
+    pure none
+  let (idx, warnings) := evaluateWithWarnings pastIndices commit ranking variances
   let baseJson := toJson idx
   match baseJson with
   | .obj kvs => return .obj (kvs.insert "warnings" (toJson warnings))
