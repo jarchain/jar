@@ -605,5 +605,68 @@ mod proptest_roundtrips {
 
         #[test]
         fn nested_vec_option_roundtrip(v: Vec<Option<u32>>) { roundtrip(&v); }
+
+        #[test]
+        fn btreeset_u32_roundtrip(
+            entries in proptest::collection::vec(any::<u32>(), 0..20)
+        ) {
+            let set: alloc::collections::BTreeSet<u32> = entries.into_iter().collect();
+            roundtrip(&set);
+        }
+
+        #[test]
+        fn nested_vec_vec_u8_roundtrip(
+            vecs in proptest::collection::vec(
+                proptest::collection::vec(any::<u8>(), 0..32),
+                0..10,
+            )
+        ) {
+            roundtrip(&vecs);
+        }
+
+        #[test]
+        fn option_vec_u8_roundtrip(v: Option<Vec<u8>>) { roundtrip(&v); }
+
+        #[test]
+        fn fixed_array_64_roundtrip(v: [u8; 64]) { roundtrip(&v); }
+
+        #[test]
+        fn fixed_array_96_roundtrip(v in proptest::collection::vec(any::<u8>(), 96..=96)) {
+            let mut arr = [0u8; 96];
+            arr.copy_from_slice(&v);
+            roundtrip(&arr);
+        }
+
+        #[test]
+        fn fixed_array_144_roundtrip(v in proptest::collection::vec(any::<u8>(), 144..=144)) {
+            let mut arr = [0u8; 144];
+            arr.copy_from_slice(&v);
+            roundtrip(&arr);
+        }
+
+        #[test]
+        fn encode_deterministic_u32(v: u32) {
+            assert_eq!(v.encode(), v.encode(), "encoding should be deterministic");
+        }
+
+        #[test]
+        fn encode_deterministic_vec_u8(v: Vec<u8>) {
+            assert_eq!(v.encode(), v.encode(), "encoding should be deterministic");
+        }
+
+        #[test]
+        fn decode_no_panic_u32(bytes in proptest::collection::vec(any::<u8>(), 0..16)) {
+            let _ = u32::decode(&bytes);
+        }
+
+        #[test]
+        fn decode_no_panic_vec_u8(bytes in proptest::collection::vec(any::<u8>(), 0..64)) {
+            let _ = Vec::<u8>::decode(&bytes);
+        }
+
+        #[test]
+        fn decode_no_panic_option_u64(bytes in proptest::collection::vec(any::<u8>(), 0..16)) {
+            let _ = Option::<u64>::decode(&bytes);
+        }
     }
 }
