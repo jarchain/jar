@@ -132,9 +132,6 @@ pub enum TransitionError {
 
     #[error("invalid extrinsic: {0}")]
     InvalidExtrinsic(String),
-
-    #[error("accumulation error: {0}")]
-    AccumulationError(String),
 }
 
 /// Apply a block to the current state, producing a new state (eq 4.1).
