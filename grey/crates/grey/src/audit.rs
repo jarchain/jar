@@ -464,6 +464,70 @@ mod tests {
             fn decode_announcement_never_panics(data in prop::collection::vec(any::<u8>(), 0..1024)) {
                 let _ = decode_announcement(&data);
             }
+
+            /// encode then decode must roundtrip perfectly.
+            #[test]
+            fn announcement_encode_decode_roundtrip(
+                report_hash in prop::array::uniform32(any::<u8>()),
+                is_valid in any::<bool>(),
+                validator_index in any::<u16>(),
+                signature in prop::array::uniform32(any::<u8>()).prop_flat_map(|a| {
+                    prop::array::uniform32(any::<u8>()).prop_map(move |b| {
+                        let mut sig = [0u8; 64];
+                        sig[..32].copy_from_slice(&a);
+                        sig[32..].copy_from_slice(&b);
+                        sig
+                    })
+                }),
+            ) {
+                let ann = AuditAnnouncement {
+                    report_hash: Hash(report_hash),
+                    is_valid,
+                    validator_index,
+                    signature: Ed25519Signature(signature),
+                };
+
+                let encoded = encode_announcement(&ann);
+                let decoded = decode_announcement(&encoded).expect("roundtrip decode must succeed");
+
+                prop_assert_eq!(decoded.report_hash, ann.report_hash);
+                prop_assert_eq!(decoded.is_valid, ann.is_valid);
+                prop_assert_eq!(decoded.validator_index, ann.validator_index);
+                prop_assert_eq!(decoded.signature, ann.signature);
+            }
+
+            /// compute_audit_tranche always returns a value in [0, max_tranches).
+            #[test]
+            fn tranche_always_in_bounds(
+                entropy in prop::array::uniform32(any::<u8>()),
+                report_hash in prop::array::uniform32(any::<u8>()),
+                validator_index in any::<u16>(),
+                max_tranches in 1u32..100,
+            ) {
+                let tranche = compute_audit_tranche(
+                    &Hash(entropy),
+                    &Hash(report_hash),
+                    validator_index,
+                    max_tranches,
+                );
+                prop_assert!(tranche < max_tranches,
+                    "tranche {} >= max_tranches {}", tranche, max_tranches);
+            }
+
+            /// compute_audit_tranche is deterministic — same inputs always produce same output.
+            #[test]
+            fn tranche_is_deterministic(
+                entropy in prop::array::uniform32(any::<u8>()),
+                report_hash in prop::array::uniform32(any::<u8>()),
+                validator_index in any::<u16>(),
+                max_tranches in 1u32..100,
+            ) {
+                let e = Hash(entropy);
+                let r = Hash(report_hash);
+                let t1 = compute_audit_tranche(&e, &r, validator_index, max_tranches);
+                let t2 = compute_audit_tranche(&e, &r, validator_index, max_tranches);
+                prop_assert_eq!(t1, t2);
+            }
         }
     }
 }
