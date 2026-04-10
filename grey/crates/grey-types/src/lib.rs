@@ -1065,6 +1065,103 @@ mod tests {
                     timeslot,
                 });
             }
+
+            #[test]
+            fn safrole_state_roundtrip(
+                n_pending in 0usize..3,
+                n_tickets in 0usize..4,
+                use_fallback in proptest::bool::ANY,
+                ring_root_bytes in proptest::collection::vec(0u8.., 144..=144),
+            ) {
+                let pending_keys: Vec<validator::ValidatorKey> = (0..n_pending)
+                    .map(|i| validator::ValidatorKey {
+                        bandersnatch: BandersnatchPublicKey([i as u8; 32]),
+                        ed25519: Ed25519PublicKey([(i + 10) as u8; 32]),
+                        bls: BlsPublicKey({
+                            let mut b = [0u8; 144];
+                            b[0] = (i + 20) as u8;
+                            b
+                        }),
+                        metadata: [(i + 30) as u8; 128],
+                    })
+                    .collect();
+                let seal_key_series = if use_fallback {
+                    state::SealKeySeries::Fallback(
+                        (0..n_tickets).map(|i| BandersnatchPublicKey([i as u8; 32])).collect()
+                    )
+                } else {
+                    state::SealKeySeries::Tickets(
+                        (0..n_tickets).map(|i| header::Ticket {
+                            id: Hash([i as u8; 32]),
+                            attempt: (i % 4) as u8,
+                        }).collect()
+                    )
+                };
+                let ticket_accumulator: Vec<header::Ticket> = (0..n_tickets)
+                    .map(|i| header::Ticket {
+                        id: Hash([(i + 50) as u8; 32]),
+                        attempt: (i % 4) as u8,
+                    })
+                    .collect();
+                let mut ring_root = [0u8; 144];
+                ring_root.copy_from_slice(&ring_root_bytes);
+                assert_codec_roundtrip(&state::SafroleState {
+                    pending_keys,
+                    ring_root: BandersnatchRingRoot(ring_root),
+                    seal_key_series,
+                    ticket_accumulator,
+                });
+            }
+
+            #[test]
+            fn validator_statistics_roundtrip(
+                n_validators in 0usize..4,
+                n_cores in 0usize..3,
+                n_services in 0usize..3,
+            ) {
+                let make_record = |i: usize| state::ValidatorRecord {
+                    blocks_produced: i as u32,
+                    tickets_introduced: (i * 2) as u32,
+                    preimages_introduced: (i * 3) as u32,
+                    preimage_bytes: (i * 100) as u64,
+                    reports_guaranteed: (i * 4) as u32,
+                    assurances_made: (i * 5) as u32,
+                };
+                let current: Vec<state::ValidatorRecord> = (0..n_validators).map(|i| make_record(i)).collect();
+                let last: Vec<state::ValidatorRecord> = (0..n_validators).map(|i| make_record(i + 10)).collect();
+                let core_stats: Vec<state::CoreStatistics> = (0..n_cores)
+                    .map(|i| state::CoreStatistics {
+                        da_load: i as u64 * 1000,
+                        popularity: i as u64,
+                        imports: i as u64 * 10,
+                        extrinsic_count: i as u64 * 5,
+                        extrinsic_size: i as u64 * 200,
+                        exports: i as u64 * 3,
+                        bundle_size: i as u64 * 500,
+                        gas_used: i as u64 * 10000,
+                    })
+                    .collect();
+                let service_stats: std::collections::BTreeMap<u32, state::ServiceStatistics> = (0..n_services)
+                    .map(|i| (i as u32, state::ServiceStatistics {
+                        provided_count: i as u64,
+                        provided_size: i as u64 * 100,
+                        refinement_count: i as u64 * 2,
+                        refinement_gas_used: i as u64 * 5000,
+                        imports: i as u64,
+                        extrinsic_count: i as u64,
+                        extrinsic_size: i as u64 * 50,
+                        exports: i as u64,
+                        accumulate_count: i as u64,
+                        accumulate_gas_used: i as u64 * 3000,
+                    }))
+                    .collect();
+                assert_codec_roundtrip(&state::ValidatorStatistics {
+                    current,
+                    last,
+                    core_stats,
+                    service_stats,
+                });
+            }
         }
     }
 
