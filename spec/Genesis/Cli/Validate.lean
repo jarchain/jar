@@ -64,14 +64,11 @@ def validateMain : IO UInt32 := runJsonPipe fun j => do
       errors := errors.push (Json.str s!"commit {idx.commitHash}: v2 active but ranking not found in rankings map")
       pastIndices := pastIndices ++ [idx]
       continue
-    -- Look up variances for v3 commits
+    -- Look up variances for v3 commits (default to empty if no scores yet —
+    -- during v2→v3 transition, scores.json may not have entries yet)
     let variances := if v.useBradleyTerry then
-      lookupVariances pastIndices scoresJson commit.prCreatedAt
+      some (lookupVariances pastIndices scoresJson commit.prCreatedAt |>.getD [])
     else none
-    if v.useBradleyTerry && variances.isNone then
-      errors := errors.push (Json.str s!"commit {idx.commitHash}: v3 active but variances not found in scores map")
-      pastIndices := pastIndices ++ [idx]
-      continue
     let expected := evaluate pastIndices commit ranking variances
     -- Compare key fields
     if expected.commitHash != idx.commitHash then

@@ -397,15 +397,21 @@ struct StateRefineContext<'a> {
     state: &'a State,
 }
 
-impl<'a> RefineContext for StateRefineContext<'a> {
-    fn get_code(&self, code_hash: &Hash) -> Option<Vec<u8>> {
-        // Code blobs are stored in preimage_lookup keyed by code_hash
+impl<'a> StateRefineContext<'a> {
+    /// Look up a preimage by hash across all service accounts.
+    fn lookup_preimage(&self, hash: &Hash) -> Option<Vec<u8>> {
         for account in self.state.services.values() {
-            if let Some(blob) = account.preimage_lookup.get(code_hash) {
-                return Some(blob.clone());
+            if let Some(data) = account.preimage_lookup.get(hash) {
+                return Some(data.clone());
             }
         }
         None
+    }
+}
+
+impl<'a> RefineContext for StateRefineContext<'a> {
+    fn get_code(&self, code_hash: &Hash) -> Option<Vec<u8>> {
+        self.lookup_preimage(code_hash)
     }
 
     fn get_storage(&self, service_id: u32, key: &[u8]) -> Option<Vec<u8>> {
@@ -414,12 +420,7 @@ impl<'a> RefineContext for StateRefineContext<'a> {
     }
 
     fn get_preimage(&self, hash: &Hash) -> Option<Vec<u8>> {
-        for account in self.state.services.values() {
-            if let Some(data) = account.preimage_lookup.get(hash) {
-                return Some(data.clone());
-            }
-        }
-        None
+        self.lookup_preimage(hash)
     }
 }
 
