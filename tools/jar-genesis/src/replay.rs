@@ -94,19 +94,42 @@ fn expand_review_hashes(commit: &mut serde_json::Value) {
     }
 }
 
+/// Find the commit hash of the last index with epoch < target epoch.
+fn find_prior_commit_hash(indices: &[serde_json::Value], epoch: u64) -> Option<String> {
+    let last = indices
+        .iter()
+        .rfind(|idx| idx["epoch"].as_u64().map(|e| e < epoch).unwrap_or(false))?;
+    last["commitHash"].as_str().map(|s| s.to_string())
+}
+
 /// Get the ranking snapshot for a commit based on its epoch.
 fn get_ranking_snapshot(
     indices: &[serde_json::Value],
     rankings: &HashMap<String, serde_json::Value>,
     epoch: u64,
 ) -> Option<serde_json::Value> {
-    // Find the last index with epoch < target epoch
-    let last = indices
-        .iter()
-        .rfind(|idx| idx["epoch"].as_u64().map(|e| e < epoch).unwrap_or(false))?;
+    let commit_hash = find_prior_commit_hash(indices, epoch)?;
+    rankings.get(&commit_hash).cloned()
+}
 
-    let commit_hash = last["commitHash"].as_str()?;
-    rankings.get(commit_hash).cloned()
+/// Get variances from scores map for a commit based on its epoch.
+/// Returns [["hash", sigma2], ...] format for Lean's List (CommitId × Nat).
+fn get_variances_snapshot(
+    indices: &[serde_json::Value],
+    scores: &HashMap<String, serde_json::Value>,
+    epoch: u64,
+) -> Option<serde_json::Value> {
+    let commit_hash = find_prior_commit_hash(indices, epoch)?;
+    let scores_arr = scores.get(&commit_hash)?.as_array()?;
+    let variances: Vec<serde_json::Value> = scores_arr
+        .iter()
+        .filter_map(|s| {
+            let commit = s.get("commit")?;
+            let sigma2 = s.get("sigma2")?;
+            Some(serde_json::json!([commit, sigma2]))
+        })
+        .collect();
+    Some(serde_json::json!(variances))
 }
 
 /// Result of incremental replay.
@@ -137,6 +160,7 @@ fn replay_incremental(
             .unwrap_or(0);
 
         let ranking_snapshot = get_ranking_snapshot(&indices, &rankings, pr_created_at);
+        let variances_snapshot = get_variances_snapshot(&indices, &scores, pr_created_at);
 
         // Build input for genesis_evaluate
         let mut input = serde_json::json!({
@@ -146,6 +170,8 @@ fn replay_incremental(
         if let Some(ranking) = &ranking_snapshot {
             input["ranking"] = ranking.clone();
         }
+        // Pass variances (empty [] if no scores yet — Lean defaults to BT_SCALE)
+        input["variances"] = variances_snapshot.unwrap_or_else(|| serde_json::json!([]));
 
         // Evaluate
         let mut index: serde_json::Value = lean::invoke("genesis_evaluate", &input, spec_dir)?;
