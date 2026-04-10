@@ -354,55 +354,39 @@ pub async fn run_seq_testnet(
     Ok(())
 }
 
+/// Create a ServiceAccount from a PVM code blob for test networks.
+///
+/// Computes the code hash, sets up the preimage lookup, and uses standard
+/// test quotas (1M items, 100K min gas, 1G bytes).
+pub(crate) fn make_test_service(blob: &[u8]) -> ServiceAccount {
+    let code_hash = grey_crypto::blake2b_256(blob);
+    let mut preimage_lookup = BTreeMap::new();
+    preimage_lookup.insert(code_hash, blob.to_vec());
+    ServiceAccount {
+        code_hash,
+        quota_items: 1_000_000,
+        min_accumulate_gas: 100_000,
+        min_on_transfer_gas: 0,
+        storage: BTreeMap::new(),
+        preimage_lookup,
+        preimage_info: BTreeMap::new(),
+        quota_bytes: 1_000_000_000,
+        total_footprint: 0,
+        accumulation_counter: 0,
+        last_accumulation: 0,
+        last_activity: 0,
+        preimage_count: 0,
+    }
+}
+
 /// Install test services into genesis state.
 fn install_services(state: &mut State, config: &Config) {
-    // Pixels service (ID 2000)
-    let pixels_blob = PIXELS_SERVICE_BLOB.to_vec();
-    let pixels_code_hash = grey_crypto::blake2b_256(&pixels_blob);
-    let mut pixels_preimage = BTreeMap::new();
-    pixels_preimage.insert(pixels_code_hash, pixels_blob);
-    state.services.insert(
-        2000,
-        ServiceAccount {
-            code_hash: pixels_code_hash,
-            quota_items: 1_000_000,
-            min_accumulate_gas: 100_000,
-            min_on_transfer_gas: 0,
-            storage: BTreeMap::new(),
-            preimage_lookup: pixels_preimage,
-            preimage_info: BTreeMap::new(),
-            quota_bytes: 1_000_000_000,
-            total_footprint: 0,
-            accumulation_counter: 0,
-            last_accumulation: 0,
-            last_activity: 0,
-            preimage_count: 0,
-        },
-    );
-
-    // Sample service (ID 1000)
-    let sample_blob = SAMPLE_SERVICE_BLOB.to_vec();
-    let sample_code_hash = grey_crypto::blake2b_256(&sample_blob);
-    let mut sample_preimage = BTreeMap::new();
-    sample_preimage.insert(sample_code_hash, sample_blob);
-    state.services.insert(
-        1000,
-        ServiceAccount {
-            code_hash: sample_code_hash,
-            quota_items: 1_000_000,
-            min_accumulate_gas: 100_000,
-            min_on_transfer_gas: 0,
-            storage: BTreeMap::new(),
-            preimage_lookup: sample_preimage,
-            preimage_info: BTreeMap::new(),
-            quota_bytes: 1_000_000_000,
-            total_footprint: 0,
-            accumulation_counter: 0,
-            last_accumulation: 0,
-            last_activity: 0,
-            preimage_count: 0,
-        },
-    );
+    state
+        .services
+        .insert(2000, make_test_service(PIXELS_SERVICE_BLOB));
+    state
+        .services
+        .insert(1000, make_test_service(SAMPLE_SERVICE_BLOB));
 
     // Populate auth_pool
     for core in 0..config.core_count as usize {

@@ -9,10 +9,10 @@
 
 use grey_types::config::Config;
 use grey_types::header::*;
-use grey_types::state::ServiceAccount;
 use grey_types::work::*;
 use grey_types::{Hash, ServiceId, Timeslot};
-use std::collections::BTreeMap;
+
+use crate::seq_testnet::make_test_service;
 use std::time::Duration;
 
 include!(concat!(env!("OUT_DIR"), "/service_blobs.rs"));
@@ -26,8 +26,6 @@ pub async fn run_testnet(
     duration_secs: u64,
     rpc_cors: bool,
 ) -> Result<TestnetResult, Box<dyn std::error::Error + Send + Sync>> {
-    use grey_types::state::ServiceAccount;
-
     let config = Config::tiny();
     let v = config.validators_count;
     let base_port: u16 = 19000;
@@ -36,61 +34,21 @@ pub async fn run_testnet(
     let (mut genesis_state, _secrets) = grey_consensus::genesis::create_genesis(&config);
 
     let service_id: ServiceId = 1000;
-    let pvm_blob = SAMPLE_SERVICE_BLOB.to_vec();
-    let code_hash = grey_crypto::blake2b_256(&pvm_blob);
-    let mut preimage_lookup = BTreeMap::new();
-    preimage_lookup.insert(code_hash, pvm_blob);
-
-    genesis_state.services.insert(
-        service_id,
-        ServiceAccount {
-            code_hash,
-            quota_items: 1_000_000,
-            min_accumulate_gas: 100_000,
-            min_on_transfer_gas: 0,
-            storage: BTreeMap::new(),
-            preimage_lookup,
-            preimage_info: BTreeMap::new(),
-            quota_bytes: 1_000_000_000,
-            total_footprint: 0,
-            accumulation_counter: 0,
-            last_accumulation: 0,
-            last_activity: 0,
-            preimage_count: 0,
-        },
-    );
+    let sample_service = make_test_service(SAMPLE_SERVICE_BLOB);
+    let code_hash = sample_service.code_hash;
+    genesis_state.services.insert(service_id, sample_service);
 
     // Install pixels service (ID 2000)
     let pixels_service_id: ServiceId = 2000;
-    {
-        let pixels_blob = PIXELS_SERVICE_BLOB.to_vec();
-        let pixels_hash = grey_crypto::blake2b_256(&pixels_blob);
-        let mut px_preimages = BTreeMap::new();
-        px_preimages.insert(pixels_hash, pixels_blob);
-        genesis_state.services.insert(
-            pixels_service_id,
-            ServiceAccount {
-                code_hash: pixels_hash,
-                quota_items: 1_000_000,
-                min_accumulate_gas: 100_000,
-                min_on_transfer_gas: 0,
-                storage: BTreeMap::new(),
-                preimage_lookup: px_preimages,
-                preimage_info: BTreeMap::new(),
-                quota_bytes: 1_000_000_000,
-                total_footprint: 0,
-                accumulation_counter: 0,
-                last_accumulation: 0,
-                last_activity: 0,
-                preimage_count: 0,
-            },
-        );
-        tracing::info!(
-            "Testnet: installed pixels service {} (code_hash=0x{})",
-            pixels_service_id,
-            hex::encode(&pixels_hash.0[..8])
-        );
-    }
+    let pixels_code_hash = grey_crypto::blake2b_256(PIXELS_SERVICE_BLOB);
+    genesis_state
+        .services
+        .insert(pixels_service_id, make_test_service(PIXELS_SERVICE_BLOB));
+    tracing::info!(
+        "Testnet: installed pixels service {} (code_hash=0x{})",
+        pixels_service_id,
+        hex::encode(&pixels_code_hash.0[..8])
+    );
 
     // Populate auth_pool and auth_queue so guarantees pass the authorizer check
     // and auth_pool is replenished after each guarantee via rotation.
@@ -255,29 +213,9 @@ pub fn run_sequential_test(num_blocks: u32) -> Result<SequentialTestResult, Stri
 
     // --- Install a PVM service into genesis state ---
     let service_id: ServiceId = 1000;
-    let pvm_blob = SAMPLE_SERVICE_BLOB.to_vec();
-    let code_hash = grey_crypto::blake2b_256(&pvm_blob);
-    let mut preimage_lookup = BTreeMap::new();
-    preimage_lookup.insert(code_hash, pvm_blob);
-
-    state.services.insert(
-        service_id,
-        ServiceAccount {
-            code_hash,
-            quota_items: 1_000_000,
-            min_accumulate_gas: 100_000,
-            min_on_transfer_gas: 0,
-            storage: BTreeMap::new(),
-            preimage_lookup,
-            preimage_info: BTreeMap::new(),
-            quota_bytes: 1_000_000_000,
-            total_footprint: 0,
-            accumulation_counter: 0,
-            last_accumulation: 0,
-            last_activity: 0,
-            preimage_count: 0,
-        },
-    );
+    let sample_service = make_test_service(SAMPLE_SERVICE_BLOB);
+    let code_hash = sample_service.code_hash;
+    state.services.insert(service_id, sample_service);
     tracing::info!(
         "Installed PVM service {} with code_hash=0x{}",
         service_id,
@@ -286,38 +224,15 @@ pub fn run_sequential_test(num_blocks: u32) -> Result<SequentialTestResult, Stri
 
     // --- Install the pixels service (ID 2000) ---
     let pixels_service_id: ServiceId = 2000;
-    let pixels_pvm_blob = PIXELS_SERVICE_BLOB.to_vec();
     let pixels_installed = true;
-    let pixels_code_hash = {
-        let h = grey_crypto::blake2b_256(&pixels_pvm_blob);
-        let mut pixels_preimage_lookup = BTreeMap::new();
-        pixels_preimage_lookup.insert(h, pixels_pvm_blob);
-
-        state.services.insert(
-            pixels_service_id,
-            ServiceAccount {
-                code_hash: h,
-                quota_items: 1_000_000,
-                min_accumulate_gas: 100_000,
-                min_on_transfer_gas: 0,
-                storage: BTreeMap::new(),
-                preimage_lookup: pixels_preimage_lookup,
-                preimage_info: BTreeMap::new(),
-                quota_bytes: 1_000_000_000,
-                total_footprint: 0,
-                accumulation_counter: 0,
-                last_accumulation: 0,
-                last_activity: 0,
-                preimage_count: 0,
-            },
-        );
-        tracing::info!(
-            "Installed pixels service {} with code_hash=0x{}",
-            pixels_service_id,
-            hex::encode(&h.0[..8])
-        );
-        h
-    };
+    let pixels_service = make_test_service(PIXELS_SERVICE_BLOB);
+    let pixels_code_hash = pixels_service.code_hash;
+    state.services.insert(pixels_service_id, pixels_service);
+    tracing::info!(
+        "Installed pixels service {} with code_hash=0x{}",
+        pixels_service_id,
+        hex::encode(&pixels_code_hash.0[..8])
+    );
 
     // Populate auth_pool so guarantees pass the authorizer check.
     // Auth pool starts empty; fill core 0 with Hash::ZERO (matches our authorizer_hash).
