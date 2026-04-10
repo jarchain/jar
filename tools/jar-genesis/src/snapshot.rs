@@ -81,11 +81,12 @@ pub fn find(
         return Ok(Some(snapshot));
     }
 
-    // Fall back to ranking.json (v2)
+    // Fall back to ranking.json (v2). Pass empty variances so v3's
+    // select-targets gets a valid array (defaults to BT_SCALE per commit).
     if let Some(ranking) = ranking_map.get(&commit_hash) {
         return Ok(Some(Snapshot {
             ranking: ranking.clone(),
-            variances: None,
+            variances: Some(serde_json::json!([])),
         }));
     }
 
@@ -129,7 +130,7 @@ mod tests {
         let scores = serde_json::json!({});
         let snap = find(&indices, &ranking, &scores, 250).unwrap().unwrap();
         assert_eq!(snap.ranking, serde_json::json!(["bbb", "aaa"]));
-        assert!(snap.variances.is_none());
+        assert_eq!(snap.variances, Some(serde_json::json!([])));
     }
 
     #[test]
