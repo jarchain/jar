@@ -85,9 +85,6 @@ struct LinkedElf {
     sub32_relocs: Vec<(u64, u64)>,
     /// Code section address ranges for detecting code pointers.
     code_ranges: Vec<(u64, u64)>,
-    /// Symbols (used for service entry point resolution)
-    #[allow(dead_code)]
-    symbols: Vec<(String, u64)>,
     /// ELF entry point (e_entry) — the RISC-V vaddr of _start.
     entry_vaddr: u64,
 }
@@ -161,16 +158,6 @@ pub fn link_elf(elf_data: &[u8]) -> Result<Vec<u8>, TranspileError> {
         elf.heap_pages,
         elf.heap_pages,
     ))
-}
-
-impl LinkedElf {
-    #[allow(dead_code)]
-    fn symbol_address(&self, name: &str) -> Option<u64> {
-        self.symbols
-            .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, a)| *a)
-    }
 }
 
 /// Parse ELF with full relocation info.
@@ -303,7 +290,6 @@ fn parse_linked_elf(data: &[u8]) -> Result<LinkedElf, TranspileError> {
 
     // Parse symbol table
     let mut symbols_by_idx: Vec<(String, u64)> = Vec::new();
-    let mut named_symbols = Vec::new();
     if let Some(si) = symtab_idx {
         let s = &sections[si];
         // Get associated string table
@@ -319,7 +305,6 @@ fn parse_linked_elf(data: &[u8]) -> Result<LinkedElf, TranspileError> {
                 break;
             }
             let st_name = u32::from_le_bytes(data[off..off + 4].try_into().unwrap()) as usize;
-            let st_info = data[off + 4];
             let st_value = u64::from_le_bytes(data[off + 8..off + 16].try_into().unwrap());
 
             let name = {
@@ -335,16 +320,6 @@ fn parse_linked_elf(data: &[u8]) -> Result<LinkedElf, TranspileError> {
             };
 
             symbols_by_idx.push((name.to_string(), st_value));
-            let st_type = st_info & 0xf;
-            let st_bind = st_info >> 4;
-            if (st_type == 2 || st_type == 0)
-                && (st_bind == 1 || st_bind == 2)
-                && st_value != 0
-                && !name.is_empty()
-                && !name.starts_with('$')
-            {
-                named_symbols.push((name.to_string(), st_value));
-            }
         }
     }
 
@@ -517,7 +492,6 @@ fn parse_linked_elf(data: &[u8]) -> Result<LinkedElf, TranspileError> {
         abs_code_ptrs: abs64_relocs,
         sub32_relocs,
         code_ranges,
-        symbols: named_symbols,
         entry_vaddr: e_entry,
     })
 }

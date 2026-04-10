@@ -315,7 +315,6 @@ struct AccContext {
     next_service_id: ServiceId,
     transfers: Vec<DeferredTransfer>,
     output: Option<Hash>,
-    _preimage_provisions: Vec<(ServiceId, Vec<u8>)>,
     privileges: AccPrivileges,
     /// Pending validator keys set by designate host call (ι).
     pending_validators: Option<Vec<Vec<u8>>>,
@@ -400,7 +399,6 @@ fn accumulate_single_service(
         next_service_id,
         transfers: vec![],
         output: None,
-        _preimage_provisions: vec![],
         privileges: privileges.clone(),
         pending_validators: None,
         auth_queues: None,
