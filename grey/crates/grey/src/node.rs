@@ -806,9 +806,7 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                                 ) {
                                     use scale::Encode;
                                     tracing::warn!(slot = evidence.slot, "equivocation detected: broadcasting evidence and countersig");
-                                    // Broadcast raw evidence so peers learn about it
-                                    let _ = net_commands.try_send(NetworkCommand::BroadcastEquivocation { data: evidence.encode() });
-                                    // Sign and broadcast our own countersig
+                                    // Sign and broadcast our countersig (raw evidence is redundant — countersig contains it)
                                     let ctx = grey_types::signing_contexts::EQUIVOCATION_EVIDENCE;
                                     let payload = evidence.sign_bytes();
                                     let mut msg = Vec::with_capacity(ctx.len() + payload.len());
@@ -1080,9 +1078,7 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                                     ) {
                                         use scale::Encode;
                                         tracing::warn!(slot = evidence.slot, "equivocation detected: broadcasting evidence and countersig");
-                                        // Broadcast raw evidence so peers learn about it
-                                        let _ = net_commands.try_send(NetworkCommand::BroadcastEquivocation { data: evidence.encode() });
-                                        // Sign and broadcast our own countersig
+                                        // Sign and broadcast our countersig (raw evidence is redundant — countersig contains it)
                                         let ctx = grey_types::signing_contexts::EQUIVOCATION_EVIDENCE;
                                         let payload = evidence.sign_bytes();
                                         let mut msg = Vec::with_capacity(ctx.len() + payload.len());
