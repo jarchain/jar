@@ -49,7 +49,7 @@ def founderWeight : Nat := 1
 def genesisSchedule : List (Epoch × GenesisVariant) :=
   [ (0, GenesisVariant.v1)
   , (1774188000, GenesisVariant.v2)  -- 2026-03-22 14:00 UTC: rank-based target selection
-  , (4102444800, GenesisVariant.v3)  -- 2100-01-01 00:00 UTC: Bradley-Terry ranking (inactive placeholder)
+  , (1775829600, GenesisVariant.v3)  -- 2026-04-10 14:00 UTC: Bradley-Terry ranking
   ]
 
 /-- Resolve the active variant for a given epoch. -/
