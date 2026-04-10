@@ -2424,7 +2424,6 @@ mod tests {
         let (url, state, _rx, _store, _dir) = setup().await;
         let client = HttpClientBuilder::default().build(&url).unwrap();
 
-        // Make a few requests to generate latency data
         let _: serde_json::Value = client
             .request("jam_getStatus", rpc_params![])
             .await
@@ -2462,19 +2461,63 @@ mod tests {
     #[test]
     fn test_latency_histogram_observe() {
         let mut hist = LatencyHistogram::new();
-        hist.observe(0.003); // fits in 0.005 bucket
-        hist.observe(0.02); // fits in 0.025 bucket
-        hist.observe(2.0); // fits in 5.0 bucket
+        hist.observe(0.003);
+        hist.observe(0.02);
+        hist.observe(2.0);
 
         assert_eq!(hist.count, 3);
         assert!((hist.sum - 2.023).abs() < 0.001);
-        // Bucket[0] = 0.001: 0 observations <= 0.001
         assert_eq!(hist.buckets[0], 0);
-        // Bucket[1] = 0.005: 1 observation (0.003)
         assert_eq!(hist.buckets[1], 1);
-        // Bucket[3] = 0.025: 1 observation (0.02)
         assert_eq!(hist.buckets[3], 1);
-        // Bucket[9] = 5.0: 1 observation (2.0)
         assert_eq!(hist.buckets[9], 1);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_rpc_requests() {
+        let (url, state, _rx, store, _dir) = setup().await;
+
+        {
+            let mut status = state.status.write().await;
+            status.head_slot = 99;
+            status.head_hash = "abcd".into();
+        }
+        let block = test_block(42);
+        let hash = store.put_block(&block).unwrap();
+        store.set_head(&hash, 42).unwrap();
+
+        let mut handles = Vec::new();
+        for i in 0..100u32 {
+            let url = url.clone();
+            let hash_hex = hex::encode(hash.0);
+            handles.push(tokio::spawn(async move {
+                let client = HttpClientBuilder::default().build(&url).unwrap();
+                let result: Result<serde_json::Value, _> = match i % 4 {
+                    0 => client.request("jam_getStatus", rpc_params![]).await,
+                    1 => client.request("jam_getHead", rpc_params![]).await,
+                    2 => client.request("jam_getBlock", rpc_params![hash_hex]).await,
+                    _ => client.request("jam_getFinalized", rpc_params![]).await,
+                };
+                (i, result)
+            }));
+        }
+
+        let mut successes = 0u32;
+        let mut failures = Vec::new();
+        for handle in handles {
+            let (i, result) = handle.await.unwrap();
+            match result {
+                Ok(_) => successes += 1,
+                Err(e) => failures.push((i, e.to_string())),
+            }
+        }
+
+        assert_eq!(
+            successes,
+            100,
+            "all 100 concurrent requests should succeed, but {} failed: {:?}",
+            failures.len(),
+            failures
+        );
     }
 }
