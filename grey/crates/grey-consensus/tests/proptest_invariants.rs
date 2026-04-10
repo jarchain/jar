@@ -67,6 +67,36 @@ fn check_invariants_over_slots(slot_offsets: Vec<u32>) {
                     "pending_reports length changed"
                 );
 
+                // Invariant 6: auth_pool length equals total_cores
+                assert_eq!(
+                    new_state.auth_pool.len(),
+                    usize::from(config.core_count),
+                    "auth_pool length changed from {}",
+                    new_state.auth_pool.len()
+                );
+
+                // Invariant 7: auth_queue length equals auth_queue_size
+                assert_eq!(
+                    new_state.auth_queue.len(),
+                    config.auth_queue_size,
+                    "auth_queue length changed from {}",
+                    new_state.auth_queue.len()
+                );
+
+                // Invariant 8: pending_validators size is constant
+                assert_eq!(
+                    new_state.pending_validators.len(),
+                    initial_validator_count,
+                    "pending_validators size changed"
+                );
+
+                // Invariant 9: safrole pending_keys size is constant
+                assert_eq!(
+                    new_state.safrole.pending_keys.len(),
+                    initial_validator_count,
+                    "safrole pending_keys size changed"
+                );
+
                 prev_timeslot = new_state.timeslot;
                 state = new_state;
             }
