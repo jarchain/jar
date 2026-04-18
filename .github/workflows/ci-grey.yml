@@ -32,6 +32,36 @@ jobs:
           --ignore RUSTSEC-2025-0009
           --ignore RUSTSEC-2025-0010
 
+  sbom:
+    name: SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx --locked --version 0.5.9
+
+      - name: Generate SBOMs
+        run: >
+          cargo cyclonedx
+          --manifest-path Cargo.toml
+          --format json
+          --spec-version 1.5
+          --override-filename sbom
+
+      - name: Upload SBOM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: grey-sbom
+          if-no-files-found: error
+          path: |
+            grey/**/sbom.json
+            tools/**/sbom.json
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
