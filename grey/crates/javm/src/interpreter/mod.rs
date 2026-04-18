@@ -1209,11 +1209,10 @@ impl Interpreter {
                 if let Args::ThreeReg { ra, rb, rd } = args {
                     let a = self.registers[ra] as u32;
                     let b = self.registers[rb] as u32;
-                    self.registers[rd] = if b == 0 {
-                        u64::MAX
-                    } else {
-                        args::sign_extend_32((a / b) as u64)
-                    };
+                    self.registers[rd] = a
+                        .checked_div(b)
+                        .map(|q| args::sign_extend_32(q as u64))
+                        .unwrap_or(u64::MAX);
                     self.pc = next_pc;
                 }
             }
@@ -1305,11 +1304,9 @@ impl Interpreter {
             }
             Opcode::DivU64 => {
                 if let Args::ThreeReg { ra, rb, rd } = args {
-                    self.registers[rd] = if self.registers[rb] == 0 {
-                        u64::MAX
-                    } else {
-                        self.registers[ra] / self.registers[rb]
-                    };
+                    self.registers[rd] = self.registers[ra]
+                        .checked_div(self.registers[rb])
+                        .unwrap_or(u64::MAX);
                     self.pc = next_pc;
                 }
             }
@@ -2083,19 +2080,14 @@ impl Interpreter {
                 // === Div/Rem (three reg, common in crypto) ===
                 Opcode::DivU32 => {
                     let b = self.registers[rb] as u32;
-                    self.registers[rd] = if b == 0 {
-                        u64::MAX
-                    } else {
-                        args::sign_extend_32((self.registers[ra] as u32 / b) as u64)
-                    };
+                    self.registers[rd] = (self.registers[ra] as u32)
+                        .checked_div(b)
+                        .map(|q| args::sign_extend_32(q as u64))
+                        .unwrap_or(u64::MAX);
                 }
                 Opcode::DivU64 => {
                     let b = self.registers[rb];
-                    self.registers[rd] = if b == 0 {
-                        u64::MAX
-                    } else {
-                        self.registers[ra] / b
-                    };
+                    self.registers[rd] = self.registers[ra].checked_div(b).unwrap_or(u64::MAX);
                 }
                 Opcode::DivS32 => {
                     let a = self.registers[ra] as i32;
@@ -2595,54 +2587,46 @@ fn compute_bb_starts_inner(code: &[u8], bitmask: &[u8]) -> (Vec<bool>, Vec<u8>) 
         // For branch/jump instructions, mark the target as a basic block start
         let cat = op.category();
         match cat {
-            crate::instruction::InstructionCategory::OneOffset => {
+            crate::instruction::InstructionCategory::OneOffset if i + 5 <= len => {
                 // Jump: opcode + 4-byte offset
-                if i + 5 <= len {
-                    let off =
-                        i32::from_le_bytes([code[i + 1], code[i + 2], code[i + 3], code[i + 4]]);
-                    let target = (i as i64 + off as i64) as usize;
-                    if target < len && target < bitmask.len() && bitmask[target] == 1 {
-                        starts[target] = true;
-                    }
+                let off = i32::from_le_bytes([code[i + 1], code[i + 2], code[i + 3], code[i + 4]]);
+                let target = (i as i64 + off as i64) as usize;
+                if target < len && target < bitmask.len() && bitmask[target] == 1 {
+                    starts[target] = true;
                 }
             }
-            crate::instruction::InstructionCategory::TwoRegOneOffset => {
+            crate::instruction::InstructionCategory::TwoRegOneOffset if i + 6 <= len => {
                 // Branch: opcode + 1-byte regs + 4-byte offset
-                if i + 6 <= len {
-                    let off =
-                        i32::from_le_bytes([code[i + 2], code[i + 3], code[i + 4], code[i + 5]]);
-                    let target = (i as i64 + off as i64) as usize;
-                    if target < len && target < bitmask.len() && bitmask[target] == 1 {
-                        starts[target] = true;
-                    }
+                let off = i32::from_le_bytes([code[i + 2], code[i + 3], code[i + 4], code[i + 5]]);
+                let target = (i as i64 + off as i64) as usize;
+                if target < len && target < bitmask.len() && bitmask[target] == 1 {
+                    starts[target] = true;
                 }
             }
-            crate::instruction::InstructionCategory::OneRegImmOffset => {
+            crate::instruction::InstructionCategory::OneRegImmOffset if i + 2 <= len => {
                 // BranchImm: opcode(1) + reg|lx(1) + imm(lx bytes) + offset(ly bytes)
                 // lx is variable (0-4), so compute the actual offset position.
-                if i + 2 <= len {
-                    let reg_byte = code[i + 1];
-                    let lx = ((reg_byte as usize / 16) % 8).min(4);
-                    let ly = if skip > lx + 1 {
-                        (skip - lx - 1).min(4)
-                    } else {
-                        0
-                    };
-                    let off_start = i + 2 + lx;
-                    if ly > 0 && off_start + ly <= len {
-                        let mut buf = [0u8; 4];
-                        buf[..ly].copy_from_slice(&code[off_start..off_start + ly]);
-                        // Sign-extend from ly bytes
-                        if ly < 4 && buf[ly - 1] & 0x80 != 0 {
-                            for b in &mut buf[ly..4] {
-                                *b = 0xFF;
-                            }
+                let reg_byte = code[i + 1];
+                let lx = ((reg_byte as usize / 16) % 8).min(4);
+                let ly = if skip > lx + 1 {
+                    (skip - lx - 1).min(4)
+                } else {
+                    0
+                };
+                let off_start = i + 2 + lx;
+                if ly > 0 && off_start + ly <= len {
+                    let mut buf = [0u8; 4];
+                    buf[..ly].copy_from_slice(&code[off_start..off_start + ly]);
+                    // Sign-extend from ly bytes
+                    if ly < 4 && buf[ly - 1] & 0x80 != 0 {
+                        for b in &mut buf[ly..4] {
+                            *b = 0xFF;
                         }
-                        let off = i32::from_le_bytes(buf);
-                        let target = (i as i64 + off as i64) as usize;
-                        if target < len && target < bitmask.len() && bitmask[target] == 1 {
-                            starts[target] = true;
-                        }
+                    }
+                    let off = i32::from_le_bytes(buf);
+                    let target = (i as i64 + off as i64) as usize;
+                    if target < len && target < bitmask.len() && bitmask[target] == 1 {
+                        starts[target] = true;
                     }
                 }
             }
