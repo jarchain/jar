@@ -1,5 +1,5 @@
-use tracing::{span, Level};
 use grey_types::Hash;
+use tracing::{Level, span};
 
 pub struct Spans;
 

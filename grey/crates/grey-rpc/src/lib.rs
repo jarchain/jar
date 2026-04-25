@@ -277,7 +277,7 @@ impl RpcSpan {
             *counts.entry(method.to_string()).or_insert(0) += 1;
         }
         let span = tracing::info_span!("rpc_request", method = method);
-        let _enter = span.enter();
+        let _enter = span.clone().enter();
         RpcSpan {
             method: method.to_string(),
             span,

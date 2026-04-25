@@ -11,7 +11,9 @@ pub fn init_tracing(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let tracer = if let Some(endpoint) = otlp_endpoint {
         let exporter = opentelemetry_otlp::SpanExporter::builder()
-            .with_tonic(opentelemetry_otlp::TonicConfig::default().with_timeout(Duration::from_secs(10)))
+            .with_tonic(
+                opentelemetry_otlp::TonicConfig::default().with_timeout(Duration::from_secs(10)),
+            )
             .with_endpoint(endpoint)
             .build()?;
 
