@@ -104,6 +104,10 @@ macro_rules! impl_crypto_common {
             pub fn to_hex(&self) -> String {
                 hex::encode(self.0)
             }
+            /// Encode the first 8 bytes as a hex string for log/debug output.
+            pub fn short_hex(&self) -> String {
+                hex::encode(&self.0[..8])
+            }
             /// Parse from a hex string (with optional 0x prefix). Panics on invalid input.
             pub fn from_hex(s: &str) -> Self {
                 Self(decode_hex_fixed(s).expect(concat!("invalid hex for ", $debug_name)))
@@ -141,7 +145,7 @@ macro_rules! impl_crypto_type {
         }
         impl fmt::Debug for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(f, "{}({}...)", $debug_name, hex::encode(&self.0[..8]))
+                write!(f, "{}({}...)", $debug_name, self.short_hex())
             }
         }
     };
