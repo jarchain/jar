@@ -74,12 +74,19 @@ private def econEncodeInfo (e : JarConfig.EconType) (items bytes : Nat) : ByteAr
 
 /-- Combined work-digest/report operand for accumulation. GP §12. -/
 structure OperandTuple where
+  /-- Work-package hash. -/
   packageHash : Hash
+  /-- Segment root hash. -/
   segmentRoot : Hash
+  /-- Authorizer code hash. -/
   authorizerHash : Hash
+  /-- Work-item payload hash. -/
   payloadHash : Hash
+  /-- Gas limit for accumulation. -/
   gasLimit : Gas
+  /-- Authorization output/trace. -/
   authOutput : ByteArray
+  /-- Refinement result (output or error). -/
   result : WorkResult
 
 instance : Inhabited OperandTuple where
@@ -94,7 +101,9 @@ instance : Inhabited OperandTuple where
 
 /-- Input to a single-service accumulation: either an operand or a deferred transfer. -/
 inductive AccInput where
+  /-- Operand from a work-report result. -/
   | operand : OperandTuple → AccInput
+  /-- Deferred transfer from another service. -/
   | transfer : DeferredTransfer → AccInput
 
 -- ============================================================================
@@ -103,14 +112,23 @@ inductive AccInput where
 
 /-- Partial state threaded through accumulation. GP §12. -/
 structure PartialState where
+  /-- Service account dictionary. -/
   accounts : Dict ServiceId ServiceAccount
+  /-- Pending validator keys for next rotation. -/
   stagingKeys : Array ValidatorKey
+  /-- Per-core authorization queues. -/
   authQueue : Array (Array Hash)
+  /-- Manager service ID. -/
   manager : ServiceId
+  /-- Assigner service IDs. -/
   assigners : Array ServiceId
+  /-- Designator service ID. -/
   designator : ServiceId
+  /-- Registrar service ID. -/
   registrar : ServiceId
+  /-- Services that always accumulate regardless of operands. -/
   alwaysAccumulate : Dict ServiceId Gas
+  /-- Quota service ID (jar1). -/
   quotaService : ServiceId := 0
 
 /-- Extract partial state from full state. -/
@@ -131,10 +149,15 @@ def PartialState.fromState (s : State) : PartialState :=
 
 /-- Output of a single-service accumulation. GP §12. -/
 structure AccOneOutput where
+  /-- Partial state after accumulation. -/
   postState : PartialState
+  /-- Deferred transfers generated during accumulation. -/
   deferredTransfers : Array DeferredTransfer
+  /-- Accumulation output hash. -/
   yieldHash : Option Hash
+  /-- Gas consumed during accumulation. -/
   gasUsed : Gas
+  /-- Preimage provisions generated during accumulation. -/
   provisions : Array (ServiceId × ByteArray)
   /-- Updated opaque data (entries consumed during accumulation removed). -/
   opaqueData : Array (ByteArray × ByteArray) := #[]

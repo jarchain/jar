@@ -62,33 +62,49 @@ structure Header where
 
 /-- A single judgment by a validator on a work-report. -/
 structure Judgment where
+  /-- Whether the validator judges the report as valid. -/
   isValid : Bool
+  /-- Index of the judging validator in the validator set. -/
   validatorIndex : ValidatorIndex
+  /-- Ed25519 signature attesting to the judgment. -/
   signature : Ed25519Signature
 
 /-- A verdict on a work-report, composed of multiple judgments. -/
 structure Verdict where
+  /-- Hash of the work-report being judged. -/
   reportHash : Hash
+  /-- Timeslot age of the judgment. -/
   age : UInt32
+  /-- Individual validator judgments composing the verdict. -/
   judgments : Array Judgment
 
 /-- Culprit: a validator who guaranteed an invalid work-report. -/
 structure Culprit where
+  /-- Hash of the invalid work-report. -/
   reportHash : Hash
+  /-- Ed25519 public key of the offending guarantor. -/
   validatorKey : Ed25519PublicKey
+  /-- Ed25519 signature proving guilt. -/
   signature : Ed25519Signature
 
 /-- Fault: a validator who made an incorrect judgment. -/
 structure Fault where
+  /-- Hash of the work-report in question. -/
   reportHash : Hash
+  /-- Whether the faulting validator judged correctly. -/
   isValid : Bool
+  /-- Ed25519 public key of the faulting validator. -/
   validatorKey : Ed25519PublicKey
+  /-- Ed25519 signature proving the fault. -/
   signature : Ed25519Signature
 
 /-- E_D : Disputes extrinsic. GP §10.2. -/
 structure DisputesExtrinsic where
+  /-- Super-majority verdicts on work-reports. -/
   verdicts : Array Verdict
+  /-- Validators who guaranteed invalid work-reports. -/
   culprits : Array Culprit
+  /-- Validators who made incorrect judgments. -/
   faults : Array Fault
 
 -- ============================================================================
