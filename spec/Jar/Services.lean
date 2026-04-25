@@ -335,26 +335,46 @@ opaque auditWorkReport
 
 /-- Host-call identifiers available during accumulation. GP §12. -/
 inductive HostCall where
-  | gas          -- Ω_G : Query remaining gas
-  | lookup       -- Ω_L : Lookup value in service storage
-  | read         -- Ω_R : Read from own storage
-  | write        -- Ω_W : Write to own storage
-  | info         -- Ω_I : Service info query
-  | bless        -- Ω_B : Set privileged services (manager only)
-  | assign       -- Ω_A : Assign core authorization
-  | designate    -- Ω_D : Designate validator keys
-  | checkpoint   -- Ω_C : Checkpoint gas
-  | newService   -- Ω_N : Create new service
-  | upgrade      -- Ω_U : Upgrade service code
-  | transfer     -- Ω_T : Transfer balance
-  | quit         -- Ω_Q : Remove service
-  | solicit      -- Ω_S : Solicit preimage
-  | forget       -- Ω_F : Forget preimage
-  | historicalLookup -- Ω_H : Historical state lookup
-  | fetch        -- Ω_E : Fetch preimage data
-  | yield        -- Ω_Y : Yield accumulation output
-  | provide      -- Ω_P : Provide preimage data
-  | empower      -- Ω_M : Empower (privileged operations)
+  /-- Ω_G: Query remaining gas. Host call slot 1. -/
+  | gas
+  /-- Ω_L: Lookup value in another service's storage. Host call slot 3. -/
+  | lookup
+  /-- Ω_R: Read from own service storage. Host call slot 4. -/
+  | read
+  /-- Ω_W: Write to own service storage. Host call slot 5. -/
+  | write
+  /-- Ω_I: Query own service info. Host call slot 6. -/
+  | info
+  /-- Ω_B: Set privileged services (manager only). Host call slot 15. -/
+  | bless
+  /-- Ω_A: Assign core authorization. Host call slot 16. -/
+  | assign
+  /-- Ω_D: Designate validator keys. Host call slot 17. -/
+  | designate
+  /-- Ω_C: Checkpoint gas for potential rollback. Host call slot 18. -/
+  | checkpoint
+  /-- Ω_N: Create a new service. Host call slot 19. -/
+  | newService
+  /-- Ω_U: Upgrade service code. Host call slot 20. -/
+  | upgrade
+  /-- Ω_T: Transfer balance to another service. Host call slot 21. -/
+  | transfer
+  /-- Ω_Q: Remove (quit) own service. Host call slot 22. -/
+  | quit
+  /-- Ω_S: Solicit a preimage. Host call slot 24. -/
+  | solicit
+  /-- Ω_F: Forget a preimage. Host call slot 25. -/
+  | forget
+  /-- Ω_H: Historical state lookup. Host call slot 7. -/
+  | historicalLookup
+  /-- Ω_E: Fetch preimage data. Host call slot 2. -/
+  | fetch
+  /-- Ω_Y: Yield accumulation output. Host call slot 26. -/
+  | yield
+  /-- Ω_P: Provide preimage data. Host call slot 27. -/
+  | provide
+  /-- Ω_M: Empower privileged operations. Host call slot 28. -/
+  | empower
   deriving BEq
 
 end Jar.Services

@@ -20,12 +20,18 @@ variable [JarConfig]
 /-- 𝔼 : Work execution error. GP eq (109–111).
     Possible outcomes when refinement fails. -/
 inductive WorkError where
-  | outOfGas    -- ∞ : gas exhaustion
-  | panic       -- ☇ : exceptional halt
-  | badExports  -- invalid exports
-  | oversize    -- code too large
-  | badCode     -- BAD : code not available
-  | bigCode     -- BIG : code exceeds limit
+  /-- Gas exhaustion (∞). GP eq (110). -/
+  | outOfGas
+  /-- Exceptional halt (☇). GP eq (110). -/
+  | panic
+  /-- Invalid exports. GP eq (110). -/
+  | badExports
+  /-- Code too large. GP eq (110). -/
+  | oversize
+  /-- Code not available (BAD). GP eq (110). -/
+  | badCode
+  /-- Code exceeds limit (BIG). GP eq (110). -/
+  | bigCode
   deriving BEq
 
 -- ============================================================================
@@ -34,7 +40,9 @@ inductive WorkError where
 
 /-- Work result: either successful output blob or an error. GP eq (109). -/
 inductive WorkResult where
+  /-- Successful refinement output. -/
   | ok : ByteArray → WorkResult
+  /-- Refinement failed with error. -/
   | err : WorkError → WorkResult
 
 /-- 𝔻 : Work digest — the on-chain summary of a single refined work-item.

@@ -90,9 +90,13 @@ def Params.isValidValCount (cfg : Params) (z : Nat) : Bool :=
 
 /-- Positivity proofs required for Fin types to be inhabited. -/
 structure Params.Valid (cfg : Params) : Prop where
+  /-- Positivity proof: validator count V > 0. -/
   hV : 0 < cfg.V
+  /-- Positivity proof: core count C > 0. -/
   hC : 0 < cfg.C
+  /-- Positivity proof: epoch length E > 0. -/
   hE : 0 < cfg.E
+  /-- Positivity proof: ticket count N > 0. -/
   hN : 0 < cfg.N_TICKETS
 
 -- ============================================================================
@@ -184,7 +188,9 @@ class EconModel (econ : Type) (xfer : Type) where
 class JarConfig where
   /-- Variant name, e.g. "gp072_tiny", "gp072_full". -/
   name : String
+  /-- Protocol parameter set for this variant. -/
   config : Params
+  /-- Positivity proofs for the parameter set. -/
   valid : Params.Valid config
   /-- PVM memory layout for program initialization. -/
   memoryModel : MemoryModel := .segmented

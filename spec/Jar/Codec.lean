@@ -303,7 +303,9 @@ def encodeBlock (b : Block) : ByteArray :=
 
 /-- State for the decoder: a ByteArray and a current position. -/
 structure DecodeState where
+  /-- Byte array being decoded. -/
   data : ByteArray
+  /-- Current read position in the byte array. -/
   pos : Nat
 
 /-- Decoder monad: a function from state to an optional (result, new state). -/
