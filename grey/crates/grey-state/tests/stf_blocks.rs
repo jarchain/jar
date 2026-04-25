@@ -204,7 +204,7 @@ fn run_independent_trace(trace_name: &str) {
                                     eprintln!(
                                         "  DIFF key[0]={} key={}...: exp={}B act={}B",
                                         k[0],
-                                        hex::encode(&k[..8]),
+                                        hex::encode(&k[..8.min(k.len())]),
                                         ev.len(),
                                         av.len()
                                     );
@@ -213,7 +213,7 @@ fn run_independent_trace(trace_name: &str) {
                                     eprintln!(
                                         "  MISSING key[0]={} key={}...: exp={}B",
                                         k[0],
-                                        hex::encode(&k[..8]),
+                                        hex::encode(&k[..8.min(k.len())]),
                                         ev.len()
                                     );
                                 }
@@ -225,7 +225,7 @@ fn run_independent_trace(trace_name: &str) {
                                 eprintln!(
                                     "  EXTRA key[0]={} key={}...: act={}B",
                                     k[0],
-                                    hex::encode(&k[..8]),
+                                    hex::encode(&k[..8.min(k.len())]),
                                     av.len()
                                 );
                             }
