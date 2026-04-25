@@ -59,10 +59,15 @@ namespace Jar.JAVM
 
 /-- Single-pass simulation state. -/
 structure GasSimStateSP where
+  /-- Current instruction PC (none when done decoding). -/
   ι         : Option Nat    -- current instruction PC (none = done)
+  /-- Current decode cycle counter. -/
   cycle     : Nat           -- current decode cycle
+  /-- Decode slots consumed this cycle (max 4 per cycle). -/
   decodeUsed : Nat          -- decode slots consumed this cycle
+  /-- Cycle when each register's value is ready (13 entries, one per register). -/
   regDone   : Array Nat     -- cycle when each register's value is ready (13 entries)
+  /-- Maximum completion cycle across all instructions in the block. -/
   maxDone   : Nat           -- max completion cycle across all instructions
 
 /-- Single-pass gas simulation: process one instruction at a time. -/

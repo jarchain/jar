@@ -21,28 +21,43 @@ namespace Jar.JAVM
 
 /-- ROB entry state. -/
 inductive RobState where
-  | dec   -- decoded, waiting for dependencies
-  | wait  -- dependencies resolved, waiting for dispatch
-  | exe   -- executing
-  | fin   -- finished
+  /-- Decoded, waiting for dependencies. -/
+  | dec
+  /-- Dependencies resolved, waiting for dispatch. -/
+  | wait
+  /-- Executing on functional units. -/
+  | exe
+  /-- Finished execution. -/
+  | fin
   deriving BEq, Inhabited
 
 /-- Reorder buffer entry. -/
 structure RobEntry where
+  /-- Current state of this ROB entry. -/
   state     : RobState
+  /-- Remaining execution cycles. -/
   cyclesLeft : Nat
+  /-- ROB indices this entry depends on. -/
   deps      : Array Nat       -- ROB indices this depends on
+  /-- Register indices written by this instruction. -/
   destRegs  : Array Nat       -- registers written
+  /-- Execution units required to start. -/
   execUnits : ExecUnits       -- units required to start execution
   deriving Inhabited
 
 /-- Pipeline simulation state. -/
 structure GasSimState where
+  /-- Current instruction PC (none when done decoding). -/
   ι                    : Option Nat       -- current instruction counter (none = done decoding)
+  /-- Elapsed pipeline cycles. -/
   cycles               : Nat              -- cycle counter
+  /-- Decode slots remaining this cycle (reset to 4). -/
   remainingDecodeSlots : Nat              -- reset to 4 each cycle
+  /-- Dispatch slots remaining this cycle (reset to 5). -/
   remainingStartSlots  : Nat              -- reset to 5 each cycle
+  /-- Execution units remaining this cycle (reset to ALU:4, LOAD:4, STORE:4, MUL:1, DIV:1). -/
   remainingExecUnits   : ExecUnits        -- reset to (4,4,4,1,1) each cycle
+  /-- Reorder buffer entries. -/
   rob                  : Array RobEntry   -- reorder buffer
   deriving Inhabited
 

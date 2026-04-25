@@ -23,8 +23,11 @@ open Jar.JAVM.Cap
 
 /-- Compiled code data associated with a CODE cap. -/
 structure CodeCapData where
+  /-- Unique identifier for this code capability. -/
   id : Nat
+  /-- Decoded program blob (code + bitmask). -/
   program : JAVM.ProgramBlob
+  /-- Jump table for dynamic jump resolution. -/
   jumpTable : Array Nat
 
 instance : Inhabited CodeCapData where
@@ -32,7 +35,9 @@ instance : Inhabited CodeCapData where
 
 /-- Backing store: flat byte array representing all physical pages. -/
 structure BackingStore where
+  /-- Raw byte data backing all physical pages. -/
   data : ByteArray
+  /-- Total number of pages in the backing store. -/
   totalPages : Nat
 
 /-- PVM run function type (selects gas model). -/
@@ -40,34 +45,53 @@ def PvmRunFn := JAVM.ProgramBlob → Nat → JAVM.Registers → JAVM.Memory → 
 
 /-- Kernel state: VM pool + call stack + backing store + memory. -/
 structure KernelState where
+  /-- Pool of VM instances. -/
   vms : Array VmInstance
+  /-- Call stack for CALL/REPLY semantics. -/
   callStack : Array CallFrame
+  /-- Code capabilities (compiled programs). -/
   codeCaps : Array CodeCapData
+  /-- Index of the currently active VM. -/
   activeVm : Nat
+  /-- Untyped capability allocator for retype operations. -/
   untyped : UntypedCap
+  /-- Backing store for DATA cap pages. -/
   backing : BackingStore
   /-- Flat PVM memory shared by all VMs (simplified model). -/
   memory : JAVM.Memory
   /-- PVM execution function (gas model dependent). -/
   pvmRun : PvmRunFn
+  /-- Memory access cycle cost for gas simulation. -/
   memCycles : Nat
 
 /-- Result of running the kernel. -/
 inductive KernelResult where
+  /-- Root VM halted with exit value. -/
   | halt (value : Nat)
+  /-- Root VM panicked. -/
   | panic
+  /-- Gas exhausted. -/
   | outOfGas
+  /-- Page fault at address. -/
   | pageFault (addr : Nat)
+  /-- Protocol cap invoked, requesting host interaction. -/
   | protocolCall (slot : Nat)
 
 /-- Internal dispatch result. -/
 inductive DispatchResult where
+  /-- Continue execution (dispatch handled internally). -/
   | continue_
+  /-- Protocol cap invoked, needs host interaction. -/
   | protocolCall (slot : Nat)
+  /-- Root VM halted with exit value. -/
   | rootHalt (value : Nat)
+  /-- Root VM panicked. -/
   | rootPanic
+  /-- Root VM out of gas. -/
   | rootOutOfGas
+  /-- Root VM page fault. -/
   | rootPageFault (addr : Nat)
+  /-- Fault was handled by parent VM (resume parent). -/
   | faultHandled
 
 -- ============================================================================

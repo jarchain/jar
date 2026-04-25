@@ -379,18 +379,28 @@ def jarMagic : Nat := decodeLEn ⟨#[0x4A, 0x41, 0x52, 0x02]⟩ 0 4
 
 /-- JAR header (10 bytes). -/
 structure JarHeader where
+  /-- Number of memory pages to allocate for the program. -/
   memoryPages : Nat
+  /-- Number of capability entries in the manifest. -/
   capCount : Nat
+  /-- Index of the initial invocation capability. -/
   invokeCap : Nat
 
 /-- JAR capability entry (19 bytes). -/
 structure JarCapEntry where
+  /-- Capability slot index in the cap table. -/
   capIndex : Nat
+  /-- true = CODE capability, false = DATA capability. -/
   isCode : Bool      -- true = CODE, false = DATA
+  /-- Starting page number for DATA capabilities. -/
   basePage : Nat     -- DATA only
+  /-- Number of pages spanned by this DATA capability. -/
   pageCount : Nat    -- DATA only
+  /-- true = read-write (RW), false = read-only (RO) for DATA capabilities. -/
   isRW : Bool        -- DATA only (true = RW, false = RO)
+  /-- Byte offset into the JAR data section for initial contents. -/
   dataOffset : Nat   -- offset into data section
+  /-- Length of initial data in bytes. -/
   dataLen : Nat      -- bytes of initial data
 
 /-- Parse a JAR header (11 bytes). Returns header + offset after header. -/
