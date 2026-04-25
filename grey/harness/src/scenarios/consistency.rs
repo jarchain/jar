@@ -10,7 +10,7 @@ use tracing::info;
 
 use crate::poll::submit_and_verify_pixel;
 use crate::rpc::{MultiRpcClient, RpcClient};
-use crate::scenarios::{LatencySample, ScenarioResult};
+use crate::scenarios::{LatencySample, ScenarioMetric, ScenarioResult};
 
 const VALIDATOR_COUNT: u16 = 6;
 const RPC_HOST: &str = "127.0.0.1";
@@ -45,13 +45,13 @@ pub async fn run(client: &RpcClient) -> ScenarioResult {
     let mut latencies = Vec::new();
 
     match run_inner(client, &mut latencies).await {
-        Ok(()) => ScenarioResult {
+        Ok(metrics) => ScenarioResult {
             name: "consistency",
             pass: true,
             duration: start.elapsed(),
             error: None,
             latencies,
-            metrics: Vec::new(),
+            metrics,
         },
         Err(e) => ScenarioResult {
             name: "consistency",
@@ -64,7 +64,10 @@ pub async fn run(client: &RpcClient) -> ScenarioResult {
     }
 }
 
-async fn run_inner(client: &RpcClient, latencies: &mut Vec<LatencySample>) -> Result<(), String> {
+async fn run_inner(
+    client: &RpcClient,
+    latencies: &mut Vec<LatencySample>,
+) -> Result<Vec<ScenarioMetric>, String> {
     let multi = MultiRpcClient::for_testnet(RPC_HOST, BASE_RPC_PORT, VALIDATOR_COUNT);
 
     let baseline = wait_for_settled_network(&multi).await?;
@@ -84,7 +87,10 @@ async fn run_inner(client: &RpcClient, latencies: &mut Vec<LatencySample>) -> Re
         });
     }
 
-    Ok(())
+    let final_snapshots = collect_consensus_snapshots(&multi).await?;
+    log_snapshots("final", &final_snapshots);
+
+    Ok(build_metrics(&baseline, &final_snapshots, latencies))
 }
 
 async fn wait_for_settled_network(
@@ -301,9 +307,90 @@ fn short_hex(value: &str) -> &str {
     &value[..prefix_len]
 }
 
+fn snapshot_head_spread(snapshots: &[ValidatorSnapshot]) -> u32 {
+    let min_head = snapshots.iter().map(|snapshot| snapshot.head_slot).min();
+    let max_head = snapshots.iter().map(|snapshot| snapshot.head_slot).max();
+    match (min_head, max_head) {
+        (Some(min_head), Some(max_head)) => max_head.saturating_sub(min_head),
+        _ => 0,
+    }
+}
+
+fn snapshot_finalized_slot(snapshots: &[ValidatorSnapshot]) -> u32 {
+    snapshots
+        .first()
+        .map(|snapshot| snapshot.finalized_slot)
+        .unwrap_or(0)
+}
+
+fn average_duration(samples: &[LatencySample]) -> Duration {
+    if samples.is_empty() {
+        return Duration::ZERO;
+    }
+
+    let total: Duration = samples.iter().map(|sample| sample.duration).sum();
+    total / samples.len() as u32
+}
+
+fn max_duration(samples: &[LatencySample]) -> Duration {
+    samples
+        .iter()
+        .map(|sample| sample.duration)
+        .max()
+        .unwrap_or(Duration::ZERO)
+}
+
+fn build_metrics(
+    baseline: &[ValidatorSnapshot],
+    final_snapshots: &[ValidatorSnapshot],
+    latencies: &[LatencySample],
+) -> Vec<ScenarioMetric> {
+    vec![
+        ScenarioMetric {
+            label: "validator_count".into(),
+            value: baseline.len() as f64,
+            unit: "count",
+        },
+        ScenarioMetric {
+            label: "baseline_head_spread_slots".into(),
+            value: snapshot_head_spread(baseline) as f64,
+            unit: "slots",
+        },
+        ScenarioMetric {
+            label: "baseline_finalized_slot".into(),
+            value: snapshot_finalized_slot(baseline) as f64,
+            unit: "slot",
+        },
+        ScenarioMetric {
+            label: "final_head_spread_slots".into(),
+            value: snapshot_head_spread(final_snapshots) as f64,
+            unit: "slots",
+        },
+        ScenarioMetric {
+            label: "final_finalized_slot".into(),
+            value: snapshot_finalized_slot(final_snapshots) as f64,
+            unit: "slot",
+        },
+        ScenarioMetric {
+            label: "pixel_consensus_avg_ms".into(),
+            value: average_duration(latencies).as_secs_f64() * 1000.0,
+            unit: "ms",
+        },
+        ScenarioMetric {
+            label: "pixel_consensus_max_ms".into(),
+            value: max_duration(latencies).as_secs_f64() * 1000.0,
+            unit: "ms",
+        },
+    ]
+}
+
 #[cfg(test)]
 mod tests {
-    use super::pixel_matches;
+    use super::{
+        LatencySample, ValidatorSnapshot, average_duration, build_metrics, max_duration,
+        pixel_matches, snapshot_head_spread,
+    };
+    use std::time::Duration;
 
     #[test]
     fn pixel_matches_checks_expected_rgb_offset() {
@@ -316,5 +403,64 @@ mod tests {
 
         assert!(pixel_matches(&storage, 5, 7, 0x12, 0x34, 0x56));
         assert!(!pixel_matches(&storage, 5, 7, 0x12, 0x34, 0x57));
+    }
+
+    fn snapshot(index: usize, head_slot: u32, finalized_slot: u32) -> ValidatorSnapshot {
+        ValidatorSnapshot {
+            index,
+            head_slot,
+            finalized_slot,
+            finalized_hash: format!("hash-{index}"),
+            finalized_state_root: format!("root-{index}"),
+        }
+    }
+
+    #[test]
+    fn snapshot_head_spread_uses_max_minus_min() {
+        let snapshots = vec![snapshot(0, 21, 18), snapshot(1, 24, 18), snapshot(2, 22, 18)];
+        assert_eq!(snapshot_head_spread(&snapshots), 3);
+    }
+
+    #[test]
+    fn build_metrics_emits_consistency_summary() {
+        let baseline = vec![snapshot(0, 20, 18), snapshot(1, 22, 18), snapshot(2, 21, 18)];
+        let final_snapshots = vec![snapshot(0, 30, 27), snapshot(1, 31, 27), snapshot(2, 29, 27)];
+        let latencies = vec![
+            LatencySample {
+                label: "pixel(1,1)".into(),
+                duration: Duration::from_millis(1200),
+            },
+            LatencySample {
+                label: "pixel(2,2)".into(),
+                duration: Duration::from_millis(1800),
+            },
+        ];
+
+        let metrics = build_metrics(&baseline, &final_snapshots, &latencies);
+        assert_eq!(metrics.len(), 7);
+        assert!(metrics.iter().any(|m| m.label == "validator_count" && m.value == 3.0));
+        assert!(
+            metrics
+                .iter()
+                .any(|m| m.label == "baseline_head_spread_slots" && m.value == 2.0)
+        );
+        assert!(metrics.iter().any(|m| m.label == "final_finalized_slot" && m.value == 27.0));
+        assert!(
+            metrics
+                .iter()
+                .any(|m| m.label == "pixel_consensus_avg_ms" && (m.value - 1500.0).abs() < 0.001)
+        );
+        assert!(
+            metrics
+                .iter()
+                .any(|m| m.label == "pixel_consensus_max_ms" && (m.value - 1800.0).abs() < 0.001)
+        );
+    }
+
+    #[test]
+    fn duration_helpers_handle_empty_samples() {
+        let samples: Vec<LatencySample> = Vec::new();
+        assert_eq!(average_duration(&samples), Duration::ZERO);
+        assert_eq!(max_duration(&samples), Duration::ZERO);
     }
 }
