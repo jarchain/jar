@@ -20,13 +20,17 @@ namespace Jar.JAVM.Cap
 
 /-- Memory access mode, set at MAP time. -/
 inductive Access where
+  /-- Read-only. -/
   | ro : Access
+  /-- Read-write. -/
   | rw : Access
   deriving BEq, Inhabited, Repr
 
 /-- Cap entry type in the blob manifest. -/
 inductive ManifestCapType where
+  /-- Code capability (Harvard architecture, not in data address space). -/
   | code : ManifestCapType
+  /-- Data capability (physical pages with exclusive mapping). -/
   | data : ManifestCapType
   deriving BEq, Inhabited
 
@@ -89,11 +93,17 @@ structure ProtocolCap where
 
 /-- A capability in the cap table. -/
 inductive Cap where
+  /-- UNTYPED: bump allocator for physical page allocation. Copyable. -/
   | untyped (u : UntypedCap) : Cap
+  /-- DATA: physical pages with exclusive mapping. Move-only. -/
   | data (d : DataCap) : Cap
+  /-- CODE: compiled PVM bytecode (Harvard architecture). Copyable. -/
   | code (c : CodeCap) : Cap
+  /-- HANDLE: unique VM owner with management ops. Move-only. -/
   | handle (h : HandleCap) : Cap
+  /-- CALLABLE: VM entry point (CALL only). Copyable. -/
   | callable (c : CallableCap) : Cap
+  /-- Protocol: kernel-handled service (storage, preimages, etc.). Copyable. -/
   | protocol (p : ProtocolCap) : Cap
   deriving Inhabited
 
@@ -127,6 +137,7 @@ def ipcSlot : Nat := 0
 The original bitmap tracks which protocol cap slots are unmodified
 (for compiler fast-path inlining of ecalli on protocol caps). -/
 structure CapTable where
+  /-- 256 capability slots indexed by u8. -/
   slots : Array (Option Cap)
   /-- Per-slot original bitmap (256 bits). True = slot holds original
   kernel-populated protocol cap. Set to false on DROP, MOVE-in, or MOVE-out. -/
@@ -135,13 +146,16 @@ structure CapTable where
 
 namespace CapTable
 
+/-- Create an empty cap table with all 256 slots unoccupied. -/
 def empty : CapTable :=
   { slots := Array.replicate 256 none
     originalBitmap := Array.replicate 256 false }
 
+/-- Get the cap at the given slot index, or none if empty/out of bounds. -/
 def get (t : CapTable) (idx : Nat) : Option Cap :=
   if idx < t.slots.size then t.slots[idx]! else none
 
+/-- Set a cap at the given slot index, clearing the original flag for protocol slots. -/
 def set (t : CapTable) (idx : Nat) (c : Cap) : CapTable :=
   if idx < t.slots.size then
     { slots := t.slots.set! idx (some c)
@@ -157,6 +171,7 @@ def setOriginal (t : CapTable) (idx : Nat) (c : Cap) : CapTable :=
                         else t.originalBitmap }
   else t
 
+/-- Remove and return the cap at the given slot, clearing the original flag. -/
 def take (t : CapTable) (idx : Nat) : CapTable × Option Cap :=
   if idx < t.slots.size then
     let c := t.slots[idx]!
@@ -165,6 +180,7 @@ def take (t : CapTable) (idx : Nat) : CapTable × Option Cap :=
                          else t.originalBitmap }, c)
   else (t, none)
 
+/-- Check if a slot is empty (no cap). -/
 def isEmpty (t : CapTable) (idx : Nat) : Bool :=
   if idx < t.slots.size then t.slots[idx]!.isNone else true
 
@@ -198,29 +214,45 @@ def maxIndirectionDepth : Nat := 3
 FAULTED is non-terminal: RESUME can restart a faulted VM,
 preserving registers and PC (retries the faulting instruction). -/
 inductive VmState where
-  | idle : VmState              -- Can be CALLed
-  | running : VmState           -- Executing
-  | waitingForReply : VmState   -- Blocked at CALL
-  | halted : VmState            -- Clean exit (terminal)
-  | faulted : VmState           -- Panic/OOG/page fault (RESUMEable)
+  /-- Idle: waiting to be CALLed. Non-terminal. -/
+  | idle : VmState
+  /-- Running: currently executing instructions. -/
+  | running : VmState
+  /-- Waiting for REPLY: blocked at a CALL instruction. -/
+  | waitingForReply : VmState
+  /-- Halted: clean exit. Terminal state. -/
+  | halted : VmState
+  /-- Faulted: panic, OOG, or page fault. Non-terminal (RESUMEable). -/
+  | faulted : VmState
   deriving BEq, Inhabited, Repr
 
 /-- A single VM instance. -/
 structure VmInstance where
+  /-- Current lifecycle state (idle, running, waiting, halted, faulted). -/
   state : VmState
+  /-- CODE cap identifier this VM was created from. -/
   codeCapId : Nat
+  /-- 13 general-purpose 64-bit registers (phi[0..12]). -/
   registers : JAVM.Registers
+  /-- Program counter. -/
   pc : Nat
+  /-- Cap table (256-slot CNode). -/
   capTable : CapTable
-  caller : Option Nat           -- For REPLY routing
+  /-- Parent VM index for REPLY routing. None for root VM. -/
+  caller : Option Nat
+  /-- Entry point index in the CODE cap's jump table. -/
   entryIndex : Nat
+  /-- Remaining gas. -/
   gas : Nat
   deriving Inhabited
 
 /-- Call frame saved on the kernel's call stack. -/
 structure CallFrame where
+  /-- VM index of the caller (for REPLY routing). -/
   callerVmId : Nat
+  /-- IPC cap slot index in the callee's cap table. -/
   ipcCapIdx : Option Nat
+  /-- Whether the IPC cap was mapped before the CALL (for restore on REPLY). -/
   ipcWasMapped : Option (Nat × Access)
   deriving Inhabited
 
@@ -300,12 +332,15 @@ inductive DispatchResult where
   | rootPanic : DispatchResult
   /-- Root VM out of gas. -/
   | rootOutOfGas : DispatchResult
+  /-- Fault handled by parent (RESUME or cascade). -/
+  | faultHandled : DispatchResult
 
 -- ============================================================================
 -- Protocol Cap Numbering (slots 1-28, IPC at slot 0)
 -- ============================================================================
 
-/-- Protocol cap IDs. Slot 0 = IPC (REPLY). Protocol caps at slots 1-28. -/
+/-- Protocol cap IDs. Slot 0 = IPC (REPLY). Protocol caps at slots 1-28.
+Gas remaining query is at slot 1 (protocolGas). -/
 def protocolGas := 1
 def protocolFetch := 2
 def protocolPreimageLookup := 3
@@ -340,19 +375,29 @@ def jarMagic : UInt32 := 0x02524148
 
 /-- Capability manifest entry from the blob. -/
 structure CapManifestEntry where
+  /-- Cap slot index in the initial cap table. -/
   capIndex : Nat
+  /-- Whether this is a CODE or DATA cap. -/
   capType : ManifestCapType
+  /-- First page number in the address space. -/
   basePage : Nat
+  /-- Number of pages this cap covers. -/
   pageCount : Nat
+  /-- Initial access mode (ro or rw). -/
   initAccess : Access
+  /-- Offset into the blob where cap data begins. -/
   dataOffset : Nat
+  /-- Length of cap data in the blob. -/
   dataLen : Nat
   deriving Inhabited
 
 /-- Parsed JAR header. -/
 structure ProgramHeader where
+  /-- Total memory pages to allocate for the program. -/
   memoryPages : Nat
+  /-- Number of capability entries in the manifest. -/
   capCount : Nat
+  /-- Cap slot index to CALL after initialization. -/
   invokeCap : Nat
   deriving Inhabited
 
