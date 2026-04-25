@@ -88,10 +88,7 @@ async fn test_head_and_slot_consistency() {
     insert_block(&store, 30);
 
     // getHead should return slot 30
-    let head: serde_json::Value = client
-        .request("jam_getHead", rpc_params![])
-        .await
-        .unwrap();
+    let head: serde_json::Value = client.request("jam_getHead", rpc_params![]).await.unwrap();
     assert_eq!(head["slot"], 30);
 
     // getBlockBySlot(30) should return the same hash
@@ -148,10 +145,7 @@ async fn test_full_query_lifecycle() {
     store.set_finalized(&hash, 42).unwrap();
 
     // 3. Check head reflects the new block
-    let head: serde_json::Value = client
-        .request("jam_getHead", rpc_params![])
-        .await
-        .unwrap();
+    let head: serde_json::Value = client.request("jam_getHead", rpc_params![]).await.unwrap();
     assert_eq!(head["slot"], 42);
     assert_eq!(head["hash"], hash.to_hex());
 
@@ -182,10 +176,7 @@ async fn test_empty_store_returns_defaults() {
     let client = HttpClientBuilder::default().build(&url).unwrap();
 
     // Head should be null
-    let head: serde_json::Value = client
-        .request("jam_getHead", rpc_params![])
-        .await
-        .unwrap();
+    let head: serde_json::Value = client.request("jam_getHead", rpc_params![]).await.unwrap();
     assert!(head["hash"].is_null());
     assert_eq!(head["slot"], 0);
 
@@ -258,10 +249,7 @@ async fn test_finalized_lags_behind_head() {
     store.set_head(&hash2, 20).unwrap();
 
     // Head should be at slot 20
-    let head: serde_json::Value = client
-        .request("jam_getHead", rpc_params![])
-        .await
-        .unwrap();
+    let head: serde_json::Value = client.request("jam_getHead", rpc_params![]).await.unwrap();
     assert_eq!(head["slot"], 20);
 
     // Finalized should still be at slot 10
