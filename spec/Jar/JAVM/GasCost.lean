@@ -16,10 +16,15 @@ namespace Jar.JAVM
 
 /-- Execution unit requirements for an instruction. -/
 structure ExecUnits where
+  /-- ALU (arithmetic logic unit) cycles required. -/
   alu  : Nat := 0
+  /-- Load unit cycles required. -/
   load : Nat := 0
+  /-- Store unit cycles required. -/
   store : Nat := 0
+  /-- Multiply unit cycles required. -/
   mul  : Nat := 0
+  /-- Divide unit cycles required. -/
   div  : Nat := 0
   deriving Inhabited, BEq
 
@@ -58,12 +63,19 @@ def branchCost (code bitmask : ByteArray) (targetPC : Nat) : Nat :=
 
 /-- Result of instruction cost analysis. -/
 structure InstrCost where
+  /-- Number of execution cycles this instruction requires. -/
   cycles     : Nat
+  /-- Number of decode slots consumed. -/
   decodeSlots : Nat
+  /-- Execution unit requirements (ALU, load, store, mul, div). -/
   execUnits  : ExecUnits
+  /-- Destination register indices written by this instruction. -/
   destRegs   : Array Nat
+  /-- Source register indices read by this instruction. -/
   srcRegs    : Array Nat
+  /-- Whether this instruction terminates the basic block (sets ι := none). -/
   isTerminator : Bool   -- if true, sets ι := none after adding to ROB
+  /-- Whether this is a move_reg handled in the frontend only (no ROB entry). -/
   isMoveReg  : Bool     -- if true, handled in frontend only (no ROB entry)
 
 /-- Check if destination overlaps any source register (for ifdstoverlap). -/

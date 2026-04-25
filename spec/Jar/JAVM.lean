@@ -54,9 +54,12 @@ abbrev Registers := Array Reg
 
 /-- Page access mode. GP eq (4.17). -/
 inductive PageAccess where
-  | writable    -- W : page is readable and writable
-  | readable    -- R : page is readable only
-  | inaccessible -- ∅ : page is not accessible
+  /-- W : page is readable and writable. -/
+  | writable
+  /-- R : page is readable only. -/
+  | readable
+  /-- ∅ : page is not accessible. -/
+  | inaccessible
   deriving BEq, Inhabited
 
 /-- μ : RAM state. GP eq (4.17).
@@ -192,14 +195,22 @@ def HostCallHandler (ctx : Type) :=
 
 /-- PVM instruction categories (for documentation; not used in execution). -/
 inductive InstructionCategory where
-  | noArgs       -- trap, fallthrough
-  | oneImmediate -- ecalli (host call)
-  | regImm64     -- load_imm_64
-  | twoImm       -- store_imm_u8/u16/u32/u64
-  | offset       -- jump, branch_*
-  | regImm       -- ALU ops, load/store with immediate
-  | twoReg       -- register-register ops
-  | threeReg     -- three-register ALU ops
+  /-- No-argument instructions: trap, fallthrough. -/
+  | noArgs
+  /-- Single-immediate instructions: ecalli (host call). -/
+  | oneImmediate
+  /-- 64-bit immediate load: load_imm_64. -/
+  | regImm64
+  /-- Store with immediate value: store_imm_u8/u16/u32/u64. -/
+  | twoImm
+  /-- Offset-based control flow: jump, branch_*. -/
+  | offset
+  /-- Register + immediate: ALU ops, load/store with immediate. -/
+  | regImm
+  /-- Two-register operations: register-register ops. -/
+  | twoReg
+  /-- Three-register ALU operations. -/
+  | threeReg
 
 -- PVM opcodes (~141 instructions) are fully decoded and executed in
 -- Jar.JAVM.Decode, Jar.JAVM.Instructions, and Jar.JAVM.Interpreter.

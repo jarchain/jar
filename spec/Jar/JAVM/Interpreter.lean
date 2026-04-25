@@ -471,8 +471,11 @@ def runTracePCs (prog : ProgramBlob) (pc : Nat) (regs : Registers) (mem : Memory
 
 /-- Single instruction trace entry: PC, opcode number, register snapshot. -/
 structure InstrTraceEntry where
+  /-- Program counter at time of execution. -/
   pc : Nat
+  /-- Opcode number of the instruction. -/
   opcode : Nat
+  /-- Snapshot of all 13 registers before execution. -/
   regs : Array UInt64  -- snapshot of all 13 registers before execution
   deriving Inhabited
 
