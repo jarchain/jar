@@ -120,8 +120,14 @@ fn arb_jsonrpc_batch_body() -> impl Strategy<Value = String> {
                 )
             }),
             Just(r#"{"jsonrpc":"2.0","id":2,"method":"jam_getStatus","params":[]}"#.to_string()),
-            Just(r#"{"jsonrpc":"2.0","id":3,"method":"jam_getBlock","params":["not-hex"]}"#.to_string()),
-            Just(r#"{"jsonrpc":"2.0","id":4,"method":"jam_readStorage","params":["abc"]}"#.to_string()),
+            Just(
+                r#"{"jsonrpc":"2.0","id":3,"method":"jam_getBlock","params":["not-hex"]}"#
+                    .to_string()
+            ),
+            Just(
+                r#"{"jsonrpc":"2.0","id":4,"method":"jam_readStorage","params":["abc"]}"#
+                    .to_string()
+            ),
             Just(r#"{"id":5,"method":"jam_getFinalized"}"#.to_string()),
             Just(r#"null"#.to_string()),
             Just(r#"42"#.to_string()),
