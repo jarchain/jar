@@ -14,15 +14,19 @@ namespace Jar.Proofs
 -- jar1 config assertions (v2 capability model)
 -- ============================================================================
 
+/-- jar1 uses the v2 capability model. -/
 theorem jar1_capabilityModel_v2 :
     @JarConfig.capabilityModel JarVariant.jar1.toJarConfig = .v2 := by rfl
 
+/-- jar1 uses linear memory layout. -/
 theorem jar1_memoryModel_linear :
     @JarConfig.memoryModel JarVariant.jar1.toJarConfig = .linear := by rfl
 
+/-- jar1 uses single-pass basic-block gas model. -/
 theorem jar1_gasModel_singlePass :
     @JarConfig.gasModel JarVariant.jar1.toJarConfig = .basicBlockSinglePass := by rfl
 
+/-- jar1 has variable validator set size enabled. -/
 theorem jar1_variableValidators :
     @JarConfig.variableValidators JarVariant.jar1.toJarConfig = true := by rfl
 
@@ -30,12 +34,15 @@ theorem jar1_variableValidators :
 -- gp072_tiny config assertions (contrast)
 -- ============================================================================
 
+/-- gp072_tiny uses segmented memory layout. -/
 theorem gp072_tiny_memoryModel_segmented :
     @JarConfig.memoryModel JarVariant.gp072_tiny.toJarConfig = .segmented := by rfl
 
+/-- gp072_tiny uses per-instruction gas model. -/
 theorem gp072_tiny_gasModel_perInstruction :
     @JarConfig.gasModel JarVariant.gp072_tiny.toJarConfig = .perInstruction := by rfl
 
+/-- gp072_tiny does not have variable validator set size. -/
 theorem gp072_tiny_variableValidators_false :
     @JarConfig.variableValidators JarVariant.gp072_tiny.toJarConfig = false := by rfl
 

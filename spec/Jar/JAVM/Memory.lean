@@ -16,9 +16,12 @@ namespace Jar.JAVM
 
 /-- Result of a memory access: success or fault. -/
 inductive MemResult (α : Type) where
+  /-- Successful memory access. -/
   | ok : α → MemResult α
-  | panic : MemResult α         -- Address < 2^16: always inaccessible
-  | fault : UInt64 → MemResult α  -- Page fault with page-aligned address
+  /-- Address < 2^16: always inaccessible. -/
+  | panic : MemResult α
+  /-- Page fault with page-aligned address. -/
+  | fault : UInt64 → MemResult α
 
 -- ============================================================================
 -- Page Calculations — GP eq (4.17-4.19)
