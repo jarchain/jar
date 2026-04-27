@@ -90,7 +90,7 @@ impl Decode for u16 {
         if data.len() < 2 {
             return Err(DecodeError::UnexpectedEof);
         }
-        Ok((u16::from_le_bytes(data[..2].try_into().unwrap()), 2))
+        Ok((u16::from_le_bytes([data[0], data[1]]), 2))
     }
 }
 
@@ -99,7 +99,7 @@ impl Decode for u32 {
         if data.len() < 4 {
             return Err(DecodeError::UnexpectedEof);
         }
-        Ok((u32::from_le_bytes(data[..4].try_into().unwrap()), 4))
+        Ok((u32::from_le_bytes([data[0], data[1], data[2], data[3]]), 4))
     }
 }
 
@@ -108,7 +108,7 @@ impl Decode for u64 {
         if data.len() < 8 {
             return Err(DecodeError::UnexpectedEof);
         }
-        Ok((u64::from_le_bytes(data[..8].try_into().unwrap()), 8))
+        Ok((u64::from_le_bytes([data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7]]), 8))
     }
 }
 

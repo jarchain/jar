@@ -21,7 +21,7 @@ pub fn decode_preimage_info_timeslots(data: &[u8]) -> Vec<Timeslot> {
     if pos + 4 > data.len() {
         return vec![];
     }
-    let count = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+    let count = u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
     pos += 4;
     // Bound count by remaining bytes: each Timeslot is 4 bytes, so count cannot
     // exceed (data.len() - pos) / 4. Without this guard, a crafted count prefix
@@ -1898,9 +1898,9 @@ mod tests {
     fn test_encode_accumulate_args() {
         let result = encode_accumulate_args(100, 42, 3);
         assert_eq!(result.len(), 12); // 4 + 4 + 4
-        assert_eq!(u32::from_le_bytes(result[0..4].try_into().unwrap()), 100);
-        assert_eq!(u32::from_le_bytes(result[4..8].try_into().unwrap()), 42);
-        assert_eq!(u32::from_le_bytes(result[8..12].try_into().unwrap()), 3);
+        assert_eq!(u32::from_le_bytes([result[0], result[1], result[2], result[3]]), 100);
+        assert_eq!(u32::from_le_bytes([result[4], result[5], result[6], result[7]]), 42);
+        assert_eq!(u32::from_le_bytes([result[8], result[9], result[10], result[11]]), 3);
     }
 
     // --- keccak_merkle_root ---

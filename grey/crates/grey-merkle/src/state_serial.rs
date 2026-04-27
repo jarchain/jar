@@ -13,7 +13,7 @@ fn decode_u32_le_at(data: &[u8], pos: &mut usize) -> Result<u32, ()> {
     if *pos + 4 > data.len() {
         return Err(());
     }
-    let val = u32::from_le_bytes(data[*pos..*pos + 4].try_into().unwrap());
+    let val = u32::from_le_bytes([data[*pos], data[*pos + 1], data[*pos + 2], data[*pos + 3]]);
     *pos += 4;
     Ok(val)
 }

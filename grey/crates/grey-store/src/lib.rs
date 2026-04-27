@@ -14,6 +14,29 @@ use grey_types::state::State;
 use redb::{Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition};
 use std::path::{Path, PathBuf};
 
+/// Read a u32 from a little-endian byte slice at the given offset.
+/// Returns the value and advances the offset by 4.
+///
+/// # Panics
+/// Panics if `data[pos..pos+4]` is out of bounds — caller must ensure length.
+#[inline]
+fn read_u32_le(data: &[u8], pos: usize) -> u32 {
+    u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
+}
+
+/// Read a u64 from a little-endian byte slice at the given offset.
+/// Returns the value and advances the offset by 8.
+///
+/// # Panics
+/// Panics if `data[pos..pos+8]` is out of bounds — caller must ensure length.
+#[inline]
+fn read_u64_le(data: &[u8], pos: usize) -> u64 {
+    u64::from_le_bytes([
+        data[pos], data[pos + 1], data[pos + 2], data[pos + 3],
+        data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7],
+    ])
+}
+
 /// Current schema version. Bump this when table layouts change.
 /// The store refuses to open a database with a different version.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -158,7 +181,7 @@ impl Store {
             let stored_version = meta.get(META_SCHEMA_VERSION)?.and_then(|val| {
                 let bytes = val.value();
                 if bytes.len() == 4 {
-                    Some(u32::from_le_bytes(bytes.try_into().unwrap()))
+                    Some(read_u32_le(bytes, 0))
                 } else {
                     None
                 }
@@ -204,7 +227,7 @@ impl Store {
             Some(val) => {
                 let bytes = val.value();
                 if bytes.len() == 4 {
-                    Ok(u32::from_le_bytes(bytes.try_into().unwrap()))
+                    Ok(read_u32_le(bytes, 0))
                 } else {
                     Err(StoreError::Codec("invalid schema version bytes".into()))
                 }
@@ -469,23 +492,23 @@ impl Store {
         let mut code_hash = [0u8; 32];
         code_hash.copy_from_slice(&v[pos..pos + 32]);
         pos += 32;
-        let quota_items = u64::from_le_bytes(v[pos..pos + 8].try_into().unwrap());
+        let quota_items = read_u64_le(v, pos);
         pos += 8;
-        let min_accumulate_gas = u64::from_le_bytes(v[pos..pos + 8].try_into().unwrap());
+        let min_accumulate_gas = read_u64_le(v, pos);
         pos += 8;
-        let min_on_transfer_gas = u64::from_le_bytes(v[pos..pos + 8].try_into().unwrap());
+        let min_on_transfer_gas = read_u64_le(v, pos);
         pos += 8;
-        let total_footprint = u64::from_le_bytes(v[pos..pos + 8].try_into().unwrap());
+        let total_footprint = read_u64_le(v, pos);
         pos += 8;
-        let quota_bytes = u64::from_le_bytes(v[pos..pos + 8].try_into().unwrap());
+        let quota_bytes = read_u64_le(v, pos);
         pos += 8;
-        let accumulation_counter = u32::from_le_bytes(v[pos..pos + 4].try_into().unwrap());
+        let accumulation_counter = read_u32_le(v, pos);
         pos += 4;
-        let last_accumulation = u32::from_le_bytes(v[pos..pos + 4].try_into().unwrap());
+        let last_accumulation = read_u32_le(v, pos);
         pos += 4;
-        let last_activity = u32::from_le_bytes(v[pos..pos + 4].try_into().unwrap());
+        let last_activity = read_u32_le(v, pos);
         pos += 4;
-        let preimage_count = u32::from_le_bytes(v[pos..pos + 4].try_into().unwrap());
+        let preimage_count = read_u32_le(v, pos);
 
         Ok(Some(ServiceMetadata {
             code_hash: Hash(code_hash),
@@ -910,7 +933,7 @@ impl Store {
             Some(entry) => {
                 let key = entry.0.value();
                 if key.len() >= 8 {
-                    Ok(u64::from_le_bytes(key[0..8].try_into().unwrap()))
+                    Ok(read_u64_le(key, 0))
                 } else {
                     Ok(0)
                 }
