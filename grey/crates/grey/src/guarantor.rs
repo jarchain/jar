@@ -411,7 +411,7 @@ impl<'a> StateRefineContext<'a> {
 
 impl<'a> RefineContext for StateRefineContext<'a> {
     fn get_code(&self, code_hash: &Hash) -> Option<Vec<u8>> {
-        self.lookup_preimage(code_hash)
+        self.get_preimage(code_hash)
     }
 
     fn get_storage(&self, service_id: u32, key: &[u8]) -> Option<Vec<u8>> {
