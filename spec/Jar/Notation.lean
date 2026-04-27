@@ -27,9 +27,12 @@ def substituteIfNone : List (Option α) → Option α
 /-- GP uses ∅ for "no specific value" (we use `Option.none`)
     and ∇ for "unexpected failure / invalid". We model ∇ explicitly. -/
 inductive Exceptional (α : Type) where
+  /-- Successful value. -/
   | ok    : α → Exceptional α
-  | none  : Exceptional α       -- GP: ∅
-  | error : Exceptional α       -- GP: ∇
+  /-- No specific value (GP: ∅). -/
+  | none  : Exceptional α
+  /-- Unexpected failure / invalid (GP: ∇). -/
+  | error : Exceptional α
 
 -- GP: `A?` ≡ A ∪ {∅}. We use Lean's built-in `Option α` throughout.
 
@@ -50,12 +53,14 @@ def IntRange (a b : Int) : Type := { x : Int // a ≤ x ∧ x < b }
 /-- A dictionary ⟨K→V⟩ : partial mapping with enumerable key-value pairs.
     GP §3.5. Represented as sorted association list with unique keys. -/
 structure Dict (K : Type) (V : Type) [BEq K] where
+  /-- Key-value pairs stored in insertion order. -/
   entries : List (K × V)
 
 namespace Dict
 
 variable {K V : Type} [BEq K]
 
+/-- Empty dictionary. -/
 def empty : Dict K V := ⟨[]⟩
 
 /-- Lookup: d[k]. GP §3.5. -/
@@ -126,24 +131,28 @@ def Array.lastN (s : Array α) (n : Nat) : Array α :=
 -- §3.7.3 — Boolean values and Bitstrings
 -- ============================================================================
 
--- 𝕓_s = ⟦{⊥, ⊤}⟧_s : Boolean strings of length s
+/-- 𝕓_s = ⟦{⊥, ⊤}⟧_s : Boolean strings of length s. GP §3.7.3. -/
 abbrev Bitstring (s : Nat) := { v : Array Bool // v.size = s }
 
 -- ============================================================================
 -- §3.7.4 — Octets and Blobs
 -- ============================================================================
 
--- 𝔹 : octet strings of arbitrary length
+/-- 𝔹 : octet strings of arbitrary length. GP §3.7.4. -/
 abbrev Blob := ByteArray
 
 /-- 𝔹_n : octet strings of exactly n bytes. GP §3.7.4. -/
 structure OctetSeq (n : Nat) where
+  /-- Underlying byte data. -/
   data : ByteArray
+  /-- Proof that the byte array has exactly n bytes. -/
   size_eq : data.size = n
 
+/-- Equality by byte comparison. -/
 instance (n : Nat) : BEq (OctetSeq n) where
   beq a b := a.data == b.data
 
+/-- Default is n zero bytes. -/
 instance (n : Nat) : Inhabited (OctetSeq n) where
   default := ⟨⟨.replicate n 0⟩, by simp [ByteArray.size]⟩
 
@@ -164,14 +173,20 @@ def OctetSeq.mk! (ba : ByteArray) (n : Nat) : OctetSeq n :=
 /-- Construct Hash with runtime size check, falling back to zero on mismatch. -/
 def Hash.mk! (ba : ByteArray) : Hash := OctetSeq.mk! ba 32
 
--- Signing key types. GP §3.8.2.
-abbrev Ed25519PublicKey       := OctetSeq 32   -- H̄ ⊂ 𝔹_32
-abbrev BandersnatchPublicKey  := OctetSeq 32   -- H̃ ⊂ 𝔹_32
-abbrev BlsPublicKey           := OctetSeq 144  -- B^BLS ⊂ 𝔹_144
-abbrev BandersnatchRingRoot   := OctetSeq 144  -- B° ⊂ 𝔹_144
+/-- Ed25519 signing public key (H̄ ⊂ 𝔹_32). GP §3.8.2. -/
+abbrev Ed25519PublicKey       := OctetSeq 32
+/-- Bandersnatch signing public key (H̃ ⊂ 𝔹_32). GP §3.8.2. -/
+abbrev BandersnatchPublicKey  := OctetSeq 32
+/-- BLS signing public key (B^BLS ⊂ 𝔹_144). GP §3.8.2. -/
+abbrev BlsPublicKey           := OctetSeq 144
+/-- Bandersnatch ring root (B° ⊂ 𝔹_144). GP §3.8.2. -/
+abbrev BandersnatchRingRoot   := OctetSeq 144
 
--- Signature types. GP §3.8.2.
-abbrev Ed25519Signature           := OctetSeq 64   -- V̄_k⟨m⟩ ⊂ 𝔹_64
-abbrev BandersnatchSignature      := OctetSeq 96   -- Ṽ_k^m⟨x⟩ ⊂ 𝔹_96
-abbrev BandersnatchRingVrfProof   := OctetSeq 784  -- V°_r^m⟨x⟩ ⊂ 𝔹_784
+/-- Ed25519 signature (V̄_k⟨m⟩ ⊂ 𝔹_64). GP §3.8.2. -/
+abbrev Ed25519Signature           := OctetSeq 64
+/-- Bandersnatch signature (Ṽ_k^m⟨x⟩ ⊂ 𝔹_96). GP §3.8.2. -/
+abbrev BandersnatchSignature      := OctetSeq 96
+/-- Bandersnatch ring VRF proof (V°_r^m⟨x⟩ ⊂ 𝔹_784). GP §3.8.2. -/
+abbrev BandersnatchRingVrfProof   := OctetSeq 784
+/-- BLS signature (𝔹_48). GP §3.8.2. -/
 abbrev BlsSignature               := OctetSeq 48
