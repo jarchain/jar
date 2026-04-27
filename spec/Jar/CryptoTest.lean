@@ -1,5 +1,12 @@
 import Jar.Crypto
 
+/-!
+# Crypto Test Harness
+
+Smoke tests for cryptographic primitives: Blake2b, Keccak256, Ed25519,
+and Bandersnatch VRF. Run via `lake run cryptoTest`.
+-/
+
 def nibbleToHex (n : UInt8) : Char :=
   if n < 10 then Char.ofNat (48 + n.toNat)  -- '0' + n
   else Char.ofNat (87 + n.toNat)              -- 'a' + (n - 10)
