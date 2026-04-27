@@ -1580,6 +1580,13 @@ impl Interpreter {
             return (ExitReason::Panic, initial_gas - self.gas);
         }
 
+        // Hoist loop-iteration state outside the loop so the compiler can keep
+        // them in registers across iterations rather than re-initialising stack
+        // slots every time around.  Both variables are unconditionally written
+        // at the top of every iteration before they are read.
+        let mut branch_idx: u32;
+        let mut exit: Option<ExitReason>;
+
         loop {
             // Copy the decoded instruction (avoids borrow conflict with &mut self)
             // SAFETY: idx is maintained within 0..decoded_insts.len() by the decoder
@@ -1604,8 +1611,8 @@ impl Interpreter {
 
             // Most instructions advance sequentially. Branches/jumps set
             // branch_idx to the pre-resolved instruction index.
-            let mut branch_idx: u32 = u32::MAX; // sentinel: means sequential
-            let mut exit: Option<ExitReason> = None;
+            branch_idx = u32::MAX; // sentinel: means sequential
+            exit = None;
 
             match inst.opcode {
                 // === No arguments ===
