@@ -29,6 +29,7 @@ A pause primitive is meaningful only if there are well-typed actions to pause. T
 - **Validator-set rotation.** A scheduled rotation that is about to take effect.
 - **Genesis 2.0 type onboarding.** The introduction of a new contribution type (per §"Self-Regulating Openness" in Genesis 2.0) that is about to start admitting events.
 - **Patience-tax disbursement.** A scheduled disbursement from the escrow described in `docs/patience-tax.md`.
+- **Exogenously-defined narrative campaigns.** A service, treasury action, or Genesis 2.0 contribution type whose effect is to import an outside account of what the network is — paid marketing whose brief is set outside the contributor base, brand campaigns funded against the network's revenue but produced by external agencies, services that pre-shape the network's self-narration toward an outside audience. Refusal on these grounds is predicated on the Network Public claim that narrative sovereignty is a first-order property the protocol must preserve; revenue-positive operation is not a sufficient defence.
 
 Each of these is already a discrete state transition. Pause is a wrapper around the transition that introduces a deliberative gap.
 
