@@ -88,6 +88,21 @@ Each is small enough to specify, prove, and review independently. None of them t
 
 JAR's coinless thesis answers *who pays*. Genesis 2.0 answers *who is recognised*. The Network Public framing answers *what kind of system we are building* — and makes it easier to refuse pull requests, services, and use cases that would, intentionally or not, re-enclose what JAR is meant to keep open.
 
+## Narrative Sovereignty
+
+A failure mode this document had previously left implicit, surfaced in discussion: every prior decentralised network has allowed its narrative to be defined *exogenously*. Bitcoin's public meaning was shaped by financial-press cycles. Ecosystem-funded marketing in token-governed networks (Polkadot, Cosmos, etc.) is structurally exogenous — produced by outside contractors against outside briefs, not by the embedded culture of the contributor base. The cost is incremental at first and decisive over time: the network's public meaning drifts toward whatever narrative special interests are most willing to fund, while the embedded culture that actually constitutes it goes uncatalogued and undefended.
+
+A protocol that produces collective intelligence and cannot speak about itself in its own voice has surrendered its most important contribution. The Network Public framing claims that **narrative sovereignty is the highest-order property the protocol must preserve** — and that, in turn, is what protects every other property listed here from being narrated away by special interests with the budget to do so.
+
+Concretely for JAR:
+
+- **Ingestion (Separation 1)** is the substrate of narrative sovereignty — the network's accumulated decisions, references, and disagreements are the raw material from which it speaks.
+- **Inference ownership via traversal (Separation 3)**, in its world-shaped form (Network Public §7.1), is how the network produces its self-account directly from that substrate, in a form no exogenous party can replicate or substitute.
+- **The right to refuse (Separation 2)** must include the standing to refuse exogenously-defined campaigns or services that capture the network's public voice — even when they are revenue-positive in the short term.
+- **The negation layer (Separation 4)** must include long-form synthesis, retrospective, and self-narration as fundable contribution types — these are the contributions through which a community catalogues and defends its embedded culture.
+
+This framing does not add a new mechanism. It identifies which existing mechanisms, taken together, constitute the protocol's defence against narrative capture, and names that defence as the property worth defending.
+
 ## Open Questions
 
 **1. Calibration of the patience-tax rate.** 3–5% is the paper's proposal. Higher rates fund more deliberation; lower rates leave more revenue with services. Is there a principled way to set this without governance choosing a number?
