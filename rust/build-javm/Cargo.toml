@@ -7,4 +7,4 @@ description = "Build Grey PVM blobs from Rust service crates"
 
 [dependencies]
 build-crate = { path = "../build-crate" }
-grey-transpiler = { path = "../grey-transpiler" }
+javm-transpiler = { path = "../javm-transpiler" }

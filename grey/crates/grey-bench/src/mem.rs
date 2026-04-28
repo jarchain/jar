@@ -182,7 +182,7 @@ fn pc(c: &[u8]) -> u32 {
 
 fn build_blob(c: Vec<u8>, m: Vec<u8>, stack_pages: u32, heap_pages: u32) -> Vec<u8> {
     let total = stack_pages + heap_pages + 4;
-    grey_transpiler::emitter::build_service_program(
+    javm_transpiler::emitter::build_service_program(
         &c,
         &m,
         &[],

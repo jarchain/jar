@@ -1,0 +1,13 @@
+[package]
+name = "jar-kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "JAR minimum-kernel: capability-based microkernel implementation."
+
+[dependencies]
+jar-types = { workspace = true }
+jar-crypto = { workspace = true }
+javm = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

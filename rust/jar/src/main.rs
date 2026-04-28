@@ -1,0 +1,133 @@
+//! `jar` — in-process N-node testnet driver for the JAR minimum kernel.
+//!
+//! Spawns N nodes in one process. Each node has its own σ + NodeOffchain +
+//! InMemoryHardware. Networking is a same-process broadcast bus. Block
+//! production rotates round-robin per slot.
+//!
+//! Usage:
+//!
+//! ```bash
+//! cargo run -p jar -- testnet --nodes 3 --slots 10
+//! ```
+
+use std::sync::Arc;
+
+use clap::{Parser, Subcommand};
+use jar_kernel::genesis::GenesisBuilder;
+use jar_kernel::runtime::{InMemoryBus, InMemoryHardware, NodeOffchain};
+use jar_kernel::{BlockOutcome, apply_block, drain_for_body};
+use jar_types::{BlockHash, Hash, Header, Slot, State};
+
+#[derive(Parser, Debug)]
+#[command(name = "jar")]
+#[command(about = "JAR minimum-kernel runner")]
+struct Cli {
+    #[command(subcommand)]
+    cmd: Cmd,
+}
+
+#[derive(Subcommand, Debug)]
+enum Cmd {
+    /// Boot an N-node in-process testnet, propose `--slots` blocks round-robin.
+    Testnet {
+        #[arg(long, default_value_t = 3)]
+        nodes: u32,
+        #[arg(long, default_value_t = 5)]
+        slots: u32,
+    },
+}
+
+fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,jar=debug")),
+        )
+        .init();
+
+    let cli = Cli::parse();
+    match cli.cmd {
+        Cmd::Testnet { nodes, slots } => run_testnet(nodes, slots),
+    }
+}
+
+fn run_testnet(num_nodes: u32, num_slots: u32) {
+    let g = GenesisBuilder::default().build().expect("genesis ok");
+
+    let bus = InMemoryBus::new();
+    let mut nodes: Vec<NodeState> = Vec::new();
+    for i in 0..num_nodes {
+        nodes.push(NodeState {
+            id: i,
+            state: g.state.clone(),
+            offchain: NodeOffchain::new(),
+            hw: Arc::new(InMemoryHardware::new(bus.clone())),
+            prior_block: BlockHash::ZERO,
+        });
+    }
+
+    for slot_n in 1..=num_slots {
+        let proposer_idx = (slot_n - 1) % num_nodes;
+        let proposer = &mut nodes[proposer_idx as usize];
+
+        // Drain proposer's slots into a fresh body.
+        let body = drain_for_body(&proposer.offchain, &proposer.state).expect("drain ok");
+        let header = Header {
+            parent: proposer.prior_block,
+            slot: Slot(slot_n as u64),
+            ..Default::default()
+        };
+        let out = apply_block(
+            &proposer.state,
+            proposer.prior_block,
+            &header,
+            &body,
+            proposer.hw.as_ref(),
+        )
+        .expect("apply_block ok");
+        match &out.block_outcome {
+            BlockOutcome::Accepted => {
+                tracing::info!(
+                    proposer = proposer_idx,
+                    slot = slot_n,
+                    state_root = ?out.state_root,
+                    "accepted"
+                );
+            }
+            BlockOutcome::Panicked(reason) => {
+                tracing::error!(reason, "block panicked at proposer; aborting");
+                return;
+            }
+        }
+
+        // Apply the proposed block on every node (verifier mode).
+        let new_root = out.state_root;
+        for node in &mut nodes {
+            let ver = apply_block(
+                &node.state,
+                node.prior_block,
+                &header,
+                &out.body,
+                node.hw.as_ref(),
+            )
+            .expect("verifier apply_block ok");
+            assert!(matches!(ver.block_outcome, BlockOutcome::Accepted));
+            assert_eq!(
+                ver.state_root, new_root,
+                "node {} diverged from proposer at slot {}",
+                node.id, slot_n
+            );
+            node.state = ver.state_next;
+            node.prior_block = Hash::ZERO; // we don't yet hash headers
+        }
+        tracing::info!(slot = slot_n, "all nodes converged on root {:?}", new_root);
+    }
+}
+
+struct NodeState {
+    id: u32,
+    state: State,
+    offchain: NodeOffchain,
+    hw: Arc<InMemoryHardware>,
+    prior_block: BlockHash,
+}

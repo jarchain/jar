@@ -39,7 +39,12 @@ impl CodeCache {
 
     /// Blake2b-256 hash of blob bytes for cache dedup key.
     fn hash_blob(blob: &[u8]) -> [u8; 32] {
-        grey_crypto::blake2b_256(blob).0
+        use blake2::digest::{Update, VariableOutput};
+        let mut hasher = blake2::Blake2bVar::new(32).expect("32 ≤ Blake2b max output");
+        hasher.update(blob);
+        let mut out = [0u8; 32];
+        hasher.finalize_variable(&mut out).expect("32-byte buffer");
+        out
     }
 }
 

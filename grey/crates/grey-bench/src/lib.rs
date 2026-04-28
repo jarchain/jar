@@ -10,7 +10,7 @@
 
 pub mod mem;
 
-use grey_transpiler::assembler::{Assembler, Reg};
+use javm_transpiler::assembler::{Assembler, Reg};
 
 // ---------------------------------------------------------------------------
 // Shared PVM runners
@@ -395,7 +395,7 @@ pub fn grey_sort_blob(n: u32) -> Vec<u8> {
     let offset = (insert_pc as i32) - (j_check_pc as i32);
     c[j_check_pc + 6..j_check_pc + 10].copy_from_slice(&offset.to_le_bytes());
 
-    grey_transpiler::emitter::build_service_program(
+    javm_transpiler::emitter::build_service_program(
         &c,
         &m,
         &[],

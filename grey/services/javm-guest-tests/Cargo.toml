@@ -12,10 +12,10 @@ blake2 = { version = "0.10", default-features = false }
 sha3 = { version = "0.10", default-features = false }
 
 [build-dependencies]
-build-javm = { path = "../../crates/build-javm" }
+build-javm = { path = "../../../rust/build-javm" }
 
 [dev-dependencies]
-javm = { path = "../../crates/javm" }
+javm = { path = "../../../rust/javm" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_env, values("javm", "polkavm"))', 'cfg(target_os, values("none"))'] }

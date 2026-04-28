@@ -592,7 +592,7 @@ name = "build-javm"
 version = "0.1.0"
 dependencies = [
  "build-crate",
- "grey-transpiler",
+ "javm-transpiler",
 ]
 
 [[package]]
@@ -1607,8 +1607,8 @@ dependencies = [
  "build-javm",
  "build-pvm",
  "criterion",
- "grey-transpiler",
  "javm",
+ "javm-transpiler",
  "k256",
  "libc",
  "polkavm",
@@ -1730,10 +1730,10 @@ version = "0.1.0"
 dependencies = [
  "grey-crypto",
  "grey-merkle",
- "grey-transpiler",
  "grey-types",
  "hex",
  "javm",
+ "javm-transpiler",
  "proptest",
  "scale",
  "serde",
@@ -1759,18 +1759,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
-]
-
-[[package]]
-name = "grey-transpiler"
-version = "0.1.0"
-dependencies = [
- "javm",
- "proptest",
- "scale",
- "thiserror 2.0.18",
- "tracing",
- "tracing-test",
 ]
 
 [[package]]
@@ -2355,6 +2343,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
+name = "jar"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "jar-crypto",
+ "jar-kernel",
+ "jar-types",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "jar-crypto"
+version = "0.1.0"
+dependencies = [
+ "blake2",
+ "ed25519-dalek",
+ "jar-types",
+ "rand 0.8.5",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "jar-genesis"
 version = "0.1.0"
 dependencies = [
@@ -2367,10 +2378,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "jar-kernel"
+version = "0.1.0"
+dependencies = [
+ "jar-crypto",
+ "jar-types",
+ "javm",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "jar-types"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "javm"
 version = "0.4.0"
 dependencies = [
- "grey-crypto",
+ "blake2",
  "libc",
  "memoffset",
  "proptest",
@@ -2392,6 +2421,18 @@ dependencies = [
  "javm",
  "javm-builtins",
  "sha3",
+]
+
+[[package]]
+name = "javm-transpiler"
+version = "0.1.0"
+dependencies = [
+ "javm",
+ "proptest",
+ "scale",
+ "thiserror 2.0.18",
+ "tracing",
+ "tracing-test",
 ]
 
 [[package]]

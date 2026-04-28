@@ -13,12 +13,12 @@ polkavm-generic-sandbox = ["polkavm/generic-sandbox"]
 # for the entire workspace, preventing `cargo test --workspace` from testing
 # when running benchmarks.
 javm = { workspace = true }
-grey-transpiler = { workspace = true }
+javm-transpiler = { workspace = true }
 polkavm = "0.32.0"
 polkavm-common = "0.32.0"
 
 [build-dependencies]
-build-javm = { path = "../build-javm" }
+build-javm = { path = "../../../rust/build-javm" }
 build-pvm = { path = "../build-pvm" }
 
 [dev-dependencies]

@@ -15,7 +15,7 @@ fn watch_transpiler_sources() {
         .to_path_buf();
 
     // Watch transpiler source (affects blob encoding)
-    build_crate::emit_rerun_for_dir(&crates_dir.join("grey-transpiler/src"));
+    build_crate::emit_rerun_for_dir(&crates_dir.join("javm-transpiler/src"));
     // Watch javm program (affects blob format)
     let javm_src = crates_dir.join("javm/src");
     println!(
@@ -65,7 +65,7 @@ pub fn build(manifest_dir: &str, bin_name: &str) -> PathBuf {
     let elf_path = guest.build();
     let elf_data = std::fs::read(&elf_path).expect("failed to read ELF");
     let blob =
-        grey_transpiler::link_elf(&elf_data).expect("failed to transpile ELF to v2 PVM blob");
+        javm_transpiler::link_elf(&elf_data).expect("failed to transpile ELF to v2 PVM blob");
 
     std::fs::write(&blob_path, &blob).expect("failed to write PVM blob");
     blob_path
@@ -108,7 +108,7 @@ pub fn build_service(manifest_dir: &str, bin_name: &str) -> PathBuf {
     let elf_path = guest.build();
     let elf_data = std::fs::read(&elf_path).expect("failed to read ELF");
     let blob =
-        grey_transpiler::link_elf(&elf_data).expect("failed to transpile ELF to v2 PVM blob");
+        javm_transpiler::link_elf(&elf_data).expect("failed to transpile ELF to v2 PVM blob");
 
     std::fs::write(&blob_path, &blob).expect("failed to write PVM blob");
     blob_path
