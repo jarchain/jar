@@ -2643,6 +2643,12 @@ fn compute_bb_starts_inner(code: &[u8], bitmask: &[u8]) -> (Vec<bool>, Vec<u8>) 
 ///
 /// Uses the same GasSimulator as the recompiler — single code path.
 /// Gas is charged per basic block at block entry: max(max_done - 3, 1).
+///
+/// Fast path: ~90% of instructions (loads, stores, ALU, immediates) are fed via
+/// `feed_direct()` which avoids constructing a `FastCost` struct entirely.
+/// Only instructions that require context-dependent cost computation (ecalli,
+/// load_imm_jump, branches, and the catch-all default) fall back to
+/// `fast_cost_from_raw()` + `feed()`.
 fn compute_block_gas_costs(
     code: &[u8],
     bitmask: &[u8],
@@ -2651,6 +2657,9 @@ fn compute_block_gas_costs(
 ) -> Vec<u32> {
     use crate::gas_cost::{fast_cost_from_raw, skip_distance};
     use crate::gas_sim::GasSimulator;
+
+    // Sentinel value meaning "no register" for feed_direct().
+    const NO_REG: u8 = 0xFF;
 
     let len = code.len();
     let mut costs = vec![0u32; len];
@@ -2680,30 +2689,87 @@ fn compute_block_gas_costs(
         let raw_ra = if pc + 1 < len {
             code[pc + 1] & 0x0F
         } else {
-            0xFF
+            NO_REG
         };
         let raw_rb = if pc + 1 < len {
             (code[pc + 1] >> 4) & 0x0F
         } else {
-            0xFF
+            NO_REG
         };
         let raw_rd = if pc + 2 < len {
             code[pc + 2] & 0x0F
         } else {
-            0xFF
+            NO_REG
         };
 
-        let fc = fast_cost_from_raw(
-            opcode_byte,
-            raw_ra,
-            raw_rb,
-            raw_rd,
-            pc as u32,
-            code,
-            bitmask,
-            mem_cycles,
-        );
-        sim.feed(&fc);
+        // Fast path: skip FastCost construction for common instructions (~90%).
+        // Encoding: feed_direct(cycles, decode_slots, src1, src2, dst).
+        // Falls through to the slow path for opcodes that need context (branch
+        // targets, ecalli, load_imm_jump).
+        let fast_fed = match opcode_byte {
+            // No-arg terminators: trap(0), fallthrough(1)
+            0 | 1 => { sim.feed_direct(2, 1, NO_REG, NO_REG, NO_REG); true }
+            // unlikely(2)
+            2 => { sim.feed_direct(40, 1, NO_REG, NO_REG, NO_REG); true }
+            // Loads (reg+imm and two-reg variants): 52-58, 124-130
+            52..=58 | 124..=130 => {
+                sim.feed_direct(mem_cycles, 1, raw_rb, NO_REG, raw_ra);
+                true
+            }
+            // Stores (two-reg+imm): 59-62, 120-123
+            59..=62 | 120..=123 => {
+                sim.feed_direct(mem_cycles, 1, raw_ra, raw_rb, NO_REG);
+                true
+            }
+            // Store immediates (two-imm): 30-33 — no register source
+            30..=33 => { sim.feed_direct(mem_cycles, 1, NO_REG, NO_REG, NO_REG); true }
+            // Store imm indirect (reg+two-imm): 70-73
+            70..=73 => { sim.feed_direct(mem_cycles, 1, raw_ra, NO_REG, NO_REG); true }
+            // load_imm(51): no source, dest = ra
+            51 => { sim.feed_direct(1, 1, NO_REG, NO_REG, raw_ra); true }
+            // load_imm_64(20): no source, dest = ra, 2 decode slots
+            20 => { sim.feed_direct(1, 2, NO_REG, NO_REG, raw_ra); true }
+            // move_reg(100): zero-cycle, single slot
+            100 => { sim.feed_direct(0, 1, raw_ra, NO_REG, raw_rd); true }
+            // ALU two-reg (ThreeReg format): 90-99 excl 100, 101-119
+            90..=99 | 101..=119 => {
+                sim.feed_direct(3, 1, raw_ra, raw_rb, raw_rd);
+                true
+            }
+            // ALU reg+imm (TwoReg or TwoRegImm): 131-179 excl 180
+            131..=179 => {
+                sim.feed_direct(3, 1, raw_ra, NO_REG, raw_rd);
+                true
+            }
+            // MUL/DIV variants (opcodes 34-39): higher latency
+            34..=39 => {
+                sim.feed_direct(20, 1, raw_ra, raw_rb, raw_rd);
+                true
+            }
+            // jump(40): context-free terminator — no regs, fixed cost
+            40 => { sim.feed_direct(15, 1, NO_REG, NO_REG, NO_REG); true }
+            // jump_ind(50): context-free terminator
+            50 => { sim.feed_direct(22, 1, NO_REG, NO_REG, NO_REG); true }
+            // load_imm_jump_ind(180): dest=ra, src=rb
+            180 => { sim.feed_direct(22, 1, raw_rb, NO_REG, raw_ra); true }
+            // Slow path: ecalli(10), load_imm_jump(80), branch instructions
+            // (181..=255), and any unrecognised opcodes — use full FastCost.
+            _ => false,
+        };
+
+        if !fast_fed {
+            let fc = fast_cost_from_raw(
+                opcode_byte,
+                raw_ra,
+                raw_rb,
+                raw_rd,
+                pc as u32,
+                code,
+                bitmask,
+                mem_cycles,
+            );
+            sim.feed(&fc);
+        }
 
         // Advance to next instruction
         let skip = skip_distance(bitmask, pc);
@@ -3374,3 +3440,4 @@ mod tests {
         );
     }
 }
+
