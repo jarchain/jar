@@ -7,4 +7,4 @@ description = "Build PolkaVM blobs from Rust service crates"
 
 [dependencies]
 build-crate = { path = "../build-crate" }
-polkavm-linker = "0.32.0"
+polkavm-linker = "0.33"

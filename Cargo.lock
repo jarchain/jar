@@ -821,15 +821,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
-name = "core2"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b49ba7ef1ad6107f8824dbe97de947cbaac53c44e7f9756a1fba0d37c1eec505"
-dependencies = [
- "memchr",
-]
-
-[[package]]
 name = "counter-service"
 version = "0.1.0"
 
@@ -1219,7 +1210,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2321,7 +2312,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3179,11 +3170,10 @@ dependencies = [
 
 [[package]]
 name = "multihash"
-version = "0.19.3"
+version = "0.19.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b430e7953c29dd6a09afc29ff0bb69c6e306329ee6794700aee27b76a1aea8d"
+checksum = "577c63b00ad74d57e8c9aa870b5fccebf2fd64a308a5aee9f1bb88e4aea19447"
 dependencies = [
- "core2",
  "unsigned-varint 0.8.0",
 ]
 
@@ -3283,7 +3273,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3528,9 +3518,9 @@ dependencies = [
 
 [[package]]
 name = "polkavm"
-version = "0.32.0"
+version = "0.33.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe695ae43268c297264adda1c7b75ac5d2029a652c1420b85fe6db5c789ec535"
+checksum = "d90ece49c68657299648e20469517e22c6ec38321307bb14a69c27a33927a491"
 dependencies = [
  "libc",
  "log",
@@ -3542,18 +3532,18 @@ dependencies = [
 
 [[package]]
 name = "polkavm-assembler"
-version = "0.32.0"
+version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48db9ab3568744d88514cfd8ca97f549913d17446e822fef20f9bd64598b8625"
+checksum = "00010f7924647dbf6f468d85d0fcfe4c3587cfb4557ef13f3682dbece8fd57f0"
 dependencies = [
  "log",
 ]
 
 [[package]]
 name = "polkavm-common"
-version = "0.32.0"
+version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7be32b303518704bb6deda7ce5a02feedbdadccccfd03da5bd3fe8eb1cd30694"
+checksum = "9e44a9487003cf5b9fc4462bbcf105cc37d5d9b18b40edf5ed50dd20ed1fdb27"
 dependencies = [
  "log",
  "picosimd",
@@ -3562,18 +3552,18 @@ dependencies = [
 
 [[package]]
 name = "polkavm-derive"
-version = "0.32.0"
+version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92147c429bebe93187a5c6963636a1efdfb69734e83b5d9d9aa751775c1dd62f"
+checksum = "3ef966bc8518a66ce12d4edb73f2c4094cae72bb23258bc9e9b2802cc9d6cd79"
 dependencies = [
  "polkavm-derive-impl-macro",
 ]
 
 [[package]]
 name = "polkavm-derive-impl"
-version = "0.32.0"
+version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a396e7939ae0a723cabf639c23f0704423c8e470d01f52ad0cecf2dc283387f0"
+checksum = "f0c2166ad71dd7f51dcdd0d91b70d408a8b3610fa6e94d8202dd4b7185607181"
 dependencies = [
  "polkavm-common",
  "proc-macro2",
@@ -3583,9 +3573,9 @@ dependencies = [
 
 [[package]]
 name = "polkavm-derive-impl-macro"
-version = "0.32.0"
+version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19eb3426df09ad4820b9beecd5c6754c5249b8fc5c6e94f0f559fbf7ce082fc3"
+checksum = "c7ac2ac8ec5b938e249fa97b5ebb1e6fa47000c81a25eba6bf0f13edb8d430e4"
 dependencies = [
  "polkavm-derive-impl",
  "syn",
@@ -3593,9 +3583,9 @@ dependencies = [
 
 [[package]]
 name = "polkavm-linker"
-version = "0.32.0"
+version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89d3ca240b3185eb121ceea2816d8cd9c68b09ff91f3cc2f865e6ad2f259c156"
+checksum = "046d371182d27b707e116d1637ccdc8514e0e123130139ecff62bd78d987c622"
 dependencies = [
  "dirs",
  "gimli",
@@ -3609,9 +3599,9 @@ dependencies = [
 
 [[package]]
 name = "polkavm-linux-raw"
-version = "0.32.0"
+version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8afb212d0effe4097b7243f0828feed74ca49105e3082e9b43dd5c2e89bc91c"
+checksum = "42063d4a1c52e569f7794df27dab3e19c9fa8946184023257bdbb43eb4a94be5"
 
 [[package]]
 name = "polling"
@@ -4183,7 +4173,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4710,7 +4700,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5505,7 +5495,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
