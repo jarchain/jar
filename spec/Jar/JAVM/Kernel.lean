@@ -449,7 +449,6 @@ def handleMap (state : KernelState) (vmIdx : Nat) (slot : Nat) : KernelState × 
         let state := Id.run do
           let mut s := state
           for p in [pageOffset:pageOffset + pgCount] do
-            let srcOff := (d.backingOffset + p) * pageSize
             let dstAddr := (baseOffset + p) * pageSize
             let pageData := s.backing.read (d.backingOffset + p) 0 pageSize
             -- Write page into PVM memory
