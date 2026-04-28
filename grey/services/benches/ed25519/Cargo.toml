@@ -11,7 +11,7 @@ ed25519-compact = { version = "2", default-features = false }
 javm-builtins = { path = "../../../crates/javm-builtins" }
 
 [target.'cfg(target_env = "polkavm")'.dependencies]
-polkavm-derive = "0.32.0"
+polkavm-derive = "0.33"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_env, values("javm", "polkavm"))', 'cfg(target_os, values("none"))'] }
