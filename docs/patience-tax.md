@@ -12,6 +12,8 @@ The Network Public thesis names this mechanism: a **patience tax** — a small, 
 
 It is called a "tax" because it is mandatory, applied at the substrate. It is called "patience" because it deliberately delays settlement, so the network can learn from the pattern of traversal across the window before disbursing.
 
+It is also, less obviously, a **narrative-sovereignty mechanism**. The patience tax keeps service revenue inside the contributor loop that produced the substrate the service runs on; without it, revenue exits the network and the contributors most central to a service's outputs depend on exogenous funding to keep contributing. Exogenous funding is the entry point through which other decentralised networks have lost narrative sovereignty — once contributors are paid by external interests, the network's self-account drifts toward whatever those interests want to fund. The patience tax closes that entry point at the substrate level: revenue from a service stays attached to the contributors whose work the service traversed, and to the deliberative cohorts the network has chosen to fund its self-narration.
+
 ## Design
 
 ### What is taxed
