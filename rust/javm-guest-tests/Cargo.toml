@@ -16,6 +16,7 @@ build-javm = { path = "../build-javm" }
 
 [dev-dependencies]
 javm = { path = "../javm" }
+javm-transpiler = { path = "../javm-transpiler" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_env, values("javm", "polkavm"))', 'cfg(target_os, values("none"))'] }

@@ -27,7 +27,7 @@ pub fn run_kernel(blob: &[u8], gas: u64) -> (u64, u64) {
 /// Run a javm blob on the kernel with a specific backend. Returns (result, gas_consumed).
 pub fn run_kernel_with_backend(blob: &[u8], gas: u64, backend: javm::PvmBackend) -> (u64, u64) {
     let mut kernel: javm::kernel::InvocationKernel =
-        javm::kernel::InvocationKernel::new_with_backend(blob, &[], gas, backend)
+        javm::kernel::InvocationKernel::new_with_backend(blob, gas, backend)
             .expect("kernel init failed");
     // javm no longer auto-populates protocol slots 1..=28 — populate the
     // host-call selector range explicitly so bench guests' `ecalli N`
@@ -828,7 +828,7 @@ pub fn run_fib_recur_with_backend(
     use javm::kernel::{InvocationKernel, KernelResult};
     use javm::vm_pool::VmState;
 
-    let mut kernel: InvocationKernel = InvocationKernel::new_with_backend(blob, &[], gas, backend)
+    let mut kernel: InvocationKernel = InvocationKernel::new_with_backend(blob, gas, backend)
         .expect("fib_recur kernel init failed");
     kernel.vm_arena.vm_mut(0).set_reg(7, n);
     let _ = kernel.vm_arena.vm_mut(0).transition(VmState::Running);

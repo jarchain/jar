@@ -32,7 +32,6 @@ fn dump_javm(name: &str, blob: &[u8]) {
         let kernel: javm::kernel::InvocationKernel =
             javm::kernel::InvocationKernel::new_with_backend(
                 blob,
-                &[],
                 100_000_000,
                 javm::PvmBackend::ForceRecompiler,
             )

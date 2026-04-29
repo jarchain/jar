@@ -20,8 +20,16 @@ fn run_kernel(backend: javm::PvmBackend, input: &[u8], test_id: u32) -> KernelRu
 
     let gas = 100_000_000_000u64;
     let mut kernel: InvocationKernel =
-        InvocationKernel::new_with_backend(GUEST_TESTS_BLOB, input, gas, backend)
+        InvocationKernel::new_with_backend(GUEST_TESTS_BLOB, gas, backend)
             .expect("kernel should initialize");
+    // Populate the transpiler-reserved args DATA cap and pass the byte
+    // address + length to the guest in φ[8]/φ[9]. javm has no built-in
+    // args concept; this is a host/transpiler convention.
+    let args_base = kernel
+        .write_data_cap_init(javm_transpiler::ARGS_CAP_INDEX, input)
+        .expect("args cap should be present in the guest blob manifest");
+    kernel.vm_arena.vm_mut(0).set_reg(8, args_base);
+    kernel.vm_arena.vm_mut(0).set_reg(9, input.len() as u64);
     let _ = kernel.vm_arena.vm_mut(0).transition(VmState::Running);
 
     let result = kernel.run();

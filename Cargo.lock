@@ -872,6 +872,7 @@ dependencies = [
  "build-javm",
  "javm",
  "javm-builtins",
+ "javm-transpiler",
  "sha3",
 ]
 

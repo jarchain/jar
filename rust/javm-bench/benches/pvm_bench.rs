@@ -134,7 +134,6 @@ fn bench_standard(c: &mut Criterion, name: &str, javm_blob: &[u8], pvm_blob: &[u
             || {
                 javm::kernel::InvocationKernel::<u8>::new_with_backend(
                     javm_blob,
-                    &[],
                     GAS_LIMIT,
                     javm::PvmBackend::ForceRecompiler,
                 )
@@ -254,7 +253,6 @@ fn bench_ecrecover(c: &mut Criterion) {
             std::hint::black_box(
                 javm::kernel::InvocationKernel::<u8>::new_with_backend(
                     javm_blob,
-                    &[],
                     ecrecover_gas,
                     javm::PvmBackend::ForceRecompiler,
                 )
@@ -269,7 +267,6 @@ fn bench_ecrecover(c: &mut Criterion) {
             || {
                 javm::kernel::InvocationKernel::<u8>::new_with_backend(
                     javm_blob,
-                    &[],
                     ecrecover_gas,
                     javm::PvmBackend::ForceRecompiler,
                 )

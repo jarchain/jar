@@ -66,8 +66,8 @@ macro_rules! resolve {
 }
 use crate::backing::BackingStore;
 use crate::cap::{
-    ARGS_CAP_INDEX, Access, CallableCap, Cap, CapTable, CodeCap, DataCap, EPHEMERAL_TABLE_SLOT,
-    HandleCap, UntypedCap,
+    Access, CallableCap, Cap, CapTable, CodeCap, DataCap, EPHEMERAL_TABLE_SLOT, HandleCap,
+    UntypedCap,
 };
 use crate::program::{self, CapEntryType, CapManifestEntry, ParsedBlob};
 #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
@@ -170,39 +170,33 @@ pub struct InvocationKernel<P: crate::cap::ProtocolCapT = u8> {
 impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
     /// Create a new kernel from a JAR blob.
     ///
-    pub fn new(blob: &[u8], _args: &[u8], gas: u64) -> Result<Self, KernelError> {
-        Self::new_with_backend(blob, _args, gas, crate::backend::PvmBackend::Default)
+    /// javm is a pure executor — it has no notion of "input args." Hosts
+    /// that want to pass byte payloads to the guest do so by writing
+    /// directly into a DATA cap of their choice (via
+    /// [`Self::write_data_cap_init`]) and placing it where the guest
+    /// expects it (typically ephemeral sub-slot 4 — the conventional
+    /// cap-arg location). Scalar args still flow through registers
+    /// φ[7..12] like any other CALL.
+    pub fn new(blob: &[u8], gas: u64) -> Result<Self, KernelError> {
+        Self::new_with_backend(blob, gas, crate::backend::PvmBackend::Default)
     }
 
     /// Create a new kernel, reusing cached JIT compilations when available.
-    pub fn new_cached(
-        blob: &[u8],
-        args: &[u8],
-        gas: u64,
-        cache: &mut CodeCache,
-    ) -> Result<Self, KernelError> {
-        Self::new_inner(
-            blob,
-            args,
-            gas,
-            crate::backend::PvmBackend::Default,
-            Some(cache),
-        )
+    pub fn new_cached(blob: &[u8], gas: u64, cache: &mut CodeCache) -> Result<Self, KernelError> {
+        Self::new_inner(blob, gas, crate::backend::PvmBackend::Default, Some(cache))
     }
 
     /// Create a new kernel with a specific backend selection.
     pub fn new_with_backend(
         blob: &[u8],
-        _args: &[u8],
         gas: u64,
         backend: crate::backend::PvmBackend,
     ) -> Result<Self, KernelError> {
-        Self::new_inner(blob, _args, gas, backend, None)
+        Self::new_inner(blob, gas, backend, None)
     }
 
     fn new_inner(
         blob: &[u8],
-        _args: &[u8],
         gas: u64,
         backend: crate::backend::PvmBackend,
         mut code_cache: Option<&mut CodeCache>,
@@ -316,35 +310,52 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
             cap_table.set(254, Cap::Untyped(Arc::clone(&kernel.untyped)));
         }
 
-        // Write arguments into args cap (cap_index = ARGS_CAP_INDEX). The
-        // transpiler/manifest writer agrees on this slot for the args DATA
-        // cap. Slot 0 is reserved for the ephemeral-table handle.
-        let mut args_base: u64 = 0;
-        let args_len: u64 = _args.len() as u64;
-        if !_args.is_empty() {
-            let args_cap_entry = parsed.caps.iter().find(|e| e.cap_index == ARGS_CAP_INDEX);
-            if let Some(entry) = args_cap_entry {
-                args_base = entry.base_page as u64 * crate::PVM_PAGE_SIZE as u64;
-                if let Some(Cap::Data(d)) = cap_table.get(ARGS_CAP_INDEX) {
-                    kernel.backing.write_init_data(d.backing_offset, _args);
-                }
-            }
-        }
-
-        // Create VM 0 — kernel sets φ[0]=halt, φ[7]=args_base, φ[8]=args_len.
-        // Program sets SP in its preamble (transpiler emits load_imm_64 SP, stack_top).
-        let mut vm0 = VmInstance::new(
+        // Create VM 0. Registers start zeroed; the host sets whatever
+        // scalar args (op code, etc.) it wants in φ[7..12] *after*
+        // construction, and writes any byte payloads into a DATA cap via
+        // `write_data_cap_init` (typically placed at ephemeral sub-slot 4
+        // by the conventional cap-arg pattern).
+        let vm0 = VmInstance::new(
             invoke_code_id,
             0, // entry_index (set by caller via CALL)
             cap_table,
             remaining_gas,
         );
-        // φ[7]=op set by caller (refine/accumulate), φ[8]=args_base, φ[9]=args_len
-        vm0.set_reg(8, args_base);
-        vm0.set_reg(9, args_len);
         kernel.vm_arena.insert(vm0); // VM 0 gets VmId(0, 0)
 
         Ok(kernel)
+    }
+
+    /// Write `bytes` into the backing pages of the DATA cap at `slot` of
+    /// VM 0's persistent Frame, and return the mapped byte address in
+    /// VM 0's window (so the host can pass it to the guest in a register
+    /// if it needs a raw pointer). Returns `Err` if the slot is empty,
+    /// holds a non-DATA cap, the cap has no recorded mapping for VM 0,
+    /// or `bytes.len()` exceeds the cap's allocated pages.
+    ///
+    /// Intended for invocation init: the host populates a DATA cap that
+    /// the manifest reserved (and pre-mapped via `mappings[VM_0]`) so the
+    /// guest can read the bytes through its mapped window. After
+    /// construction the host typically also MOVEs the cap to the
+    /// conventional cap-arg location (ephemeral sub-slot 4) before the
+    /// CALL.
+    pub fn write_data_cap_init(&mut self, slot: u8, bytes: &[u8]) -> Result<u64, KernelError> {
+        let (backing_offset, base_page) = match self.vm_arena.vm(0).cap_table.get(slot) {
+            Some(Cap::Data(d)) => {
+                let cap_bytes = d.page_count as usize * crate::PVM_PAGE_SIZE as usize;
+                if bytes.len() > cap_bytes {
+                    return Err(KernelError::InvalidBlob);
+                }
+                let base = d
+                    .mapping_for(crate::vm_pool::VmId::ROOT)
+                    .map(|(b, _)| b)
+                    .ok_or(KernelError::InvalidBlob)?;
+                (d.backing_offset, base)
+            }
+            _ => return Err(KernelError::InvalidBlob),
+        };
+        self.backing.write_init_data(backing_offset, bytes);
+        Ok(base_page as u64 * crate::PVM_PAGE_SIZE as u64)
     }
 
     /// Extract the current flat_mem snapshot from the kernel's DATA cap pages.
@@ -423,7 +434,6 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
     /// same blob is re-entered every tick.
     pub fn new_warm(
         blob: &[u8],
-        args: &[u8],
         gas: u64,
         flat_mem: &[u8],
         heap_base: u32,
@@ -431,8 +441,8 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         cache: Option<&mut CodeCache>,
     ) -> Result<Self, KernelError> {
         let mut kernel = match cache {
-            Some(c) => Self::new_cached(blob, args, gas, c)?,
-            None => Self::new(blob, args, gas)?,
+            Some(c) => Self::new_cached(blob, gas, c)?,
+            None => Self::new(blob, gas)?,
         };
         // Overlay the saved flat_mem onto RW DATA cap pages.
         let vm = &kernel.vm_arena.vm(0);
@@ -2891,7 +2901,7 @@ mod tests {
     #[test]
     fn test_kernel_create() {
         let blob = make_simple_blob(10);
-        let kernel: InvocationKernel = InvocationKernel::new(&blob, &[], 100_000).unwrap();
+        let kernel: InvocationKernel = InvocationKernel::new(&blob, 100_000).unwrap();
         assert_eq!(kernel.vm_arena.len(), 1);
         assert_eq!(kernel.code_caps.len(), 1);
         assert_eq!(kernel.mem_cycles, 25);
@@ -2900,7 +2910,7 @@ mod tests {
     #[test]
     fn test_kernel_retype() {
         let blob = make_simple_blob(10);
-        let mut kernel: InvocationKernel = InvocationKernel::new(&blob, &[], 100_000).unwrap();
+        let mut kernel: InvocationKernel = InvocationKernel::new(&blob, 100_000).unwrap();
 
         // Set VM 0 to running
         let _ = kernel.vm_arena.vm_mut(0).transition(VmState::Running);
@@ -2934,7 +2944,7 @@ mod tests {
     #[test]
     fn test_kernel_create_vm() {
         let blob = make_simple_blob(10);
-        let mut kernel: InvocationKernel = InvocationKernel::new(&blob, &[], 100_000).unwrap();
+        let mut kernel: InvocationKernel = InvocationKernel::new(&blob, 100_000).unwrap();
         let _ = kernel.vm_arena.vm_mut(0).transition(VmState::Running);
 
         // Find the CODE cap slot
@@ -2963,7 +2973,7 @@ mod tests {
     #[test]
     fn test_kernel_call_reply() {
         let blob = make_simple_blob(10);
-        let mut kernel: InvocationKernel = InvocationKernel::new(&blob, &[], 100_000).unwrap();
+        let mut kernel: InvocationKernel = InvocationKernel::new(&blob, 100_000).unwrap();
         let _ = kernel.vm_arena.vm_mut(0).transition(VmState::Running);
 
         // Create child VM: φ[7]=bitmask, φ[12]=dst_slot for HANDLE
@@ -3008,7 +3018,7 @@ mod tests {
     #[test]
     fn test_kernel_no_reentrancy() {
         let blob = make_simple_blob(10);
-        let mut kernel: InvocationKernel = InvocationKernel::new(&blob, &[], 100_000).unwrap();
+        let mut kernel: InvocationKernel = InvocationKernel::new(&blob, 100_000).unwrap();
         let _ = kernel.vm_arena.vm_mut(0).transition(VmState::Running);
 
         // Create two child VMs: φ[7]=bitmask, φ[12]=dst_slot
@@ -3040,7 +3050,7 @@ mod tests {
     #[test]
     fn test_kernel_gas_bounding() {
         let blob = make_simple_blob(10);
-        let mut kernel: InvocationKernel = InvocationKernel::new(&blob, &[], 100_000).unwrap();
+        let mut kernel: InvocationKernel = InvocationKernel::new(&blob, 100_000).unwrap();
         let _ = kernel.vm_arena.vm_mut(0).transition(VmState::Running);
 
         // Create child VM: φ[7]=bitmask, φ[12]=dst_slot
@@ -3073,7 +3083,7 @@ mod tests {
     #[test]
     fn test_kernel_protocol_call() {
         let blob = make_simple_blob(10);
-        let mut kernel: InvocationKernel = InvocationKernel::new(&blob, &[], 100_000).unwrap();
+        let mut kernel: InvocationKernel = InvocationKernel::new(&blob, 100_000).unwrap();
         let _ = kernel.vm_arena.vm_mut(0).transition(VmState::Running);
 
         // Set a protocol cap at slot 1 (GAS)
@@ -3099,7 +3109,7 @@ mod tests {
     #[test]
     fn test_kernel_missing_cap() {
         let blob = make_simple_blob(10);
-        let mut kernel: InvocationKernel = InvocationKernel::new(&blob, &[], 100_000).unwrap();
+        let mut kernel: InvocationKernel = InvocationKernel::new(&blob, 100_000).unwrap();
         let _ = kernel.vm_arena.vm_mut(0).transition(VmState::Running);
 
         // CALL empty slot → WHAT
@@ -3111,7 +3121,7 @@ mod tests {
     #[test]
     fn test_kernel_downgrade() {
         let blob = make_simple_blob(10);
-        let mut kernel: InvocationKernel = InvocationKernel::new(&blob, &[], 100_000).unwrap();
+        let mut kernel: InvocationKernel = InvocationKernel::new(&blob, 100_000).unwrap();
         let _ = kernel.vm_arena.vm_mut(0).transition(VmState::Running);
 
         // Create child: φ[7]=bitmask, φ[12]=dst_slot
@@ -3148,7 +3158,7 @@ mod tests {
         // This validates the full execution path: blob parse → JIT compile →
         // mmap DATA → execute native code → exit handling.
         let blob = make_simple_blob(10);
-        let mut kernel: InvocationKernel = InvocationKernel::new(&blob, &[], 100_000).unwrap();
+        let mut kernel: InvocationKernel = InvocationKernel::new(&blob, 100_000).unwrap();
         let _ = kernel.vm_arena.vm_mut(0).transition(VmState::Running);
         let result = kernel.run();
         assert!(
@@ -3160,7 +3170,7 @@ mod tests {
     #[test]
     fn test_kernel_cap_bitmask_propagation() {
         let blob = make_simple_blob(10);
-        let mut kernel: InvocationKernel = InvocationKernel::new(&blob, &[], 100_000).unwrap();
+        let mut kernel: InvocationKernel = InvocationKernel::new(&blob, 100_000).unwrap();
         let _ = kernel.vm_arena.vm_mut(0).transition(VmState::Running);
 
         // Place protocol caps at slots 1 and 2
@@ -3199,7 +3209,7 @@ mod tests {
     #[test]
     fn test_kernel_zero_gas_call() {
         let blob = make_simple_blob(10);
-        let mut kernel: InvocationKernel = InvocationKernel::new(&blob, &[], 100_000).unwrap();
+        let mut kernel: InvocationKernel = InvocationKernel::new(&blob, 100_000).unwrap();
         let _ = kernel.vm_arena.vm_mut(0).transition(VmState::Running);
 
         // Create child VM
@@ -3226,7 +3236,7 @@ mod tests {
         // VM 0 creates VM 1, calls it. VM 1 creates VM 2, calls it.
         // VM 2 replies. VM 1 replies. VM 0 receives final result.
         let blob = make_simple_blob(10);
-        let mut kernel: InvocationKernel = InvocationKernel::new(&blob, &[], 1_000_000).unwrap();
+        let mut kernel: InvocationKernel = InvocationKernel::new(&blob, 1_000_000).unwrap();
         let _ = kernel.vm_arena.vm_mut(0).transition(VmState::Running);
 
         // VM 0 creates VM 1, propagating the CODE cap at slot 64
@@ -3288,14 +3298,14 @@ mod tests {
 
         // First creation populates the cache.
         let k1: InvocationKernel =
-            InvocationKernel::new_cached(&blob, &[], 100_000, &mut cache).unwrap();
+            InvocationKernel::new_cached(&blob, 100_000, &mut cache).unwrap();
         assert_eq!(cache.entries.len(), 1);
         let first_arc = Arc::clone(&k1.code_caps[0]);
         drop(k1);
 
         // Second creation with the same blob should hit the cache.
         let k2: InvocationKernel =
-            InvocationKernel::new_cached(&blob, &[], 100_000, &mut cache).unwrap();
+            InvocationKernel::new_cached(&blob, 100_000, &mut cache).unwrap();
         assert_eq!(cache.entries.len(), 1); // no new entry
         // The Arc should point to the same allocation.
         assert!(Arc::ptr_eq(&first_arc, &k2.code_caps[0]));
@@ -3346,11 +3356,11 @@ mod tests {
         let mut cache = CodeCache::new();
 
         let _k1: InvocationKernel =
-            InvocationKernel::new_cached(&blob1, &[], 100_000, &mut cache).unwrap();
+            InvocationKernel::new_cached(&blob1, 100_000, &mut cache).unwrap();
         assert_eq!(cache.entries.len(), 1);
 
         let _k2: InvocationKernel =
-            InvocationKernel::new_cached(&blob2, &[], 100_000, &mut cache).unwrap();
+            InvocationKernel::new_cached(&blob2, 100_000, &mut cache).unwrap();
         assert_eq!(cache.entries.len(), 2); // separate entry for different code
     }
 
@@ -3358,7 +3368,7 @@ mod tests {
     fn test_code_cache_no_cache_path() {
         // new() (without cache) still works.
         let blob = make_simple_blob(10);
-        let k: InvocationKernel = InvocationKernel::new(&blob, &[], 100_000).unwrap();
+        let k: InvocationKernel = InvocationKernel::new(&blob, 100_000).unwrap();
         assert_eq!(k.code_caps.len(), 1);
     }
 
@@ -3369,7 +3379,7 @@ mod tests {
 
         // Cold start populates the cache.
         let k1: InvocationKernel =
-            InvocationKernel::new_cached(&blob, &[], 100_000, &mut cache).unwrap();
+            InvocationKernel::new_cached(&blob, 100_000, &mut cache).unwrap();
         assert_eq!(cache.entries.len(), 1);
         let first_arc = Arc::clone(&k1.code_caps[0]);
 
@@ -3379,7 +3389,7 @@ mod tests {
 
         // Warm restart with cache should reuse the compiled code.
         let k2: InvocationKernel =
-            InvocationKernel::new_warm(&blob, &[], 100_000, &flat_mem, hb, ht, Some(&mut cache))
+            InvocationKernel::new_warm(&blob, 100_000, &flat_mem, hb, ht, Some(&mut cache))
                 .unwrap();
         assert!(Arc::ptr_eq(&first_arc, &k2.code_caps[0]));
         assert_eq!(cache.entries.len(), 1);
@@ -3390,12 +3400,12 @@ mod tests {
         let blob = make_simple_blob(10);
 
         // new_warm with None still works.
-        let k1: InvocationKernel = InvocationKernel::new(&blob, &[], 100_000).unwrap();
+        let k1: InvocationKernel = InvocationKernel::new(&blob, 100_000).unwrap();
         let (flat_mem, hb, ht) = k1.extract_flat_mem();
         drop(k1);
 
         let k2: InvocationKernel =
-            InvocationKernel::new_warm(&blob, &[], 100_000, &flat_mem, hb, ht, None).unwrap();
+            InvocationKernel::new_warm(&blob, 100_000, &flat_mem, hb, ht, None).unwrap();
         assert_eq!(k2.code_caps.len(), 1);
     }
 }

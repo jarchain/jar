@@ -22,7 +22,6 @@ fn main() {
         let mut kernel: javm::kernel::InvocationKernel =
             javm::kernel::InvocationKernel::new_with_backend(
                 &sort_blob,
-                &[],
                 GAS_LIMIT,
                 javm::PvmBackend::ForceRecompiler,
             )

@@ -113,13 +113,11 @@ pub fn handle_inbound_dispatch<H: Hardware>(
             prev_slot: None,
             hw,
         };
-        let mut vm: Vm = Vm::new_cached(
-            &blob,
-            &event.payload,
-            INVOCATION_GAS_BUDGET,
-            &mut node.code_cache,
-        )
-        .map_err(|e| KernelError::Internal(format!("javm init step-2: {:?}", e)))?;
+        // TODO: payload bytes (event.payload) need to be written into a
+        // manifest-reserved DATA cap and placed at ephemeral sub-slot 4
+        // when dispatch guests start reading them. Today's fixtures halt.
+        let mut vm: Vm = Vm::new_cached(&blob, INVOCATION_GAS_BUDGET, &mut node.code_cache)
+            .map_err(|e| KernelError::Internal(format!("javm init step-2: {:?}", e)))?;
         populate_host_call_slots(&mut vm);
         populate_storage_slot(&mut vm, entrypoint, false, Some(prior_root));
         vm.set_active_reg(7, 0);
@@ -150,13 +148,8 @@ pub fn handle_inbound_dispatch<H: Hardware>(
             prev_slot: Some(&prev_slot_owned),
             hw,
         };
-        let mut vm: Vm = Vm::new_cached(
-            &blob,
-            &event.payload,
-            INVOCATION_GAS_BUDGET,
-            &mut node.code_cache,
-        )
-        .map_err(|e| KernelError::Internal(format!("javm init step-3: {:?}", e)))?;
+        let mut vm: Vm = Vm::new_cached(&blob, INVOCATION_GAS_BUDGET, &mut node.code_cache)
+            .map_err(|e| KernelError::Internal(format!("javm init step-3: {:?}", e)))?;
         populate_host_call_slots(&mut vm);
         populate_storage_slot(&mut vm, entrypoint, false, Some(prior_root));
         vm.set_active_reg(7, 1);

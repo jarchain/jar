@@ -232,12 +232,14 @@ pub fn build_service_program(
         next_page += heap_pages;
     }
 
-    // Args DATA cap. Slot 0 of every VM's persistent Frame is reserved
-    // for the per-invocation ephemeral-table handle, so the manifest
-    // convention places args at slot 1 (`ARGS_CAP_INDEX`). The kernel
-    // writes invocation arguments here at init time.
+    // Args DATA cap. javm has no built-in args concept — this slot is
+    // a transpiler-host convention: hosts populate it via
+    // `kernel.write_data_cap_init(ARGS_CAP_INDEX, bytes)` post-init and
+    // pass the resulting byte address to the guest in φ[8]. Slot 69
+    // sits above the kernel host-call selector range and the standard
+    // 64..=68 program caps (code/stack/ro/rw/heap).
     caps.push(CapManifestEntry {
-        cap_index: javm::cap::ARGS_CAP_INDEX,
+        cap_index: crate::ARGS_CAP_INDEX,
         cap_type: CapEntryType::Data,
         base_page: next_page,
         page_count: 1, // 4KB for args
@@ -265,7 +267,7 @@ mod tests {
     #[test]
     fn test_build_v2_minimal() {
         let blob = javm::program::build_simple_blob(&[0, 1, 0], &[1, 1, 1], &[]);
-        let kernel = javm::kernel::InvocationKernel::<u8>::new(&blob, &[], 100_000);
+        let kernel = javm::kernel::InvocationKernel::<u8>::new(&blob, 100_000);
         assert!(
             kernel.is_ok(),
             "blob should be loadable: {:?}",
@@ -278,7 +280,7 @@ mod tests {
         let code = vec![0, 1, 0]; // trap, fallthrough, trap
         let bitmask = vec![1, 1, 1];
         let blob = build_service_program(&code, &bitmask, &[], &[], &[], 1, 0, 4);
-        let kernel = javm::kernel::InvocationKernel::<u8>::new(&blob, &[], 100_000);
+        let kernel = javm::kernel::InvocationKernel::<u8>::new(&blob, 100_000);
         assert!(
             kernel.is_ok(),
             "service blob should be loadable: {:?}",

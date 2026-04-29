@@ -114,7 +114,12 @@ pub fn run_one_invocation<H: Hardware>(
     // to the InvocationCtx as `&mut`.
     let code_hash = state.vault(target)?.code_hash;
     let blob = code_blobs::resolve_code_blob(state, &code_hash)?.to_vec();
-    let mut vm: Vm = Vm::new(&blob, payload, INVOCATION_GAS_BUDGET)
+    // TODO: when transact guests start reading payload bytes, wire them
+    // through `vm.write_data_cap_init(slot, payload)` against a manifest-
+    // reserved DATA cap (and place at ephemeral sub-slot 4 per the new
+    // cap-arg convention). Today's halt-immediate fixtures don't need it.
+    let _ = payload;
+    let mut vm: Vm = Vm::new(&blob, INVOCATION_GAS_BUDGET)
         .map_err(|e| KernelError::Internal(format!("javm init: {:?}", e)))?;
     populate_host_call_slots(&mut vm);
     populate_storage_slot(
