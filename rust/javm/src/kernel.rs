@@ -66,12 +66,15 @@ macro_rules! resolve {
 }
 use crate::backing::BackingStore;
 use crate::cap::{
-    Access, CallableCap, Cap, CapTable, CodeCap, DataCap, HandleCap, IPC_SLOT, UntypedCap,
+    ARGS_CAP_INDEX, Access, CallableCap, Cap, CapTable, CodeCap, DataCap, EPHEMERAL_TABLE_SLOT,
+    HandleCap, UntypedCap,
 };
 use crate::program::{self, CapEntryType, CapManifestEntry, ParsedBlob};
 #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
 use crate::vm_pool::WindowPool;
-use crate::vm_pool::{CallFrame, MAX_CODE_CAPS, VmArena, VmId, VmInstance, VmState};
+use crate::vm_pool::{
+    CallFrame, EphemeralTableId, FrameRef, MAX_CODE_CAPS, VmArena, VmId, VmInstance, VmState,
+};
 
 /// ecalli immediate ranges.
 const CALL_RANGE_END: u32 = 0x100;
@@ -138,7 +141,7 @@ pub struct InvocationKernel<P: crate::cap::ProtocolCapT = u8> {
     /// Currently active VM index.
     pub active_vm: u16,
     /// Call stack for CALL/REPLY routing.
-    pub call_stack: Vec<CallFrame>,
+    pub call_stack: Vec<CallFrame<P>>,
     /// Memory tier (load/store cycles).
     pub mem_cycles: u8,
     /// Next CODE cap ID.
@@ -236,12 +239,22 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
             active_window: 0,
         };
 
+        // Allocate the per-invocation ephemeral table. Slot 0 of every VM's
+        // persistent Frame holds an `EphemeralTable` cap referring to it.
+        let ephemeral_id = kernel.ephemeral_arena.insert(CapTable::new());
+
         // Build VM 0's cap table from the manifest. Protocol caps are NOT
         // auto-populated — the caller (kernel host) is responsible for
         // setting up whatever protocol slots it intends to expose, via
         // `cap_table_set` / `set_original`. This avoids baking JAR's old
         // 1..=28 host-call layout into javm itself.
         let mut cap_table: CapTable<P> = CapTable::new();
+        cap_table.set(
+            0,
+            Cap::EphemeralTable(crate::cap::EphemeralTableCap {
+                table_id: ephemeral_id,
+            }),
+        );
         let mut init_pages: u32 = 0;
         let mut data_caps_to_map: Vec<(u32, u32, u32, Access)> = Vec::new(); // (base_page, backing_offset, page_count, access)
 
@@ -303,15 +316,16 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
             cap_table.set(254, Cap::Untyped(Arc::clone(&kernel.untyped)));
         }
 
-        // Write arguments into args cap (cap_index=0xFF = IPC slot)
+        // Write arguments into args cap (cap_index = ARGS_CAP_INDEX). The
+        // transpiler/manifest writer agrees on this slot for the args DATA
+        // cap. Slot 0 is reserved for the ephemeral-table handle.
         let mut args_base: u64 = 0;
         let args_len: u64 = _args.len() as u64;
         if !_args.is_empty() {
-            // Find args cap by scanning for cap_index=IPC_SLOT (0)
-            let args_cap_entry = parsed.caps.iter().find(|e| e.cap_index == IPC_SLOT);
+            let args_cap_entry = parsed.caps.iter().find(|e| e.cap_index == ARGS_CAP_INDEX);
             if let Some(entry) = args_cap_entry {
                 args_base = entry.base_page as u64 * crate::PVM_PAGE_SIZE as u64;
-                if let Some(Cap::Data(d)) = cap_table.get(IPC_SLOT) {
+                if let Some(Cap::Data(d)) = cap_table.get(ARGS_CAP_INDEX) {
                     kernel.backing.write_init_data(d.backing_offset, _args);
                 }
             }
@@ -601,7 +615,7 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         if imm < CALL_RANGE_END {
             // CALL cap[N]
             let cap_idx = imm as u8;
-            if cap_idx == IPC_SLOT {
+            if cap_idx == EPHEMERAL_TABLE_SLOT {
                 #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
                 self.flush_live_ctx();
                 return self.handle_reply();
@@ -715,22 +729,25 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
 
         // Caller-picks: destination slot from φ[12] with indirection
         let dst_ref = self.active_reg(12) as u32;
-        let (dst_vm, dst_slot) = match self.resolve_cap_ref(dst_ref) {
+        let (dst_frame, dst_slot) = match self.resolve_cap_ref(dst_ref) {
             Some(r) => r,
             None => {
                 self.set_active_reg(7, RESULT_WHAT);
                 return DispatchResult::Continue;
             }
         };
-        if !self.vm_arena.vm(dst_vm as u16).cap_table.is_empty(dst_slot) {
+        let dst_table = match self.frame_table_mut(dst_frame) {
+            Some(t) => t,
+            None => {
+                self.set_active_reg(7, RESULT_WHAT);
+                return DispatchResult::Continue;
+            }
+        };
+        if !dst_table.is_empty(dst_slot) {
             self.set_active_reg(7, RESULT_WHAT);
             return DispatchResult::Continue;
         }
-
-        self.vm_arena
-            .vm_mut(dst_vm as u16)
-            .cap_table
-            .set(dst_slot, Cap::Data(data_cap));
+        dst_table.set(dst_slot, Cap::Data(data_cap));
         self.set_active_reg(7, dst_slot as u64);
         DispatchResult::Continue
     }
@@ -742,11 +759,28 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
     fn handle_call_code(&mut self, code_cap_id: u16, code_cnode_vm: usize) -> DispatchResult {
         let bitmask = self.active_reg(7);
 
-        // Create child VM's cap table by copying bitmask-selected caps from CODE's CNode
+        // Create child VM's cap table by copying bitmask-selected caps from
+        // CODE's CNode. Slot 0 of every VM's persistent Frame is reserved
+        // for the per-invocation EphemeralTable handle — pre-populate it
+        // before processing the bitmask. Bitmask bit 0 set is rejected
+        // here, since slot 0 is not the caller's to grant.
         let mut child_table = CapTable::new();
-        let source_vm = self.vm_arena.vm(code_cnode_vm as u16);
+        let ephemeral_id = match self.ephemeral_id() {
+            Some(id) => id,
+            None => {
+                self.set_active_reg(7, RESULT_WHAT);
+                return DispatchResult::Continue;
+            }
+        };
+        child_table.set(
+            0,
+            Cap::EphemeralTable(crate::cap::EphemeralTableCap {
+                table_id: ephemeral_id,
+            }),
+        );
 
-        for bit in 0..64u8 {
+        let source_vm = self.vm_arena.vm(code_cnode_vm as u16);
+        for bit in 1..64u8 {
             if bitmask & (1u64 << bit) != 0
                 && let Some(cap) = source_vm.cap_table.get(bit)
             {
@@ -783,21 +817,25 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         };
 
         let dst_ref = self.active_reg(12) as u32;
-        let (dst_vm, dst_slot) = match self.resolve_cap_ref(dst_ref) {
+        let (dst_frame, dst_slot) = match self.resolve_cap_ref(dst_ref) {
             Some(r) => r,
             None => {
                 self.set_active_reg(7, RESULT_WHAT);
                 return DispatchResult::Continue;
             }
         };
-        if !self.vm_arena.vm(dst_vm as u16).cap_table.is_empty(dst_slot) {
+        let dst_table = match self.frame_table_mut(dst_frame) {
+            Some(t) => t,
+            None => {
+                self.set_active_reg(7, RESULT_WHAT);
+                return DispatchResult::Continue;
+            }
+        };
+        if !dst_table.is_empty(dst_slot) {
             self.set_active_reg(7, RESULT_WHAT);
             return DispatchResult::Continue;
         }
-        self.vm_arena
-            .vm_mut(dst_vm as u16)
-            .cap_table
-            .set(dst_slot, Cap::Handle(handle));
+        dst_table.set(dst_slot, Cap::Handle(handle));
         self.set_active_reg(7, dst_slot as u64);
         DispatchResult::Continue
     }
@@ -841,31 +879,16 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
             .vm_mut(caller_id)
             .transition(VmState::WaitingForReply);
 
-        // Handle IPC cap (φ[12]). 0 = no cap to pass (slot 0 is IPC itself).
-        let ipc_cap_slot = self.active_reg(12) as u8;
-        let mut ipc_cap_idx = None;
-
-        if ipc_cap_slot != 0
-            && !self.vm_arena.vm(caller_id).cap_table.is_empty(ipc_cap_slot)
-            && let Some(mut cap) = self.vm_arena.vm_mut(caller_id).cap_table.take(ipc_cap_slot)
-        {
-            // Cross-frame MOVE from caller's persistent Frame to callee's
-            // slot 0. Auto-unmap from caller's window; mappings[caller]
-            // is preserved on the cap so REPLY's MOVE-back auto-remaps.
-            if let Cap::Data(ref mut d) = cap {
-                self.cross_frame_unmap(d);
-            }
-            ipc_cap_idx = Some(ipc_cap_slot);
-            self.vm_arena
-                .vm_mut(target_vm_id)
-                .cap_table
-                .set(IPC_SLOT, cap);
-        }
+        // Stash the caller's view of ephemeral sub-slots 0/1/2 (Reply/Caller/
+        // Self) so they can be rewritten with the callee's context. javm
+        // doesn't write content here; the host (jar-kernel) populates
+        // Caller/Self in Phase 10.
+        let prev_kernel_slots = self.take_ephemeral_kernel_slots(caller_id);
 
         // Push call frame
         self.call_stack.push(CallFrame {
             caller_vm_id: caller_id,
-            ipc_cap_idx,
+            prev_kernel_slots,
         });
 
         // Pass args: caller's φ[7]..φ[10] → callee's φ[7]..φ[10]
@@ -909,21 +932,10 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         self.vm_arena.vm_mut(caller_id).set_gas(cg + unused_gas);
         self.vm_arena.vm_mut(callee_id).set_gas(0);
 
-        // Return IPC cap (cross-frame MOVE back to caller's persistent Frame).
-        if let Some(caller_slot) = frame.ipc_cap_idx
-            && let Some(mut cap) = self.vm_arena.vm_mut(callee_id).cap_table.take(IPC_SLOT)
-        {
-            if let Cap::Data(ref mut d) = cap {
-                // Unmap from callee's window if active there, then auto-remap
-                // in caller's window if mappings[caller] is recorded.
-                self.cross_frame_unmap(d);
-                self.cross_frame_remap(d, caller_id);
-            }
-            self.vm_arena
-                .vm_mut(caller_id)
-                .cap_table
-                .set(caller_slot, cap);
-        }
+        // Restore the caller's ephemeral sub-slots 0/1/2 (Reply/Caller/Self).
+        // The host (jar-kernel) populates these on the way in; on REPLY javm
+        // just hands the previous values back.
+        self.restore_ephemeral_kernel_slots(frame.prev_kernel_slots);
 
         // Pass φ[7] only + set φ[8]=0 (status = REPLY success)
         let callee_r7 = self.vm_arena.vm(callee_id).reg(7);
@@ -937,44 +949,139 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         DispatchResult::Continue
     }
 
-    /// Resolve a u32 cap reference with HANDLE-chain indirection.
+    /// Resolve a u32 cap reference, returning the frame and cap slot.
     ///
-    /// Encoding: byte 0 = target slot, bytes 1-3 = HANDLE chain (0x00 = end).
-    /// Returns (vm_index, cap_slot) or None if resolution fails.
-    /// Each intermediate VM must hold a HANDLE and be non-RUNNING.
-    fn resolve_cap_ref(&self, cap_ref: u32) -> Option<(usize, u8)> {
-        let target_slot = (cap_ref & 0xFF) as u8;
-        let ind0 = ((cap_ref >> 8) & 0xFF) as u8;
-        let ind1 = ((cap_ref >> 16) & 0xFF) as u8;
-        let ind2 = ((cap_ref >> 24) & 0xFF) as u8;
+    /// Encoding (low → high bytes): `[target, ind0, ind1, ind2]`.
+    /// - `target == 0 && cap_ref == 0` → slot 0 of the active persistent
+    ///   Frame literally (the EphemeralTable handle). `CALL(0) = REPLY` is
+    ///   a separate special case in `dispatch_ecalli`.
+    /// - `target == 0 && cap_ref != 0` → slot-0 redirect: cross through
+    ///   slot 0 of the current frame and re-apply the rules with `r >>= 8`.
+    ///   Recursive — each shift descends one level.
+    /// - `target != 0` → walk `ind2, ind1, ind0`; each non-zero byte
+    ///   crosses through that slot of the current frame; result is `target`
+    ///   in the final frame.
+    ///
+    /// Crossings consume `Cap::Handle` (cross to that VM's persistent
+    /// Frame) or `Cap::EphemeralTable` (enter the ephemeral table). Any
+    /// other cap shape fails.
+    fn resolve_cap_ref(&self, cap_ref: u32) -> Option<(FrameRef, u8)> {
+        let mut current = FrameRef::Vm(self.active_vm);
+        let mut r = cap_ref;
 
-        let mut vm_idx = self.active_vm as usize;
-
-        // Walk indirection chain (high bytes first: ind2, ind1, ind0)
-        for &handle_slot in &[ind2, ind1, ind0] {
-            if handle_slot == 0 {
-                continue; // end of chain
-            }
-            let vm = &self.vm_arena.vm(vm_idx as u16);
-            match vm.cap_table.get(handle_slot) {
-                Some(Cap::Handle(h)) => {
-                    // Validate VmId (generation check for stale handles)
-                    let target = self.vm_arena.get(h.vm_id)?;
-                    if target.state == VmState::Running || target.state == VmState::WaitingForReply
-                    {
-                        return None; // target must be non-RUNNING
-                    }
-                    vm_idx = h.vm_id.index() as usize;
-                }
-                _ => return None, // not a HANDLE
-            }
+        // Slot-0 redirect: while target byte == 0 but cap_ref still has bits
+        // to consume, cross through slot 0 of the current frame.
+        while (r & 0xFF) == 0 && r != 0 {
+            current = self.cross_through(current, 0)?;
+            r >>= 8;
         }
 
-        Some((vm_idx, target_slot))
+        let target = (r & 0xFF) as u8;
+        let ind0 = ((r >> 8) & 0xFF) as u8;
+        let ind1 = ((r >> 16) & 0xFF) as u8;
+        let ind2 = ((r >> 24) & 0xFF) as u8;
+
+        for &slot in &[ind2, ind1, ind0] {
+            if slot == 0 {
+                continue;
+            }
+            current = self.cross_through(current, slot)?;
+        }
+
+        Some((current, target))
+    }
+
+    /// Cross through `slot` of `frame` to the next frame in a cap-ref walk.
+    /// Slot must hold either `Cap::Handle` (→ that VM's persistent Frame)
+    /// or `Cap::EphemeralTable` (→ the ephemeral table). Any other cap
+    /// shape fails.
+    fn cross_through(&self, frame: FrameRef, slot: u8) -> Option<FrameRef> {
+        let table = self.frame_table(frame)?;
+        match table.get(slot)? {
+            Cap::Handle(h) => {
+                let target = self.vm_arena.get(h.vm_id)?;
+                if target.state == VmState::Running || target.state == VmState::WaitingForReply {
+                    return None;
+                }
+                Some(FrameRef::Vm(h.vm_id.index()))
+            }
+            Cap::EphemeralTable(c) => Some(FrameRef::Ephemeral(c.table_id)),
+            _ => None,
+        }
+    }
+
+    /// Borrow the cap-table backing a `FrameRef`. Returns `None` if the
+    /// frame is an ephemeral-table id with no live entry (stale generation).
+    fn frame_table(&self, fref: FrameRef) -> Option<&CapTable<P>> {
+        match fref {
+            FrameRef::Vm(idx) => Some(&self.vm_arena.vm(idx).cap_table),
+            FrameRef::Ephemeral(id) => self.ephemeral_arena.get(id),
+        }
+    }
+
+    /// Mutably borrow the cap-table backing a `FrameRef`.
+    fn frame_table_mut(&mut self, fref: FrameRef) -> Option<&mut CapTable<P>> {
+        match fref {
+            FrameRef::Vm(idx) => Some(&mut self.vm_arena.vm_mut(idx).cap_table),
+            FrameRef::Ephemeral(id) => self.ephemeral_arena.get_mut(id),
+        }
+    }
+
+    /// The single ephemeral-table id allocated for this invocation. Found
+    /// by reading slot 0 of the active VM's persistent Frame (always a
+    /// `Cap::EphemeralTable` — kernel maintains this invariant).
+    fn ephemeral_id(&self) -> Option<EphemeralTableId> {
+        match self.vm_arena.vm(self.active_vm).cap_table.get(0)? {
+            Cap::EphemeralTable(c) => Some(c.table_id),
+            _ => None,
+        }
+    }
+
+    /// Take the active VM's view of ephemeral sub-slots 0/1/2 (Reply,
+    /// Caller, Self) for stashing on the call-stack. These slots are the
+    /// per-frame kernel-managed area; the host (jar-kernel) populates them.
+    /// javm just preserves whatever was there.
+    fn take_ephemeral_kernel_slots(&mut self, _caller_vm: u16) -> [Option<Cap<P>>; 3] {
+        let id = match self.ephemeral_id() {
+            Some(id) => id,
+            None => return [None, None, None],
+        };
+        let table = match self.ephemeral_arena.get_mut(id) {
+            Some(t) => t,
+            None => return [None, None, None],
+        };
+        [table.take(0), table.take(1), table.take(2)]
+    }
+
+    /// Restore previously-stashed ephemeral sub-slots 0/1/2 on REPLY/HALT.
+    fn restore_ephemeral_kernel_slots(&mut self, slots: [Option<Cap<P>>; 3]) {
+        let id = match self.ephemeral_id() {
+            Some(id) => id,
+            None => return,
+        };
+        let table = match self.ephemeral_arena.get_mut(id) {
+            Some(t) => t,
+            None => return,
+        };
+        // Drop whatever the callee left in those slots, then write back the
+        // caller's values (skipping None — the caller had nothing there).
+        let [a, b, c] = slots;
+        let _ = table.take(0);
+        let _ = table.take(1);
+        let _ = table.take(2);
+        if let Some(a) = a {
+            table.set(0, a);
+        }
+        if let Some(b) = b {
+            table.set(1, b);
+        }
+        if let Some(c) = c {
+            table.set(2, c);
+        }
     }
 
     /// Resolve a cap ref, returning None and setting WHAT if resolution fails.
-    fn resolve_or_what(&mut self, cap_ref: u32) -> Option<(usize, u8)> {
+    fn resolve_or_what(&mut self, cap_ref: u32) -> Option<(FrameRef, u8)> {
         match self.resolve_cap_ref(cap_ref) {
             Some(r) => Some(r),
             None => {
@@ -1003,17 +1110,17 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         match op {
             0x00 => {
                 // Dynamic CALL — resolve subject with indirection
-                let (vm_idx, slot) = match self.resolve_or_what(subject_ref) {
+                let (frame, slot) = match self.resolve_or_what(subject_ref) {
                     Some(r) => r,
                     None => return DispatchResult::Continue,
                 };
                 // For local VM, use existing handle_call
-                if vm_idx == self.active_vm as usize {
+                if frame == FrameRef::Vm(self.active_vm) {
                     self.handle_call(slot)
                 } else {
-                    // Remote cap — look up the cap in the remote VM
+                    // Remote cap — look up the cap in the resolved frame.
                     let is_protocol = matches!(
-                        self.vm_arena.vm(vm_idx as u16).cap_table.get(slot),
+                        self.frame_table(frame).and_then(|t| t.get(slot)),
                         Some(Cap::Protocol(_))
                     );
                     if is_protocol {
@@ -1026,47 +1133,47 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
             }
             0x02 => {
                 // MAP — resolve subject (DATA cap)
-                let (vm_idx, slot) = resolve!(self, subject_ref);
-                self.ecall_map(vm_idx, slot)
+                let (frame, slot) = resolve!(self, subject_ref);
+                self.ecall_map(frame, slot)
             }
             0x03 => {
                 // UNMAP — resolve subject (DATA cap)
-                let (vm_idx, slot) = resolve!(self, subject_ref);
-                self.ecall_unmap(vm_idx, slot)
+                let (frame, slot) = resolve!(self, subject_ref);
+                self.ecall_unmap(frame, slot)
             }
             0x04 => {
                 // SPLIT — resolve subject + object dst
-                let (s_vm, s_slot) = resolve!(self, subject_ref);
-                let (o_vm, o_slot) = resolve!(self, object_ref);
-                self.ecall_split(s_vm, s_slot, o_vm, o_slot)
+                let (s_frame, s_slot) = resolve!(self, subject_ref);
+                let (o_frame, o_slot) = resolve!(self, object_ref);
+                self.ecall_split(s_frame, s_slot, o_frame, o_slot)
             }
             0x05 => {
                 // DROP — resolve subject
-                let (vm_idx, slot) = resolve!(self, subject_ref);
-                self.ecall_drop(vm_idx, slot)
+                let (frame, slot) = resolve!(self, subject_ref);
+                self.ecall_drop(frame, slot)
             }
             0x06 => {
                 // MOVE — resolve subject + object dst
-                let (s_vm, s_slot) = resolve!(self, subject_ref);
-                let (o_vm, o_slot) = resolve!(self, object_ref);
-                self.ecall_move(s_vm, s_slot, o_vm, o_slot)
+                let (s_frame, s_slot) = resolve!(self, subject_ref);
+                let (o_frame, o_slot) = resolve!(self, object_ref);
+                self.ecall_move(s_frame, s_slot, o_frame, o_slot)
             }
             0x07 => {
                 // COPY — resolve subject + object dst
-                let (s_vm, s_slot) = resolve!(self, subject_ref);
-                let (o_vm, o_slot) = resolve!(self, object_ref);
-                self.ecall_copy(s_vm, s_slot, o_vm, o_slot)
+                let (s_frame, s_slot) = resolve!(self, subject_ref);
+                let (o_frame, o_slot) = resolve!(self, object_ref);
+                self.ecall_copy(s_frame, s_slot, o_frame, o_slot)
             }
             0x0A => {
                 // DOWNGRADE — resolve subject HANDLE + object dst
-                let (s_vm, s_slot) = resolve!(self, subject_ref);
-                let (o_vm, o_slot) = resolve!(self, object_ref);
-                self.ecall_downgrade(s_vm, s_slot, o_vm, o_slot)
+                let (s_frame, s_slot) = resolve!(self, subject_ref);
+                let (o_frame, o_slot) = resolve!(self, object_ref);
+                self.ecall_downgrade(s_frame, s_slot, o_frame, o_slot)
             }
             0x0B => {
                 // SET_MAX_GAS — resolve subject HANDLE
-                let (vm_idx, slot) = resolve!(self, subject_ref);
-                self.ecall_set_max_gas(vm_idx, slot)
+                let (frame, slot) = resolve!(self, subject_ref);
+                self.ecall_set_max_gas(frame, slot)
             }
             0x0C => {
                 // DIRTY — TODO
@@ -1075,9 +1182,9 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
             }
             0x0D => {
                 // RESUME — resolve subject HANDLE
-                let (vm_idx, slot) = resolve!(self, subject_ref);
+                let (frame, slot) = resolve!(self, subject_ref);
                 // RESUME uses the HANDLE in the resolved VM's cap table
-                if vm_idx != self.active_vm as usize {
+                if frame != FrameRef::Vm(self.active_vm) {
                     self.set_active_reg(7, RESULT_WHAT);
                     return DispatchResult::Continue;
                 }
@@ -1445,10 +1552,14 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
             .vm_mut(caller_id)
             .transition(VmState::WaitingForReply);
 
-        // Push call frame (no IPC cap for RESUME)
+        // Push call frame. No ephemeral-slot rewrite for RESUME — we're
+        // continuing a previously-faulted VM, so the slots that were active
+        // when it faulted should be restored. Stash whatever the active VM
+        // currently shows, the same as on a fresh CALL.
+        let prev_kernel_slots = self.take_ephemeral_kernel_slots(caller_id);
         self.call_stack.push(CallFrame {
             caller_vm_id: caller_id,
-            ipc_cap_idx: None,
+            prev_kernel_slots,
         });
 
         // Resume callee: FAULTED → RUNNING, registers/PC preserved
@@ -1465,7 +1576,10 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
 
     /// MAP pages of a DATA cap in its CNode (page-granular).
     /// φ[7]=base_offset, φ[8]=page_offset, φ[9]=page_count.
-    fn ecall_map(&mut self, vm_idx: usize, slot: u8) -> DispatchResult {
+    /// MAP is only meaningful on a cap held in a VM's persistent Frame —
+    /// it associates the cap with that VM's window. Caps sitting in the
+    /// ephemeral table cannot be MAPped.
+    fn ecall_map(&mut self, frame: FrameRef, slot: u8) -> DispatchResult {
         let base_offset = self.active_reg(7) as u32;
         let page_offset = self.active_reg(8) as u32;
         let page_count = self.active_reg(9) as u32;
@@ -1479,11 +1593,17 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
             }
         };
 
-        let vm_id =
-            crate::vm_pool::VmId::new(vm_idx as u16, self.vm_arena.generation_of(vm_idx as u16));
+        let vm_idx = match frame {
+            FrameRef::Vm(idx) => idx,
+            FrameRef::Ephemeral(_) => {
+                self.set_active_reg(7, RESULT_WHAT);
+                return DispatchResult::Continue;
+            }
+        };
+        let vm_id = VmId::new(vm_idx, self.vm_arena.generation_of(vm_idx));
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        let window_base = self.vm_window_base(vm_idx as u16);
-        let vm = &mut self.vm_arena.vm_mut(vm_idx as u16);
+        let window_base = self.vm_window_base(vm_idx);
+        let vm = &mut self.vm_arena.vm_mut(vm_idx);
         match vm.cap_table.get_mut(slot) {
             Some(Cap::Data(d)) => {
                 if !d.map_pages(vm_id, base_offset, access, page_offset, page_count) {
@@ -1516,13 +1636,21 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
 
     /// UNMAP pages of a DATA cap in its Frame.
     /// φ[7]=page_offset, φ[8]=page_count.
-    fn ecall_unmap(&mut self, vm_idx: usize, slot: u8) -> DispatchResult {
+    fn ecall_unmap(&mut self, frame: FrameRef, slot: u8) -> DispatchResult {
         let page_offset = self.active_reg(7) as u32;
         let page_count = self.active_reg(8) as u32;
 
+        let vm_idx = match frame {
+            FrameRef::Vm(idx) => idx,
+            FrameRef::Ephemeral(_) => {
+                // Caps in the ephemeral table aren't mapped; UNMAP is a no-op.
+                return DispatchResult::Continue;
+            }
+        };
+
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        let window_base = self.vm_window_base(vm_idx as u16);
-        let vm = &mut self.vm_arena.vm_mut(vm_idx as u16);
+        let window_base = self.vm_window_base(vm_idx);
+        let vm = &mut self.vm_arena.vm_mut(vm_idx);
         match vm.cap_table.get_mut(slot) {
             Some(Cap::Data(d)) => {
                 if let Some((_base_offset, _)) = d.active_mapping() {
@@ -1551,74 +1679,100 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
 
     /// SPLIT a DATA cap. Must be fully unmapped.
     /// φ[7]=page_offset. Subject = DATA cap, object = dst slot for high half.
-    fn ecall_split(&mut self, s_vm: usize, s_slot: u8, o_vm: usize, o_slot: u8) -> DispatchResult {
+    fn ecall_split(
+        &mut self,
+        s_frame: FrameRef,
+        s_slot: u8,
+        o_frame: FrameRef,
+        o_slot: u8,
+    ) -> DispatchResult {
         let page_off = self.active_reg(7) as u32;
 
         // Validate
-        let can_split = match self.vm_arena.vm(s_vm as u16).cap_table.get(s_slot) {
+        let can_split = match self.frame_table(s_frame).and_then(|t| t.get(s_slot)) {
             Some(Cap::Data(d)) => !d.has_any_mapped() && page_off > 0 && page_off < d.page_count,
             _ => false,
         };
-        if !can_split || !self.vm_arena.vm(o_vm as u16).cap_table.is_empty(o_slot) {
+        let dst_empty = self
+            .frame_table(o_frame)
+            .map(|t| t.is_empty(o_slot))
+            .unwrap_or(false);
+        if !can_split || !dst_empty {
             self.set_active_reg(7, RESULT_WHAT);
             return DispatchResult::Continue;
         }
 
-        let cap = match self.vm_arena.vm_mut(s_vm as u16).cap_table.take(s_slot) {
+        let cap = match self.frame_table_mut(s_frame).and_then(|t| t.take(s_slot)) {
             Some(Cap::Data(d)) => d,
             _ => unreachable!(),
         };
         let (lo, hi) = cap.split(page_off).unwrap();
-        self.vm_arena
-            .vm_mut(s_vm as u16)
-            .cap_table
-            .set(s_slot, Cap::Data(lo));
-        self.vm_arena
-            .vm_mut(o_vm as u16)
-            .cap_table
-            .set(o_slot, Cap::Data(hi));
+        if let Some(t) = self.frame_table_mut(s_frame) {
+            t.set(s_slot, Cap::Data(lo));
+        }
+        if let Some(t) = self.frame_table_mut(o_frame) {
+            t.set(o_slot, Cap::Data(hi));
+        }
         DispatchResult::Continue
     }
 
     /// DROP a cap. Auto-unmaps DATA. Reclaims VM on HANDLE drop.
-    fn ecall_drop(&mut self, vm_idx: usize, slot: u8) -> DispatchResult {
-        // DROP HANDLE → reclaim VM
-        if let Some(Cap::Handle(h)) = self.vm_arena.vm(vm_idx as u16).cap_table.get(slot) {
+    fn ecall_drop(&mut self, frame: FrameRef, slot: u8) -> DispatchResult {
+        // DROP HANDLE → reclaim VM (only meaningful for caps in a VM frame).
+        if let FrameRef::Vm(vm_idx) = frame
+            && let Some(Cap::Handle(h)) = self.vm_arena.vm(vm_idx).cap_table.get(slot)
+        {
             let vm_id = h.vm_id;
-            self.vm_arena.vm_mut(vm_idx as u16).cap_table.drop_cap(slot);
+            self.vm_arena.vm_mut(vm_idx).cap_table.drop_cap(slot);
             #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
             self.window_pool.release(vm_id.index());
             self.vm_arena.remove(vm_id);
             return DispatchResult::Continue;
         }
-        if let Some(Cap::Data(d)) = self.vm_arena.vm(vm_idx as u16).cap_table.get(slot)
+
+        // DROP DATA in a VM frame → unmap if currently mapped.
+        if let FrameRef::Vm(vm_idx) = frame
+            && let Some(Cap::Data(d)) = self.vm_arena.vm(vm_idx).cap_table.get(slot)
             && let Some((_base_offset, _)) = d.active_mapping()
         {
             let _page_count = d.page_count;
             #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-            if let Some(wb) = self.vm_window_base(vm_idx as u16) {
+            if let Some(wb) = self.vm_window_base(vm_idx) {
                 // SAFETY: wb is from vm_window_base() (valid 4GB window).
                 unsafe {
                     BackingStore::unmap_pages(wb, _base_offset, _page_count);
                 }
             }
         }
-        self.vm_arena.vm_mut(vm_idx as u16).cap_table.drop_cap(slot);
+
+        if let Some(t) = self.frame_table_mut(frame) {
+            t.drop_cap(slot);
+        }
         DispatchResult::Continue
     }
 
     /// MOVE a cap between Frames. Auto-unmaps DATA from source if cross-frame;
     /// auto-remaps in destination if `mappings[dst_vm]` is recorded.
-    fn ecall_move(&mut self, s_vm: usize, s_slot: u8, o_vm: usize, o_slot: u8) -> DispatchResult {
-        if s_vm == o_vm && s_slot == o_slot {
+    fn ecall_move(
+        &mut self,
+        s_frame: FrameRef,
+        s_slot: u8,
+        o_frame: FrameRef,
+        o_slot: u8,
+    ) -> DispatchResult {
+        if s_frame == o_frame && s_slot == o_slot {
             return DispatchResult::Continue;
         }
-        if !self.vm_arena.vm(o_vm as u16).cap_table.is_empty(o_slot) {
+        let dst_empty = self
+            .frame_table(o_frame)
+            .map(|t| t.is_empty(o_slot))
+            .unwrap_or(false);
+        if !dst_empty {
             self.set_active_reg(7, RESULT_WHAT);
             return DispatchResult::Continue;
         }
 
-        let mut cap = match self.vm_arena.vm_mut(s_vm as u16).cap_table.take(s_slot) {
+        let mut cap = match self.frame_table_mut(s_frame).and_then(|t| t.take(s_slot)) {
             Some(c) => c,
             None => {
                 self.set_active_reg(7, RESULT_WHAT);
@@ -1626,16 +1780,22 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
             }
         };
 
-        if s_vm != o_vm
+        if s_frame != o_frame
             && let Cap::Data(ref mut d) = cap
         {
-            // Cross-frame: unmap from source's window, then auto-remap in
-            // destination's window if mappings[dst_vm] is recorded.
+            // Cross-frame: unmap from source's active VM (if any), then
+            // auto-remap in destination's window if it's a VM frame and
+            // `mappings[dst_vm]` is recorded. Moves into the ephemeral
+            // table preserve `mappings` but never remap (no window).
             self.cross_frame_unmap(d);
-            self.cross_frame_remap(d, o_vm as u16);
+            if let FrameRef::Vm(o_idx) = o_frame {
+                self.cross_frame_remap(d, o_idx);
+            }
         }
 
-        self.vm_arena.vm_mut(o_vm as u16).cap_table.set(o_slot, cap);
+        if let Some(t) = self.frame_table_mut(o_frame) {
+            t.set(o_slot, cap);
+        }
         DispatchResult::Continue
     }
 
@@ -1674,12 +1834,22 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
     }
 
     /// COPY a cap between CNodes (copyable types only).
-    fn ecall_copy(&mut self, s_vm: usize, s_slot: u8, o_vm: usize, o_slot: u8) -> DispatchResult {
-        if !self.vm_arena.vm(o_vm as u16).cap_table.is_empty(o_slot) {
+    fn ecall_copy(
+        &mut self,
+        s_frame: FrameRef,
+        s_slot: u8,
+        o_frame: FrameRef,
+        o_slot: u8,
+    ) -> DispatchResult {
+        let dst_empty = self
+            .frame_table(o_frame)
+            .map(|t| t.is_empty(o_slot))
+            .unwrap_or(false);
+        if !dst_empty {
             self.set_active_reg(7, RESULT_WHAT);
             return DispatchResult::Continue;
         }
-        let copy = match self.vm_arena.vm(s_vm as u16).cap_table.get(s_slot) {
+        let copy = match self.frame_table(s_frame).and_then(|t| t.get(s_slot)) {
             Some(c) => match c.try_copy() {
                 Some(copy) => copy,
                 None => {
@@ -1692,43 +1862,45 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
                 return DispatchResult::Continue;
             }
         };
-        self.vm_arena
-            .vm_mut(o_vm as u16)
-            .cap_table
-            .set(o_slot, copy);
+        if let Some(t) = self.frame_table_mut(o_frame) {
+            t.set(o_slot, copy);
+        }
         DispatchResult::Continue
     }
 
     /// DOWNGRADE a HANDLE to CALLABLE. Places CALLABLE at dst.
     fn ecall_downgrade(
         &mut self,
-        s_vm: usize,
+        s_frame: FrameRef,
         s_slot: u8,
-        o_vm: usize,
+        o_frame: FrameRef,
         o_slot: u8,
     ) -> DispatchResult {
-        let (vm_id, max_gas) = match self.vm_arena.vm(s_vm as u16).cap_table.get(s_slot) {
+        let (vm_id, max_gas) = match self.frame_table(s_frame).and_then(|t| t.get(s_slot)) {
             Some(Cap::Handle(h)) => (h.vm_id, h.max_gas),
             _ => {
                 self.set_active_reg(7, RESULT_WHAT);
                 return DispatchResult::Continue;
             }
         };
-        if !self.vm_arena.vm(o_vm as u16).cap_table.is_empty(o_slot) {
+        let dst_empty = self
+            .frame_table(o_frame)
+            .map(|t| t.is_empty(o_slot))
+            .unwrap_or(false);
+        if !dst_empty {
             self.set_active_reg(7, RESULT_WHAT);
             return DispatchResult::Continue;
         }
-        self.vm_arena
-            .vm_mut(o_vm as u16)
-            .cap_table
-            .set(o_slot, Cap::Callable(CallableCap { vm_id, max_gas }));
+        if let Some(t) = self.frame_table_mut(o_frame) {
+            t.set(o_slot, Cap::Callable(CallableCap { vm_id, max_gas }));
+        }
         DispatchResult::Continue
     }
 
     /// SET_MAX_GAS on a HANDLE.
-    fn ecall_set_max_gas(&mut self, vm_idx: usize, slot: u8) -> DispatchResult {
+    fn ecall_set_max_gas(&mut self, frame: FrameRef, slot: u8) -> DispatchResult {
         let gas_limit = self.active_reg(7);
-        match self.vm_arena.vm_mut(vm_idx as u16).cap_table.get_mut(slot) {
+        match self.frame_table_mut(frame).and_then(|t| t.get_mut(slot)) {
             Some(Cap::Handle(h)) => {
                 h.max_gas = Some(gas_limit);
             }
@@ -2555,19 +2727,8 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
                 let cg = self.vm_arena.vm(caller_id).gas();
                 self.vm_arena.vm_mut(caller_id).set_gas(cg + unused_gas);
 
-                // Return IPC cap (cross-frame MOVE back to caller).
-                if let Some(caller_slot) = frame.ipc_cap_idx
-                    && let Some(mut cap) = self.vm_arena.vm_mut(callee_id).cap_table.take(IPC_SLOT)
-                {
-                    if let Cap::Data(ref mut d) = cap {
-                        self.cross_frame_unmap(d);
-                        self.cross_frame_remap(d, caller_id);
-                    }
-                    self.vm_arena
-                        .vm_mut(caller_id)
-                        .cap_table
-                        .set(caller_slot, cap);
-                }
+                // Restore the caller's ephemeral sub-slots 0/1/2.
+                self.restore_ephemeral_kernel_slots(frame.prev_kernel_slots);
 
                 // Return result
                 self.vm_arena.vm_mut(caller_id).set_reg(7, exit_value);
@@ -2831,7 +2992,7 @@ mod tests {
         // Child REPLYs with results
         kernel.set_active_reg(7, 100);
         kernel.set_active_reg(8, 200);
-        let result = kernel.dispatch_ecalli(IPC_SLOT as u32); // REPLY
+        let result = kernel.dispatch_ecalli(EPHEMERAL_TABLE_SLOT as u32); // REPLY
         assert!(matches!(result, DispatchResult::Continue));
 
         // Back to VM 0
@@ -3092,7 +3253,7 @@ mod tests {
         if kernel.vm_arena.len() < 3 {
             // CODE cap wasn't propagated — skip nested part, just test reply chain
             kernel.set_active_reg(7, 77);
-            kernel.dispatch_ecalli(IPC_SLOT as u32);
+            kernel.dispatch_ecalli(EPHEMERAL_TABLE_SLOT as u32);
             assert_eq!(kernel.active_vm, 0);
             assert_eq!(kernel.active_reg(7), 77);
             return;
@@ -3109,13 +3270,13 @@ mod tests {
 
         // VM 2 replies with 99
         kernel.set_active_reg(7, 99);
-        kernel.dispatch_ecalli(IPC_SLOT as u32);
+        kernel.dispatch_ecalli(EPHEMERAL_TABLE_SLOT as u32);
         assert_eq!(kernel.active_vm, 1);
         assert_eq!(kernel.active_reg(7), 99);
 
         // VM 1 replies with 77
         kernel.set_active_reg(7, 77);
-        kernel.dispatch_ecalli(IPC_SLOT as u32);
+        kernel.dispatch_ecalli(EPHEMERAL_TABLE_SLOT as u32);
         assert_eq!(kernel.active_vm, 0);
         assert_eq!(kernel.active_reg(7), 77);
     }

@@ -232,9 +232,12 @@ pub fn build_service_program(
         next_page += heap_pages;
     }
 
-    // Args DATA cap at IPC slot (0x00) — kernel writes args here
+    // Args DATA cap. Slot 0 of every VM's persistent Frame is reserved
+    // for the per-invocation ephemeral-table handle, so the manifest
+    // convention places args at slot 1 (`ARGS_CAP_INDEX`). The kernel
+    // writes invocation arguments here at init time.
     caps.push(CapManifestEntry {
-        cap_index: 0x00,
+        cap_index: javm::cap::ARGS_CAP_INDEX,
         cap_type: CapEntryType::Data,
         base_page: next_page,
         page_count: 1, // 4KB for args

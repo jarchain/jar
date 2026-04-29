@@ -145,14 +145,18 @@ impl<P: ProtocolCapT> VmInstance<P> {
 }
 
 /// Call frame saved on the kernel's call stack when a VM calls another.
+///
+/// On CALL, the kernel stashes the active VM's ephemeral-table sub-slots
+/// 0/1/2 (Reply Handle, Caller cap, Self cap) here so the callee can rewrite
+/// them with its own context; REPLY restores. javm itself doesn't populate
+/// these — the host (jar-kernel) writes Caller/Self in Phase 10. javm just
+/// preserves whatever opaque `Cap<P>` was there.
 #[derive(Debug)]
-pub struct CallFrame {
+pub struct CallFrame<P: ProtocolCapT = u8> {
     /// VM that initiated the CALL.
     pub caller_vm_id: u16,
-    /// Cap slot in the caller that held the IPC cap (for auto-return on REPLY).
-    /// DataCap auto-remap on the return path is handled by the cap's own
-    /// per-VM `mappings` memory — no snapshot needed here.
-    pub ipc_cap_idx: Option<u8>,
+    /// Saved ephemeral sub-slots 0/1/2 from before the CALL.
+    pub prev_kernel_slots: [Option<crate::cap::Cap<P>>; 3],
 }
 
 /// Errors from VM state transitions.
@@ -350,6 +354,15 @@ impl<P: ProtocolCapT> VmArena<P> {
 //   3     Gas cap                   (per-invocation; single shared budget)
 //   4..127  reserved kernel-managed
 //   128..255 guest cap-args
+
+/// Identifies a frame referenced by a cap-ref walk: either a VM's
+/// persistent Frame (the VM's own cap-table) or the per-invocation
+/// ephemeral table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameRef {
+    Vm(u16),
+    Ephemeral(EphemeralTableId),
+}
 
 /// Packed ephemeral-table ID: low 16 bits = arena index, high 16 bits = generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

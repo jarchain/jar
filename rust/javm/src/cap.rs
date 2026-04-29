@@ -436,8 +436,18 @@ impl<P: ProtocolCapT> Cap<P> {
     }
 }
 
-/// IPC slot index. CALL on slot 0 = REPLY.
-pub const IPC_SLOT: u8 = 0;
+/// Slot 0 of every VM's persistent Frame is reserved for the
+/// per-invocation `Cap::EphemeralTable` handle. `ecalli 0` (CALL on
+/// slot 0) is REPLY by convention — the kernel never actually invokes
+/// the EphemeralTable cap.
+pub const EPHEMERAL_TABLE_SLOT: u8 = 0;
+
+/// Sentinel used in the JAR program manifest for the args DATA cap. The
+/// kernel writes invocation arguments into the cap with this `cap_index`
+/// during `new_inner`. Slot 0 is no longer available (now holds the
+/// ephemeral-table handle), so the manifest convention picks a non-zero
+/// slot. The transpiler emits this same value.
+pub const ARGS_CAP_INDEX: u8 = 1;
 
 /// Maximum cap table size (u8 index).
 pub const CAP_TABLE_SIZE: usize = 256;
