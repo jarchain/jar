@@ -87,6 +87,14 @@ const MGMT_COPY: u32 = 0x7;
 const MGMT_DOWNGRADE: u32 = 0xA;
 const MGMT_SET_MAX_GAS: u32 = 0xB;
 const MGMT_DIRTY: u32 = 0xC;
+/// Gas-cap derive: split `amount` units off a Gas cap into a fresh Gas
+/// cap. Routes through `ProtocolCapT::gas_derive`. The protocol payload
+/// type (`P`) decides what counts as a "Gas cap"; for plain `u8` it's
+/// always rejected.
+const MGMT_GAS_DERIVE: u32 = 0xD;
+/// Gas-cap merge: add donor's `remaining` to dst's `remaining`, donor
+/// is consumed. Routes through `ProtocolCapT::gas_merge`.
+const MGMT_GAS_MERGE: u32 = 0xE;
 
 /// WHAT error code (2^64 - 2).
 const RESULT_WHAT: u64 = u64::MAX - 1;
@@ -1099,11 +1107,78 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
                 self.set_active_reg(7, RESULT_WHAT);
                 DispatchResult::Continue
             }
+            MGMT_GAS_DERIVE => self.mgmt_gas_derive(cap_idx),
+            MGMT_GAS_MERGE => self.mgmt_gas_merge(cap_idx),
             _ => {
                 self.set_active_reg(7, RESULT_WHAT);
                 DispatchResult::Continue
             }
         }
+    }
+
+    /// MGMT_GAS_DERIVE: split `amount` (φ[7]) units off the Gas cap at
+    /// `cap_idx` of the active VM into a fresh Gas cap at slot φ[8].
+    /// Routes through `ProtocolCapT::gas_derive`. Returns RC_OK on
+    /// success, RESULT_WHAT on any failure (non-Gas cap, insufficient
+    /// remaining, dst not empty).
+    fn mgmt_gas_derive(&mut self, cap_idx: u8) -> DispatchResult {
+        let amount = self.active_reg(7);
+        let dst_slot = self.active_reg(8) as u8;
+        let vm = self.vm_arena.vm_mut(self.active_vm);
+        if !vm.cap_table.is_empty(dst_slot) {
+            self.set_active_reg(7, RESULT_WHAT);
+            return DispatchResult::Continue;
+        }
+        let derived = match vm.cap_table.get_mut(cap_idx) {
+            Some(Cap::Protocol(p)) => p.gas_derive(amount),
+            _ => None,
+        };
+        match derived {
+            Some(child) => {
+                vm.cap_table.set(dst_slot, Cap::Protocol(child));
+                self.set_active_reg(7, 0);
+            }
+            None => self.set_active_reg(7, RESULT_WHAT),
+        }
+        DispatchResult::Continue
+    }
+
+    /// MGMT_GAS_MERGE: merge donor Gas cap at `cap_idx` into dst Gas cap
+    /// at slot φ[7] of the active VM. Donor is consumed. Routes through
+    /// `ProtocolCapT::gas_merge`.
+    fn mgmt_gas_merge(&mut self, cap_idx: u8) -> DispatchResult {
+        let dst_slot = self.active_reg(7) as u8;
+        if dst_slot == cap_idx {
+            self.set_active_reg(7, RESULT_WHAT);
+            return DispatchResult::Continue;
+        }
+        let vm = self.vm_arena.vm_mut(self.active_vm);
+        // Take donor first (so we can hold &mut on dst freely).
+        let donor = match vm.cap_table.take(cap_idx) {
+            Some(Cap::Protocol(p)) => p,
+            Some(other) => {
+                vm.cap_table.set(cap_idx, other);
+                self.set_active_reg(7, RESULT_WHAT);
+                return DispatchResult::Continue;
+            }
+            None => {
+                self.set_active_reg(7, RESULT_WHAT);
+                return DispatchResult::Continue;
+            }
+        };
+        let ok = match vm.cap_table.get_mut(dst_slot) {
+            Some(Cap::Protocol(dst)) => dst.gas_merge(&donor),
+            _ => false,
+        };
+        if ok {
+            // Donor consumed; slot stays empty.
+            self.set_active_reg(7, 0);
+        } else {
+            // Restore donor.
+            vm.cap_table.set(cap_idx, Cap::Protocol(donor));
+            self.set_active_reg(7, RESULT_WHAT);
+        }
+        DispatchResult::Continue
     }
 
     // --- Management ops ---

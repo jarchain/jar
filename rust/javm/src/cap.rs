@@ -285,6 +285,19 @@ pub trait ProtocolCapT: Clone + core::fmt::Debug {
     fn is_droppable(&self) -> bool {
         true
     }
+    /// Derive a child Gas cap with `amount` units split off. Returns
+    /// `None` if `self` is not a Gas-shaped cap or has insufficient
+    /// `remaining`. The payload type decides what counts as Gas; default
+    /// is "no Gas cap of this shape."
+    fn gas_derive(&mut self, _amount: u64) -> Option<Self> {
+        None
+    }
+    /// Merge `donor`'s gas into `self`. Returns `true` if both are
+    /// Gas-shaped and the merge succeeded. On success, the caller
+    /// should drop `donor`.
+    fn gas_merge(&mut self, _donor: &Self) -> bool {
+        false
+    }
 }
 
 /// `u8` is the default protocol-cap payload type used by tests, benches,
