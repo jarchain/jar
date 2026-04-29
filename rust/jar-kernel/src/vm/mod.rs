@@ -17,11 +17,15 @@ use crate::types::{
     State, VaultId,
 };
 
-use crate::attest::AttestCursor;
-use crate::frame::Frame;
-use crate::host_abi::HostCall;
+pub mod frame;
+pub mod host_abi;
+pub mod host_calls;
+
+use crate::cap::attest::AttestCursor;
 use crate::reach::ReachSet;
 use crate::runtime::Hardware;
+use crate::vm::frame::Frame;
+use crate::vm::host_abi::HostCall;
 
 /// Default per-invocation gas budget. javm charges per instruction and per
 /// memory cycle; this matches the magnitude javm's own tests use.
@@ -108,7 +112,7 @@ pub fn drive_invocation<H: Hardware>(
             }
             javm::kernel::KernelResult::ProtocolCall { slot } => {
                 let call = HostCall::from_slot(slot)?;
-                match crate::host_calls::dispatch_host_call(call, vm, ctx)? {
+                match crate::vm::host_calls::dispatch_host_call(call, vm, ctx)? {
                     HostCallOutcome::Resume(r0, r1) => vm.resume_protocol_call(r0, r1),
                     HostCallOutcome::Fault(reason) => return Ok(InvocationResult::fault(reason)),
                 }

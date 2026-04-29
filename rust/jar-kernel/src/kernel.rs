@@ -37,12 +37,12 @@ use crate::types::{
 };
 
 use crate::apply_block::{ApplyBlockOutcome, BlockOutcome, apply_block};
-use crate::cap_registry;
 use crate::crypto;
 use crate::dispatch::handle_inbound_dispatch;
 use crate::proposer::drain_for_body;
 use crate::runtime::{Hardware, NodeOffchain};
-use crate::state_root;
+use crate::state::cap_registry;
+use crate::state::state_root;
 
 pub struct Kernel<H: Hardware> {
     hw: H,

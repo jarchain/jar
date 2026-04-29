@@ -12,40 +12,34 @@
 //! - `Kernel::advance(block)` — build (proposer) or verify (verifier) a
 //!   new block; updates the tip and asks hardware to commit.
 //!
-//! Internals:
-//! - **Crypto** — `crypto`: kernel-static `hash`, `verify`, `block_hash`.
-//! - **State plumbing** — `cap_registry`, `cnode_ops`, `pinning`, `frame`, `snapshot`, `state_root`.
-//! - **Host calls** — `host_calls` exposes the 16 calls the spec specifies.
-//! - **Execution** — `invocation` drives a javm VM and routes ProtocolCall exits.
-//! - **Block apply** — `apply_block` plus `transact`, `attest`, `reach`.
-//! - **Dispatch pipeline** — `dispatch` (step-2 / step-3) plus `proposer` (slot drain).
-//! - **Runtime** — `Hardware` trait + `InMemoryHardware` for tests.
+//! Module map (struct + helpers grouped):
+//! - `crypto` — Hash/KeyId/Signature primitives + `hash`, `verify`, `block_hash`.
+//! - `runtime` — `Hardware` trait, `InMemoryHardware`, `NodeOffchain`.
+//! - `state` — `State`, `Vault`, plus all σ mutators (cap_registry, cnode,
+//!   storage, snapshot, state_root, code_blobs).
+//! - `cap` — pinning rules + attest helpers.
+//! - `vm` — VM driver + host calls.
+//! - `apply_block`, `transact`, `dispatch`, `proposer`, `reach` — kernel
+//!   loop phases.
+//! - `genesis` — test fixture.
+//! - `types` — type definitions (Capability enum, Block/Body, Event,
+//!   sidecar entries) shared everywhere.
 
 #![forbid(unsafe_code)]
 
 pub mod apply_block;
-pub mod attest;
-pub mod cap_registry;
-pub mod cnode_ops;
-pub mod code_blobs;
+pub mod cap;
 pub mod crypto;
-pub mod crypto_primitives;
 pub mod dispatch;
-pub mod frame;
 pub mod genesis;
-pub mod host_abi;
-pub mod host_calls;
-pub mod invocation;
 pub mod kernel;
-pub mod pinning;
 pub mod proposer;
 pub mod reach;
 pub mod runtime;
-pub mod snapshot;
-pub mod state_root;
-pub mod storage;
+pub mod state;
 pub mod transact;
 pub mod types;
+pub mod vm;
 
 pub use apply_block::BlockOutcome;
 pub use kernel::{AdvanceOutcome, Kernel};

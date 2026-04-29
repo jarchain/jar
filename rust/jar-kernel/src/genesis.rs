@@ -7,9 +7,9 @@
 
 use crate::types::{CapId, Capability, Hash, KResult, State, VaultId};
 
-use crate::cap_registry;
-use crate::cnode_ops;
-use crate::code_blobs;
+use crate::state::cap_registry;
+use crate::state::cnode;
+use crate::state::code_blobs;
 
 /// Build a minimal σ for testing.
 pub struct GenesisBuilder {
@@ -76,8 +76,8 @@ impl GenesisBuilder {
         let dispatch_code_hash = code_blobs::register_blob(&mut state, dispatch_blob)?;
 
         // Allocate the two σ-rooted CNodes.
-        let transact_cnode = cnode_ops::cnode_create(&mut state);
-        let dispatch_cnode = cnode_ops::cnode_create(&mut state);
+        let transact_cnode = cnode::cnode_create(&mut state);
+        let dispatch_cnode = cnode::cnode_create(&mut state);
 
         // Mint `CNode` reference caps for the two surfaces.
         let tcn_cap = cap_registry::alloc(
@@ -110,7 +110,7 @@ impl GenesisBuilder {
             default_quota_items,
             default_quota_bytes,
         );
-        let bi_cap = cnode_ops::mint_and_place(
+        let bi_cap = cnode::mint_and_place(
             &mut state,
             Capability::Schedule {
                 vault_id: bi_vault,
@@ -128,7 +128,7 @@ impl GenesisBuilder {
             default_quota_items,
             default_quota_bytes,
         );
-        let t_cap = cnode_ops::mint_and_place(
+        let t_cap = cnode::mint_and_place(
             &mut state,
             Capability::Transact {
                 vault_id: t_vault,
@@ -146,7 +146,7 @@ impl GenesisBuilder {
             default_quota_items,
             default_quota_bytes,
         );
-        let bf_cap = cnode_ops::mint_and_place(
+        let bf_cap = cnode::mint_and_place(
             &mut state,
             Capability::Schedule {
                 vault_id: bf_vault,
@@ -164,7 +164,7 @@ impl GenesisBuilder {
             default_quota_items,
             default_quota_bytes,
         );
-        let d_cap = cnode_ops::mint_and_place(
+        let d_cap = cnode::mint_and_place(
             &mut state,
             Capability::Dispatch {
                 vault_id: d_vault,

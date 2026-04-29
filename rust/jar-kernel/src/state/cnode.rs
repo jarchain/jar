@@ -5,7 +5,8 @@
 
 use crate::types::{CNodeId, CapId, Capability, KResult, KernelError, State};
 
-use crate::{cap_registry, pinning};
+use crate::cap::pinning;
+use crate::state::cap_registry;
 
 /// Grant `source_cap` into `(dest_cnode, dest_slot)`. The cap is COPIED — the
 /// source still references it (this is the kernel-level "grant a copy").

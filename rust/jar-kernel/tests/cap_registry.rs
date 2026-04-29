@@ -1,8 +1,8 @@
 //! Cap-registry tests: alloc, derive, revoke (cascade), pinning.
 
-use jar_kernel::cap_registry;
-use jar_kernel::cnode_ops;
-use jar_kernel::pinning;
+use jar_kernel::cap::pinning;
+use jar_kernel::state::cap_registry;
+use jar_kernel::state::cnode;
 use jar_kernel::{CapRecord, Capability, KernelError, State, StorageRights, VaultId, VaultRights};
 
 fn empty_state() -> State {
@@ -39,7 +39,7 @@ fn alloc_assigns_monotonic_ids() {
 #[test]
 fn revoke_cascades_to_derived() {
     let mut s = empty_state();
-    let parent_cnode = cnode_ops::cnode_create(&mut s);
+    let parent_cnode = cnode::cnode_create(&mut s);
     let parent = cap_registry::alloc(
         &mut s,
         CapRecord {
@@ -73,9 +73,9 @@ fn revoke_cascades_to_derived() {
 #[test]
 fn pinning_rejects_dispatch_into_wrong_cnode() {
     let mut s = empty_state();
-    let cn_a = cnode_ops::cnode_create(&mut s);
-    let cn_b = cnode_ops::cnode_create(&mut s);
-    let dispatch_cap = cnode_ops::mint_and_place(
+    let cn_a = cnode::cnode_create(&mut s);
+    let cn_b = cnode::cnode_create(&mut s);
+    let dispatch_cap = cnode::mint_and_place(
         &mut s,
         Capability::Dispatch {
             vault_id: VaultId(7),
@@ -88,10 +88,10 @@ fn pinning_rejects_dispatch_into_wrong_cnode() {
     .unwrap();
 
     // Granting into cn_a is fine.
-    cnode_ops::cnode_grant(&mut s, dispatch_cap, cn_a, 1).unwrap();
+    cnode::cnode_grant(&mut s, dispatch_cap, cn_a, 1).unwrap();
 
     // Granting into cn_b must fail with Pinning.
-    match cnode_ops::cnode_grant(&mut s, dispatch_cap, cn_b, 0) {
+    match cnode::cnode_grant(&mut s, dispatch_cap, cn_b, 0) {
         Err(KernelError::Pinning(_)) => {}
         other => panic!("expected Pinning error, got {:?}", other),
     }
@@ -100,8 +100,8 @@ fn pinning_rejects_dispatch_into_wrong_cnode() {
 #[test]
 fn pinning_rejects_dispatchref_to_persistent_cnode() {
     let mut s = empty_state();
-    let cn = cnode_ops::cnode_create(&mut s);
-    let dispatch = cnode_ops::mint_and_place(
+    let cn = cnode::cnode_create(&mut s);
+    let dispatch = cnode::mint_and_place(
         &mut s,
         Capability::Dispatch {
             vault_id: VaultId(0),
@@ -130,7 +130,7 @@ fn pinning_rejects_dispatchref_to_persistent_cnode() {
 #[test]
 fn arg_scan_rejects_pinned_caps() {
     let mut s = empty_state();
-    let cn = cnode_ops::cnode_create(&mut s);
+    let cn = cnode::cnode_create(&mut s);
     let pinned_dispatch = cap_registry::alloc(
         &mut s,
         CapRecord {

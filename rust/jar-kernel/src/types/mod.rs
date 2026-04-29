@@ -11,15 +11,16 @@ mod block;
 mod cap;
 mod runtime;
 mod slot;
-mod state;
 mod trace;
 
 pub use block::*;
 pub use cap::*;
 pub use runtime::*;
 pub use slot::*;
-pub use state::*;
 pub use trace::*;
+
+// State + Vault + IdCounters live in `crate::state`.
+pub use crate::state::{IdCounters, State, Vault};
 
 /// 32-byte hash. Used for state roots, blob hashes, and code hashes. The
 /// chain commits to a single hash function (blake2b-256) at the protocol

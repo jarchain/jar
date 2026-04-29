@@ -1,15 +1,146 @@
-//! In-memory `Hardware` impl + same-process broadcast bus.
+//! Runtime layer — `Hardware` trait, in-memory impl, per-node off-chain state.
 //!
-//! For tests and the `jar` binary's testnet driver. Networking is a fan-out
-//! `mpsc::Sender` set; each node has its own inbound `Receiver`.
+//! The kernel core is a pure function over σ. The runtime supplies the
+//! per-node concerns: signing keys, network outbox, off-chain aggregation
+//! slots, javm code cache, fork-tree bookkeeping. Crypto (hash, verify,
+//! block_hash) is kernel-static — see `crate::crypto`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-use crate::crypto_primitives::ed25519::KeyPair;
+use crate::crypto::ed25519::KeyPair;
 use crate::types::{BlockHash, Command, Hash, KeyId, Signature, SlotContent, State, VaultId};
 
-use super::hardware::{Hardware, HwError, TracingEvent};
+// -----------------------------------------------------------------------------
+// Hardware trait
+// -----------------------------------------------------------------------------
+
+#[derive(thiserror::Error, Debug, Clone, Eq, PartialEq)]
+pub enum HwError {
+    #[error("hardware does not hold the requested key")]
+    KeyAbsent,
+    #[error("hardware sign failed: {0}")]
+    SignFailure(String),
+    #[error("hardware does not have state at block {0:?}")]
+    StateAbsent(Hash),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TracingEvent {
+    InvocationFault { reason: String },
+    BlockPanic { reason: String },
+}
+
+pub trait Hardware: Send + Sync {
+    // ---- state custody ----
+
+    /// The chain's genesis state. Hardware was configured with this at
+    /// construction time. Returned by `Kernel::new(None, …)`.
+    fn genesis_state(&self) -> State;
+
+    /// Look up the state previously committed against `block_hash`. Returns
+    /// `None` if the hardware doesn't have it (block was never seen, was
+    /// pruned, etc.).
+    fn state_at(&self, block_hash: &Hash) -> Option<State>;
+
+    /// Persist `(block_hash → state)`. Called by `Kernel::advance` after a
+    /// successful block apply.
+    fn commit_state(&self, block_hash: BlockHash, state: State);
+
+    // ---- secret-key custody ----
+
+    /// Whether this node holds the secret half of `key`. Decides
+    /// proposer-vs-verifier per AttestationCap.
+    fn holds_key(&self, key: &KeyId) -> bool;
+
+    /// Sign `blob` with the secret half of `key`. Producer-mode AttestationCap.
+    fn sign(&self, key: &KeyId, blob: &[u8]) -> Result<Signature, HwError>;
+
+    // ---- network ----
+
+    /// Emit a `Command` produced by `apply_block` /
+    /// `handle_inbound_dispatch`. The runtime applies it (network broadcast,
+    /// fork-tree update, …).
+    fn emit(&self, cmd: Command);
+
+    /// Subscribe to a Dispatch entrypoint's lite stream. The kernel calls
+    /// this for each top-level Dispatch entrypoint discovered in σ at
+    /// construction; hardware uses it to pre-register network filters.
+    fn subscribe(&self, vault_id: VaultId) {
+        let _ = vault_id;
+    }
+
+    // ---- fork tree ----
+
+    /// Record the consensus score of a candidate block. Hardware uses this
+    /// for fork choice; semantics are hardware-internal.
+    fn score(&self, block_hash: BlockHash, score: u64) {
+        let _ = (block_hash, score);
+    }
+
+    /// Mark a block finalized. Hardware can prune non-finalized siblings.
+    fn finalize(&self, block_hash: BlockHash) {
+        let _ = block_hash;
+    }
+
+    /// Current chain head per hardware's fork choice. `None` at genesis or
+    /// before any block has been scored.
+    fn head(&self) -> Option<BlockHash> {
+        None
+    }
+
+    // ---- observability ----
+
+    fn tracing_event(&self, ev: TracingEvent) {
+        let _ = ev;
+    }
+}
+
+// -----------------------------------------------------------------------------
+// NodeOffchain — per-node state outside σ
+// -----------------------------------------------------------------------------
+
+/// Per-node off-chain state, **not** in σ. Owned by `Kernel<H>`. Slots
+/// persist across blocks but are lost on restart. Bootstrap is chain-
+/// defined; we start with all slots `Empty`.
+pub struct NodeOffchain {
+    pub slots: BTreeMap<VaultId, SlotContent>,
+    pub subscriptions: BTreeSet<VaultId>,
+    /// javm code-cache; reused across handle_inbound_dispatch arrivals.
+    pub code_cache: javm::CodeCache,
+}
+
+impl Default for NodeOffchain {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl NodeOffchain {
+    pub fn new() -> Self {
+        Self {
+            slots: BTreeMap::new(),
+            subscriptions: BTreeSet::new(),
+            code_cache: javm::CodeCache::new(),
+        }
+    }
+
+    pub fn slot(&self, ep: VaultId) -> &SlotContent {
+        self.slots.get(&ep).unwrap_or(&SlotContent::Empty)
+    }
+
+    pub fn set_slot(&mut self, ep: VaultId, content: SlotContent) {
+        if matches!(content, SlotContent::Empty) {
+            self.slots.remove(&ep);
+        } else {
+            self.slots.insert(ep, content);
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// In-memory Hardware impl + same-process broadcast bus
+// -----------------------------------------------------------------------------
 
 /// One inbound message arriving at a node.
 #[derive(Clone, Debug)]

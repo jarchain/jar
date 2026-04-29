@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use crate::types::{Capability, KResult, KernelError, State, StorageRights, VaultId};
 
-use crate::cap_registry;
+use crate::state::cap_registry;
 
 /// Resolve a storage-class cap and check rights + key coverage. Returns the
 /// underlying `vault_id` if the cap is well-formed for `need`.

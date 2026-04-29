@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 
 use crate::types::{Body, Capability, Event, KResult, KernelError, SlotContent, State, VaultId};
 
-use crate::cap_registry;
 use crate::runtime::NodeOffchain;
+use crate::state::cap_registry;
 
 /// Walk every top-level Dispatch entrypoint registered in σ.dispatch_space_cnode;
 /// for each whose slot is `AggregatedTransact{...}`, append a

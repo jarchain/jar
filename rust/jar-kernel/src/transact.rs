@@ -17,14 +17,14 @@ use crate::types::{
     ReachEntry, ResultEntry, State, VaultId,
 };
 
-use crate::attest::AttestCursor;
-use crate::cap_registry;
-use crate::code_blobs;
-use crate::frame::Frame;
-use crate::invocation::{INVOCATION_GAS_BUDGET, InvocationCtx, drive_invocation};
+use crate::cap::attest::AttestCursor;
 use crate::reach::ReachSet;
 use crate::runtime::Hardware;
-use crate::snapshot::StateSnapshot;
+use crate::state::cap_registry;
+use crate::state::code_blobs;
+use crate::state::snapshot::StateSnapshot;
+use crate::vm::frame::Frame;
+use crate::vm::{INVOCATION_GAS_BUDGET, InvocationCtx, drive_invocation};
 
 /// What kind of slot we're running for. Affects whether body events are
 /// consumed and how reach is recorded.

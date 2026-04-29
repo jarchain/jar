@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use crate::types::{CNodeId, CapId, CapRecord, Capability, KResult, KernelError, State, VaultId};
 
-use crate::pinning;
+use crate::cap::pinning;
 
 /// Allocate a fresh CapRecord and place it in σ. Returns the new CapId.
 pub fn alloc(state: &mut State, record: CapRecord) -> CapId {

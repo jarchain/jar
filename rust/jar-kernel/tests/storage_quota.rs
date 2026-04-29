@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use jar_kernel::storage;
+use jar_kernel::state::storage;
 use jar_kernel::{
     CapRecord, Capability, Hash, KernelError, KeyRange, State, StorageRights, Vault, VaultId,
 };
@@ -17,7 +17,7 @@ fn setup() -> (State, VaultId, jar_kernel::CapId) {
     v.quota_bytes = 64;
     let id = s.next_vault_id();
     s.vaults.insert(id, Arc::new(v));
-    let cap = jar_kernel::cap_registry::alloc(
+    let cap = jar_kernel::state::cap_registry::alloc(
         &mut s,
         CapRecord {
             cap: Capability::Storage {
@@ -48,7 +48,7 @@ fn snapshot_storage_blocks_writes() {
     v.quota_bytes = 64;
     let id = s.next_vault_id();
     s.vaults.insert(id, Arc::new(v));
-    let cap = jar_kernel::cap_registry::alloc(
+    let cap = jar_kernel::state::cap_registry::alloc(
         &mut s,
         CapRecord {
             cap: Capability::SnapshotStorage {
@@ -78,7 +78,7 @@ fn read_only_storage_cap_blocks_writes() {
     v.quota_bytes = 64;
     let id = s.next_vault_id();
     s.vaults.insert(id, Arc::new(v));
-    let cap = jar_kernel::cap_registry::alloc(
+    let cap = jar_kernel::state::cap_registry::alloc(
         &mut s,
         CapRecord {
             cap: Capability::Storage {

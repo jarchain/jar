@@ -11,9 +11,9 @@
 
 use crate::types::{Block, BlockHash, Command, Hash, KResult, MerkleProof, State};
 
-use crate::attest::AttestCursor;
+use crate::cap::attest::AttestCursor;
 use crate::runtime::Hardware;
-use crate::state_root;
+use crate::state::state_root;
 use crate::transact;
 
 /// Outcome of apply_block.

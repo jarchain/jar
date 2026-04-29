@@ -13,7 +13,7 @@
 
 use crate::types::{CNodeId, CapId, Capability, KResult, KernelError, State};
 
-use crate::cap_registry;
+use crate::state::cap_registry;
 
 /// Check that placing `cap` at `(target_cnode)` is permissible. `target_cnode`
 /// is the CNodeId being granted into; for moves use the destination cnode.

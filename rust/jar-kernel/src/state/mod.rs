@@ -7,7 +7,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use super::{CNode, CNodeId, CapId, CapRecord, Hash, KResult, KernelError, VaultId};
+use crate::types::{CNode, CNodeId, CapId, CapRecord, Hash, KResult, KernelError, VaultId};
+
+pub mod cap_registry;
+pub mod cnode;
+pub mod code_blobs;
+pub mod snapshot;
+pub mod state_root;
+pub mod storage;
 
 /// Persistent Vault unit. Contains code, slots, KV storage, quotas.
 ///

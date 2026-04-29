@@ -25,13 +25,13 @@ use crate::types::{
     ResultEntry, SlotContent, State, VaultId,
 };
 
-use crate::attest::AttestCursor;
-use crate::cap_registry;
-use crate::code_blobs;
-use crate::frame::Frame;
-use crate::invocation::{INVOCATION_GAS_BUDGET, InvocationCtx, drive_invocation};
+use crate::cap::attest::AttestCursor;
 use crate::reach::ReachSet;
 use crate::runtime::{Hardware, NodeOffchain};
+use crate::state::cap_registry;
+use crate::state::code_blobs;
+use crate::vm::frame::Frame;
+use crate::vm::{INVOCATION_GAS_BUDGET, InvocationCtx, drive_invocation};
 
 #[derive(Debug, Default)]
 pub struct InboundOutcome {
@@ -83,7 +83,7 @@ pub fn handle_inbound_dispatch<H: Hardware>(
     // the protocol level; mutations are discarded after step-3. The frame's
     // cap is `SnapshotStorage` rooted at the kernel's current state-root.
     let mut state_clone = state.clone();
-    let prior_root = crate::state_root::state_root(state);
+    let prior_root = crate::state::state_root::state_root(state);
     let mut attestation_trace: Vec<AttestationEntry> = event.attestation_trace.clone();
     let mut result_trace: Vec<ResultEntry> = event.result_trace.clone();
     let mut cursor = AttestCursor::default();
