@@ -13,11 +13,11 @@ use crate::runtime::NodeOffchain;
 /// matching Transact slot's position in σ.transact_space_cnode (kernel
 /// will enforce this on apply_block).
 ///
-/// Splices each event's transport `attestation_trace` and `result_trace`
-/// into the block-level traces in events-emission order. The on-chain
-/// handler consumes from body.attestation_trace / body.result_trace
-/// (cursor-walked); per-event trace fields on the Event struct are
-/// transport-only and become empty on the body-side Event.
+/// Per-event traces stay on each Event (authoritative for Transact
+/// invocations). Block-level traces (body.attestation_trace /
+/// body.result_trace) start empty here — they're populated only by
+/// Schedule invocations during apply_block (and by the block-seal
+/// reservation in proposer mode).
 pub fn drain_for_body(node: &NodeOffchain, state: &State) -> KResult<Body> {
     // Index Transact slots in transact_space_cnode by VaultId for ordering.
     let transact_cnode_id = match &cap_registry::lookup(state, state.transact_space_cnode)?.cap {
@@ -55,8 +55,8 @@ pub fn drain_for_body(node: &NodeOffchain, state: &State) -> KResult<Body> {
                 target,
                 payload,
                 caps,
-                attestation_trace: _,
-                result_trace: _,
+                attestation_trace,
+                result_trace,
             }) = node.slots.get(&vault_id)
         {
             let slot_idx = match transact_slot_index.get(target) {
@@ -68,49 +68,33 @@ pub fn drain_for_body(node: &NodeOffchain, state: &State) -> KResult<Body> {
                     )));
                 }
             };
-            // Body-side Event: transport traces have moved to body.* and
-            // are not duplicated here.
+            // Body-side Event keeps the AggregatedTransact's bundled
+            // traces — they're per-event authoritative for the on-chain
+            // Transact handler (NOT spliced into body-level traces).
             groups.entry(slot_idx).or_default().push(Event {
                 payload: payload.clone(),
                 caps: caps.clone(),
-                attestation_trace: Vec::new(),
-                result_trace: Vec::new(),
+                attestation_trace: attestation_trace.clone(),
+                result_trace: result_trace.clone(),
             });
             targets_in_slot_order.insert(slot_idx, *target);
         }
     }
 
-    // Build body.events in slot-index order, splicing traces likewise.
+    // Build body.events in slot-index order.
     let mut events: Vec<(VaultId, Vec<Event>)> = Vec::new();
-    let mut attestation_trace = Vec::new();
-    let mut result_trace = Vec::new();
     for (slot_idx, target) in &targets_in_slot_order {
-        // Splice traces for events in this group, in events order.
-        for (cap_id_slot, cap_id) in dcnode.iter() {
-            let _ = cap_id_slot;
-            if let Capability::Dispatch { vault_id, .. } = cap_registry::lookup(state, cap_id)?.cap
-                && transact_slot_index.contains_key(&vault_id)
-                && let Some(SlotContent::AggregatedTransact {
-                    target: t,
-                    attestation_trace: at,
-                    result_trace: rt,
-                    ..
-                }) = node.slots.get(&vault_id)
-                && t == target
-            {
-                attestation_trace.extend_from_slice(at);
-                result_trace.extend_from_slice(rt);
-            }
-        }
         if let Some(group_events) = groups.remove(slot_idx) {
             events.push((*target, group_events));
         }
     }
 
+    // Body-level traces start empty; Schedule invocations will populate
+    // them during apply_block (and proposer-side block-seal reservation).
     Ok(Body {
         events,
-        attestation_trace,
-        result_trace,
+        attestation_trace: Vec::new(),
+        result_trace: Vec::new(),
         reach_trace: Vec::new(),
         merkle_traces: Vec::new(),
     })

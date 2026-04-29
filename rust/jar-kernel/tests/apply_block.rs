@@ -108,6 +108,36 @@ fn body_events_referencing_schedule_slot_is_rejected() {
 }
 
 #[test]
+fn transact_event_with_unconsumed_attestation_trace_faults() {
+    // The smoke VM halts immediately without consuming any traces. If the
+    // event ships with a non-empty attestation_trace, the per-event
+    // boundary check at HALT must fault the apply_block.
+    let g = GenesisBuilder::default().build().unwrap();
+    let block = Block {
+        parent: BlockHash::ZERO,
+        body: Body {
+            events: vec![(
+                g.transact_vault,
+                vec![jar_types::Event {
+                    payload: vec![],
+                    caps: vec![],
+                    attestation_trace: vec![jar_types::AttestationEntry::default()],
+                    result_trace: vec![],
+                }],
+            )],
+            ..Default::default()
+        },
+    };
+    let hw = no_op_hardware();
+    let res = apply_block(&g.state, BlockHash::ZERO, &block, &hw);
+    assert!(
+        res.is_err(),
+        "expected per-event trace exhaustion fault, got {:?}",
+        res.ok().map(|o| o.block_outcome)
+    );
+}
+
+#[test]
 fn state_root_advances_with_schedule_slots_firing() {
     // Genesis includes Schedule(block_init) and Schedule(block_final) slots
     // that fire once per block. Each invocation allocates a Frame Storage

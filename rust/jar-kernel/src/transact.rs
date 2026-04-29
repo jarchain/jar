@@ -15,7 +15,7 @@
 use std::sync::Arc;
 
 use jar_types::{
-    AttestationEntry, Body, Caller, Capability, Command, Event, KResult, KernelError, KernelRole,
+    AttestationEntry, Body, Caller, Capability, Command, KResult, KernelError, KernelRole,
     ReachEntry, ResultEntry, State, StorageMode, VaultId,
 };
 
@@ -91,13 +91,20 @@ pub fn schedule_walk(state: &State) -> KResult<Vec<(u8, SlotKind, VaultId)>> {
 /// Run one invocation (Transact event or Schedule firing). Returns the
 /// produced reach + commands. On invocation fault, σ is restored and the
 /// produced reach is empty.
+///
+/// Trace routing is the caller's concern: for Transact events,
+/// `attestation_trace` / `result_trace` are the event's own per-event
+/// traces and `cursor` starts at 0 (the caller is expected to also
+/// enforce per-invocation boundary check on return). For Schedule
+/// invocations, they're the block-level traces and the cursor continues
+/// across slots.
 #[allow(clippy::too_many_arguments)]
 pub fn run_one_invocation<H: Hardware>(
     state: &mut State,
     target: VaultId,
     kind: SlotKind,
     reach_idx: u32,
-    event: Option<&Event>,
+    payload: &[u8],
     attestation_trace: &mut Vec<AttestationEntry>,
     result_trace: &mut Vec<ResultEntry>,
     cursor: &mut AttestCursor,
@@ -126,17 +133,11 @@ pub fn run_one_invocation<H: Hardware>(
         hw,
     };
 
-    // Smoke VM: halts immediately. Real PVM execution lands when guest
-    // blobs join. Schedule and Transact-event invocations both run the
-    // same way — caller=TransactEntry, RW σ, fresh ephemeral VM. They
-    // differ only in whether `event` is `Some` (Transact) or `None`
-    // (Schedule).
-    let mut vm = build_smoke_vm(event);
+    let mut vm = build_smoke_vm(payload);
     let outcome = drive_invocation(&mut vm, &mut ctx)?;
 
-    let _ = kind; // Currently unused — both kinds run identically at the
-    // VM level. Kept on the signature for future use (e.g. distinguishing
-    // in caller(), or applying different gas budgets).
+    let _ = kind; // currently unused — both kinds run the same way at
+    // the VM level. Kept on the signature for future use.
 
     if outcome.is_ok() {
         Ok((
@@ -184,20 +185,22 @@ fn build_invocation_frame(state: &mut State, vault_id: VaultId) -> KResult<Frame
 }
 
 /// Smoke VM: halts immediately. Replaced with a real PVM blob driver once
-/// guest services land.
-fn build_smoke_vm(_event: Option<&Event>) -> impl VmExec {
+/// guest services land. `_payload` is the event's bytes (or empty for
+/// Schedule invocations); future PVM driver will load it as args.
+fn build_smoke_vm(_payload: &[u8]) -> impl VmExec {
     crate::invocation::ScriptVm::new(vec![ScriptStep::Halt { rv: 0 }])
 }
 
 /// Run the entire transact phase. Walks σ.transact_space_cnode in slot
 /// order. For Transact slots, consumes the matching body.events entry and
-/// runs each event in list order. For Schedule slots, kernel-fires the
-/// target Vault once with no body input. Body well-formedness is enforced
-/// in-line.
+/// runs each event in list order against its per-event traces. For
+/// Schedule slots, kernel-fires the target Vault once with no body input
+/// against the block-level body.attestation_trace / body.result_trace.
+/// Body well-formedness is enforced in-line.
 pub fn run_phase<H: Hardware>(
     state: &mut State,
     body: &mut Body,
-    cursor: &mut AttestCursor,
+    block_cursor: &mut AttestCursor,
     hw: &H,
     is_proposer: bool,
 ) -> KResult<Vec<Command>> {
@@ -206,15 +209,16 @@ pub fn run_phase<H: Hardware>(
     let mut all_commands: Vec<Command> = Vec::new();
     let walk = schedule_walk(state)?;
 
-    let events_owned: Vec<(VaultId, Vec<Event>)> = body.events.clone();
-    let mut body_iter = events_owned.into_iter().peekable();
+    // Pointer into body.events — advanced by Transact slots that find
+    // their VaultId at the head of the iterator.
+    let mut body_event_idx: usize = 0;
     let mut reach_idx: u32 = 0;
 
     for (slot_idx, kind, target) in walk {
         match kind {
             SlotKind::Schedule => {
                 // body.events must NOT contain any entry for a Schedule slot.
-                if let Some((vid, _)) = body_iter.peek()
+                if let Some((vid, _)) = body.events.get(body_event_idx)
                     && *vid == target
                 {
                     return Err(KernelError::Internal(format!(
@@ -227,10 +231,10 @@ pub fn run_phase<H: Hardware>(
                     target,
                     SlotKind::Schedule,
                     reach_idx,
-                    None,
+                    &[],
                     &mut body.attestation_trace,
                     &mut body.result_trace,
-                    cursor,
+                    block_cursor,
                     hw,
                 )?;
                 check_or_record_reach(body, reach_idx as usize, &reach_entry)?;
@@ -239,37 +243,74 @@ pub fn run_phase<H: Hardware>(
             }
             SlotKind::Transact => {
                 // Consume the next body.events entry only if it matches.
-                let events = if let Some((vid, _)) = body_iter.peek() {
-                    if *vid == target {
-                        let (_, evs) = body_iter.next().expect("peeked");
-                        evs
-                    } else {
-                        Vec::new()
-                    }
-                } else {
-                    Vec::new()
-                };
-                for event in events {
-                    let (reach_entry, mut commands) = run_one_invocation(
-                        state,
-                        target,
-                        SlotKind::Transact,
-                        reach_idx,
-                        Some(&event),
-                        &mut body.attestation_trace,
-                        &mut body.result_trace,
-                        cursor,
-                        hw,
-                    )?;
+                let group_matches = body
+                    .events
+                    .get(body_event_idx)
+                    .map(|(vid, _)| *vid == target)
+                    .unwrap_or(false);
+                if !group_matches {
+                    continue;
+                }
+                // Run each event with PER-EVENT traces (cursor reset to 0
+                // for each invocation; per-event boundary check at HALT).
+                let group_len = body.events[body_event_idx].1.len();
+                for event_idx in 0..group_len {
+                    let mut event_cursor = AttestCursor::default();
+                    // Snapshot the expected slice ends before running, so
+                    // we can verify boundary exhaustion after.
+                    let (reach_entry, mut commands) = {
+                        let (_target, ref mut events) = body.events[body_event_idx];
+                        // Take ownership of the event temporarily so we
+                        // can pass mutable borrows of its traces alongside
+                        // the run_one_invocation call. Replace with
+                        // default while running, then put back. payload
+                        // is cloned so we don't borrow event during the
+                        // call.
+                        let mut event = std::mem::take(&mut events[event_idx]);
+                        let payload = event.payload.clone();
+                        let result = run_one_invocation(
+                            state,
+                            target,
+                            SlotKind::Transact,
+                            reach_idx,
+                            &payload,
+                            &mut event.attestation_trace,
+                            &mut event.result_trace,
+                            &mut event_cursor,
+                            hw,
+                        );
+                        let attestation_len = event.attestation_trace.len();
+                        let result_len = event.result_trace.len();
+                        events[event_idx] = event;
+                        let inner = result?;
+                        // Per-Transact-event boundary check: cursor must
+                        // have walked the entire event-level slice.
+                        if event_cursor.attestation_pos != attestation_len
+                            || event_cursor.result_pos != result_len
+                        {
+                            return Err(KernelError::TraceDivergence(format!(
+                                "transact event #{} (vault {:?}) trace exhaustion mismatch: \
+                                 attestation {}/{}, result {}/{}",
+                                event_idx,
+                                target,
+                                event_cursor.attestation_pos,
+                                attestation_len,
+                                event_cursor.result_pos,
+                                result_len,
+                            )));
+                        }
+                        inner
+                    };
                     check_or_record_reach(body, reach_idx as usize, &reach_entry)?;
                     reach_idx += 1;
                     all_commands.append(&mut commands);
                 }
+                body_event_idx += 1;
             }
         }
     }
 
-    if body_iter.peek().is_some() {
+    if body_event_idx < body.events.len() {
         return Err(KernelError::Internal(
             "body.events has trailing/out-of-order entry".into(),
         ));
