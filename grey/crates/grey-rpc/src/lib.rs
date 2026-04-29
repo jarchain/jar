@@ -797,7 +797,7 @@ fn json_response(status: u16, body: String) -> http::Response<HttpBody> {
         .status(status)
         .header("content-type", "application/json")
         .body(HttpBody::from(body))
-        .unwrap()
+        .expect("valid HTTP response construction should not fail")
 }
 
 impl<S, ReqBody> tower::Service<http::Request<ReqBody>> for HealthService<S>
@@ -837,7 +837,7 @@ where
                     .status(200)
                     .header("content-type", "text/plain; version=0.0.4; charset=utf-8")
                     .body(HttpBody::from(body))
-                    .unwrap())
+                    .expect("valid HTTP response construction should not fail"))
             })
         } else if is_get && path == "/ready" {
             let state = self.state.clone();
@@ -939,7 +939,7 @@ where
             .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
 
         {
-            let mut map = self.state.lock().unwrap();
+            let mut map = self.state.lock().expect("rpc state mutex should not be poisoned");
             let now = std::time::Instant::now();
             let entry = map.entry(ip).or_insert((0, now));
 
@@ -962,7 +962,7 @@ where
                         .header("content-type", "application/json")
                         .header("retry-after", RATE_LIMIT_WINDOW.as_secs().to_string())
                         .body(HttpBody::from(body))
-                        .unwrap())
+                        .expect("valid HTTP response construction should not fail"))
                 });
             }
         }

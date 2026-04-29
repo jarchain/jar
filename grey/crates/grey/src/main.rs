@@ -460,7 +460,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let genesis_time = if cli.genesis_time == 0 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("system clock should not be before UNIX epoch")
             .as_secs()
     } else {
         cli.genesis_time

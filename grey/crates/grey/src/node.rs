@@ -504,7 +504,7 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
             _ = interval.tick() => {
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .unwrap()
+                    .expect("system clock should not be before UNIX epoch")
                     .as_secs();
                 // slot = (now - genesis_time) / slot_period
                 let current_slot = ((now - genesis_time) / 6) as Timeslot + 1; // +1 because genesis is slot 0
@@ -997,7 +997,7 @@ pub async fn run_node(config: NodeConfig) -> Result<(), Box<dyn std::error::Erro
                                 pending_blocks.remove(&next_slot);
                                 continue;
                             }
-                            let (block, import_hash) = pending_blocks.remove(&next_slot).unwrap();
+                            let (block, import_hash) = pending_blocks.remove(&next_slot).expect("pending block should exist after slot check");
                             let slot = block.header.timeslot;
                             let stf_start = std::time::Instant::now();
                             match grey_state::transition::apply_with_config(

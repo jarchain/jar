@@ -1187,7 +1187,7 @@ impl InvocationKernel {
             Some(Cap::Data(d)) => d,
             _ => unreachable!(),
         };
-        let (lo, hi) = cap.split(page_off).unwrap();
+        let (lo, hi) = cap.split(page_off).expect("split should succeed after bounds check");
         vm.cap_table.set(cap_idx, Cap::Data(lo));
         vm.cap_table.set(free, Cap::Data(hi));
         self.set_active_reg(7, cap_idx as u64);
@@ -1458,7 +1458,7 @@ impl InvocationKernel {
             Some(Cap::Data(d)) => d,
             _ => unreachable!(),
         };
-        let (lo, hi) = cap.split(page_off).unwrap();
+        let (lo, hi) = cap.split(page_off).expect("split should succeed after bounds check");
         self.vm_arena
             .vm_mut(s_vm as u16)
             .cap_table
