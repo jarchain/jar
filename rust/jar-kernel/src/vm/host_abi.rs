@@ -40,6 +40,10 @@ pub const RC_BAD_CAP: u64 = u64::MAX - 5;
 /// host calls have retired — see below.
 ///
 /// Reserved gaps:
+/// - Slot 1 / 2 / 3 — formerly `Gas` / `SelfId` / `Caller`, retired in
+///   favour of `Capability::Gas` / `SelfId` / `CallerVault` / `CallerKernel`
+///   placed at ephemeral sub-slots 3 / 2 / 1 by the kernel at invocation
+///   entry. Guests read them via cap-ref into the ephemeral table.
 /// - Slot 7 / 8 / 9 — formerly `CnodeGrant` / `CnodeRevoke` / `CnodeMove`,
 ///   retired in favour of javm management ecallis (`MGMT_DROP`, dynamic-ecall
 ///   `MOVE` / `COPY`) operating through cap-indirection on the unified
@@ -57,9 +61,6 @@ pub const RC_BAD_CAP: u64 = u64::MAX - 5;
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 #[repr(u8)]
 pub enum HostCall {
-    Gas = 1,
-    SelfId = 2,
-    Caller = 3,
     StorageRead = 4,
     StorageWrite = 5,
     StorageDelete = 6,
@@ -75,9 +76,6 @@ pub enum HostCall {
 impl HostCall {
     pub fn from_slot(slot: u8) -> Result<HostCall, KernelError> {
         match slot {
-            1 => Ok(HostCall::Gas),
-            2 => Ok(HostCall::SelfId),
-            3 => Ok(HostCall::Caller),
             4 => Ok(HostCall::StorageRead),
             5 => Ok(HostCall::StorageWrite),
             6 => Ok(HostCall::StorageDelete),

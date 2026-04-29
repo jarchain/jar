@@ -125,6 +125,13 @@ pub fn run_one_invocation<H: Hardware>(
     populate_storage_slot(
         &mut vm, target, /* writable */ true, /* snapshot */ None,
     );
+    populate_ephemeral_kernel_caps(
+        &mut vm,
+        target,
+        code_hash,
+        crate::types::Caller::Kernel(crate::types::KernelRole::TransactEntry),
+        INVOCATION_GAS_BUDGET,
+    );
 
     let mut commands: Vec<Command> = Vec::new();
     let mut reach = ReachSet::default();
@@ -173,21 +180,76 @@ pub fn run_one_invocation<H: Hardware>(
     }
 }
 
-/// Populate the kernel's host-call selectors at slots 1..=21 in the
-/// running VM's cap-table. Each slot N holds `KernelCap::HostCall(N)`,
-/// so the guest's `ecalli N` yields `KernelResult::ProtocolCall { slot: N }`
-/// to the host loop.
+/// Populate the kernel's host-call selectors at the live slots in the
+/// running VM's cap-table. Each live slot `N` holds
+/// `KernelCap::HostCall(N)`, so the guest's `ecalli N` yields
+/// `KernelResult::ProtocolCall { slot: N }` to the host loop.
+///
+/// The walk skips retired slots — slots 1/2/3 (Gas/SelfId/Caller) now
+/// live as `Capability::*` caps in the ephemeral table, and the other
+/// retired-gap ranges are documented in `host_abi::HostCall`.
 pub(crate) fn populate_host_call_slots(vm: &mut Vm) {
     use crate::vm::host_abi::HostCall;
-    // Walk the full 1..=21 range and populate live host-call slots only.
-    // Retired slots (7/8/9/10/11/12/13/14/17/20) stay empty — see the
-    // `Reserved gaps` comment in `host_abi::HostCall`.
-    for id in (HostCall::Gas as u8)..=(HostCall::SlotRead as u8) {
+    for id in (HostCall::StorageRead as u8)..=(HostCall::SlotRead as u8) {
         if HostCall::from_slot(id).is_err() {
             continue;
         }
         vm.cap_table_set_original(id, javm::cap::Cap::Protocol(KernelCap::HostCall(id)));
     }
+}
+
+/// Populate the per-invocation kernel caps in the ephemeral table:
+/// sub-slot 1 = Caller, sub-slot 2 = SelfId, sub-slot 3 = Gas. Called
+/// at the start of every kernel-driven invocation (transact / dispatch
+/// step-2 / step-3). Sub-slots 0 (Reply) is left empty — root has no
+/// userspace caller; the kernel rewrites it on every internal CALL.
+pub(crate) fn populate_ephemeral_kernel_caps(
+    vm: &mut Vm,
+    self_vault: VaultId,
+    self_code_hash: crate::types::Hash,
+    caller: crate::types::Caller,
+    invocation_gas: u64,
+) {
+    use crate::types::{CallerKernelCap, CallerVaultCap, GasCap, SelfCap};
+    let id = match vm
+        .vm_arena
+        .vm(0)
+        .cap_table
+        .get(javm::cap::EPHEMERAL_TABLE_SLOT)
+    {
+        Some(javm::cap::Cap::EphemeralTable(c)) => c.table_id,
+        _ => return,
+    };
+    let table = match vm.ephemeral_arena.get_mut(id) {
+        Some(t) => t,
+        None => return,
+    };
+
+    // Sub-slot 1: Caller cap.
+    let caller_cap = match caller {
+        crate::types::Caller::Vault(vid) => {
+            Capability::CallerVault(CallerVaultCap { vault_id: vid })
+        }
+        crate::types::Caller::Kernel(role) => Capability::CallerKernel(CallerKernelCap { role }),
+    };
+    table.set(1, javm::cap::Cap::Protocol(KernelCap::Cap(caller_cap)));
+
+    // Sub-slot 2: Self cap.
+    table.set(
+        2,
+        javm::cap::Cap::Protocol(KernelCap::Cap(Capability::SelfId(SelfCap {
+            vault_id: self_vault,
+            code_hash: self_code_hash,
+        }))),
+    );
+
+    // Sub-slot 3: Gas cap.
+    table.set(
+        3,
+        javm::cap::Cap::Protocol(KernelCap::Cap(Capability::Gas(GasCap {
+            remaining: invocation_gas,
+        }))),
+    );
 }
 
 /// Populate the running VM's cap-table at `KERNEL_CAP_SLOT` with the

@@ -120,6 +120,13 @@ pub fn handle_inbound_dispatch<H: Hardware>(
             .map_err(|e| KernelError::Internal(format!("javm init step-2: {:?}", e)))?;
         populate_host_call_slots(&mut vm);
         populate_storage_slot(&mut vm, entrypoint, false, Some(prior_root));
+        crate::transact::populate_ephemeral_kernel_caps(
+            &mut vm,
+            entrypoint,
+            code_hash,
+            Caller::Kernel(KernelRole::AggregateStandalone),
+            INVOCATION_GAS_BUDGET,
+        );
         vm.set_active_reg(7, 0);
         let _ = drive_invocation(&mut vm, &mut ctx)?;
     }
@@ -152,6 +159,13 @@ pub fn handle_inbound_dispatch<H: Hardware>(
             .map_err(|e| KernelError::Internal(format!("javm init step-3: {:?}", e)))?;
         populate_host_call_slots(&mut vm);
         populate_storage_slot(&mut vm, entrypoint, false, Some(prior_root));
+        crate::transact::populate_ephemeral_kernel_caps(
+            &mut vm,
+            entrypoint,
+            code_hash,
+            Caller::Kernel(KernelRole::AggregateMerge),
+            INVOCATION_GAS_BUDGET,
+        );
         vm.set_active_reg(7, 1);
         let _ = drive_invocation(&mut vm, &mut ctx)?;
     }

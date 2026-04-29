@@ -16,7 +16,7 @@ pub mod storage;
 
 use crate::cap::KernelCap;
 use crate::runtime::Hardware;
-use crate::types::{Caller, Capability, KResult, KernelRole};
+use crate::types::{Capability, KResult};
 use crate::vm::host_abi::*;
 use crate::vm::{HostCallOutcome, InvocationCtx, Vm};
 
@@ -38,12 +38,6 @@ pub fn dispatch_host_call<H: Hardware>(
     ctx: &mut InvocationCtx<'_, H>,
 ) -> KResult<HostCallOutcome> {
     match call {
-        HostCall::Gas => Ok(HostCallOutcome::Resume(vm.active_gas(), 0)),
-        HostCall::SelfId => Ok(HostCallOutcome::Resume(ctx.current_vault.0, 0)),
-        HostCall::Caller => {
-            let (r0, r1) = encode_caller(&ctx.caller);
-            Ok(HostCallOutcome::Resume(r0, r1))
-        }
         HostCall::StorageRead => storage::host_storage_read(vm, ctx),
         HostCall::StorageWrite => storage::host_storage_write(vm, ctx),
         HostCall::StorageDelete => storage::host_storage_delete(vm, ctx),
@@ -78,21 +72,5 @@ pub(crate) fn write_window(vm: &mut Vm, addr: u32, data: &[u8], what: &str) -> R
             addr,
             data.len()
         ))
-    }
-}
-
-/// Encode the typed Caller into two u64s. r0: tag (0=Vault, 1=Kernel),
-/// r1: payload (vault_id for Vault, KernelRole as u32 for Kernel).
-fn encode_caller(c: &Caller) -> (u64, u64) {
-    match c {
-        Caller::Vault(vid) => (0, vid.0),
-        Caller::Kernel(role) => (
-            1,
-            match role {
-                KernelRole::TransactEntry => 0,
-                KernelRole::AggregateStandalone => 1,
-                KernelRole::AggregateMerge => 2,
-            },
-        ),
     }
 }

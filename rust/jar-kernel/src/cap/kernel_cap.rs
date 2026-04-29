@@ -24,7 +24,7 @@
 //! `cap_grant` / `cap_move` / `cap_derive` host-call handlers, which
 //! enforce their own pinning rules.
 
-use crate::cap::Capability;
+use crate::cap::{Capability, GasCap};
 use javm::cap::ProtocolCapT;
 
 /// Cap-table slot reserved for the kernel-cap payload at frame init
@@ -67,5 +67,36 @@ impl ProtocolCapT for KernelCap {
 
     fn is_droppable(&self) -> bool {
         true
+    }
+
+    /// Split `amount` units off a `Capability::Gas` into a fresh child
+    /// Gas cap. Returns `None` for any other payload shape (host-call
+    /// selector, non-Gas Capability) or insufficient `remaining`.
+    fn gas_derive(&mut self, amount: u64) -> Option<Self> {
+        match self {
+            KernelCap::Cap(Capability::Gas(g)) => {
+                if g.remaining < amount {
+                    return None;
+                }
+                g.remaining -= amount;
+                Some(KernelCap::Cap(Capability::Gas(GasCap {
+                    remaining: amount,
+                })))
+            }
+            _ => None,
+        }
+    }
+
+    /// Merge a donor Gas cap's `remaining` into `self`. Returns `true`
+    /// only when both caps are `Capability::Gas`. The caller drops the
+    /// donor on success.
+    fn gas_merge(&mut self, donor: &Self) -> bool {
+        match (self, donor) {
+            (KernelCap::Cap(Capability::Gas(dst)), KernelCap::Cap(Capability::Gas(src))) => {
+                dst.remaining = dst.remaining.saturating_add(src.remaining);
+                true
+            }
+            _ => false,
+        }
     }
 }

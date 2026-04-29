@@ -10,7 +10,7 @@
 //! reference (e.g. `&DispatchCap`). The `Capability` enum wraps them as a
 //! sum type.
 
-use crate::types::{CNodeId, CapId, Hash, KeyId, VaultId};
+use crate::types::{CNodeId, CapId, Hash, KernelRole, KeyId, VaultId};
 
 // -----------------------------------------------------------------------------
 // Per-variant structs
@@ -125,6 +125,36 @@ pub struct AttestationAggregateCap {
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
 pub struct ResultCap;
 
+/// Per-invocation gas budget. Lives at ephemeral sub-slot 3 by
+/// convention. `MGMT_GAS_DERIVE` splits off a child cap; `MGMT_GAS_MERGE`
+/// recombines. The JIT decrements `remaining` at safepoints (Phase 9).
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct GasCap {
+    pub remaining: u64,
+}
+
+/// Per-frame self identity. The kernel rewrites ephemeral sub-slot 2 on
+/// every CALL/REPLY so the active VM's "who am I" is correct.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct SelfCap {
+    pub vault_id: VaultId,
+    pub code_hash: Hash,
+}
+
+/// Per-frame caller (vault → vault sub-CALL). Lives at ephemeral
+/// sub-slot 1 when the invocation came from another Vault VM.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct CallerVaultCap {
+    pub vault_id: VaultId,
+}
+
+/// Per-frame caller (kernel-fired top-level invocation). Lives at
+/// ephemeral sub-slot 1 when the invocation was kernel-initiated.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct CallerKernelCap {
+    pub role: KernelRole,
+}
+
 // -----------------------------------------------------------------------------
 // Capability sum type
 // -----------------------------------------------------------------------------
@@ -148,6 +178,14 @@ pub enum Capability {
     AttestationCap(AttestationCap),
     AttestationAggregateCap(AttestationAggregateCap),
     ResultCap(ResultCap),
+    /// Per-invocation gas budget — lives at ephemeral sub-slot 3.
+    Gas(GasCap),
+    /// Per-frame self-identity — lives at ephemeral sub-slot 2.
+    SelfId(SelfCap),
+    /// Per-frame caller (sub-CALL) — lives at ephemeral sub-slot 1.
+    CallerVault(CallerVaultCap),
+    /// Per-frame caller (kernel-initiated) — lives at ephemeral sub-slot 1.
+    CallerKernel(CallerKernelCap),
 }
 
 impl Capability {
