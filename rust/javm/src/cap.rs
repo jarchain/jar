@@ -55,22 +55,43 @@ impl UntypedCap {
     }
 }
 
-/// Physical pages with exclusive mapping and per-page bitmap. Move-only (not copyable).
+/// Physical pages with exclusive mapping. Move-only (not copyable).
 ///
-/// Each DATA cap has a single `base_offset` (set on first MAP, fixed thereafter)
-/// and a per-page `mapped_bitmap` tracking which pages are present in the address
-/// space. Page P maps to address `base_offset + P * 4096`.
+/// Each DataCap carries per-VM mapping memory: `mappings` records where the
+/// cap should be mapped if/when it lands in a given VM's persistent Frame.
+/// `active_in` tracks the VM the cap is currently mapped in (None when
+/// sitting in the ephemeral table or simply unmapped). `mapped_bitmap`
+/// tracks per-page presence in `active_in`'s window.
+///
+/// On cross-frame MOVE, the kernel:
+/// - unmaps from `active_in` (if any) using the recorded mapping.
+/// - clears `active_in`, but **preserves `mappings`** so the cap remembers
+///   where it should go if it later returns to that VM.
+///
+/// On arrival in a destination VM's persistent Frame, the kernel checks
+/// `mappings[dst_vm]` — if recorded, auto-remaps at the saved
+/// `(base, access)`; otherwise the cap stays unmapped (callee can MAP at
+/// a fresh address, which writes a new `mappings[dst_vm]` entry).
+#[derive(Debug, Clone, Copy)]
+pub struct VmMapping {
+    pub vm_id: crate::vm_pool::VmId,
+    pub base: u32,
+    pub access: Access,
+}
+
 #[derive(Debug)]
 pub struct DataCap {
     /// Offset into the backing memfd (in pages).
     pub backing_offset: u32,
     /// Number of pages.
     pub page_count: u32,
-    /// Base offset in address space (set on first MAP, fixed). None = never mapped.
-    pub base_offset: Option<u32>,
-    /// Access mode (set on first MAP, fixed). None = never mapped.
-    pub access: Option<Access>,
-    /// Per-page mapped bitmap (packed, 1 bit per page). Bit set = page present.
+    /// Per-VM mapping memory. Insertion-order; small (typically 1-3 entries).
+    pub mappings: Vec<VmMapping>,
+    /// VM the cap is currently mapped in. None when in ephemeral table or
+    /// fully unmapped.
+    pub active_in: Option<crate::vm_pool::VmId>,
+    /// Per-page presence in `active_in`'s window. All zeros when
+    /// `active_in.is_none()`.
     pub mapped_bitmap: Vec<u8>,
 }
 
@@ -80,13 +101,26 @@ impl DataCap {
         Self {
             backing_offset,
             page_count,
-            base_offset: None,
-            access: None,
+            mappings: Vec::new(),
+            active_in: None,
             mapped_bitmap: vec![0u8; bitmap_len],
         }
     }
 
-    /// Check if a specific page is mapped.
+    /// Look up the recorded mapping for a VM, if any.
+    pub fn mapping_for(&self, vm_id: crate::vm_pool::VmId) -> Option<(u32, Access)> {
+        self.mappings
+            .iter()
+            .find(|m| m.vm_id == vm_id)
+            .map(|m| (m.base, m.access))
+    }
+
+    /// Convenience: the active VM's recorded mapping.
+    pub fn active_mapping(&self) -> Option<(u32, Access)> {
+        self.active_in.and_then(|vm| self.mapping_for(vm))
+    }
+
+    /// Check if a specific page is mapped (in the active VM's window).
     pub fn is_page_mapped(&self, page_idx: u32) -> bool {
         if page_idx >= self.page_count {
             return false;
@@ -98,49 +132,37 @@ impl DataCap {
             .is_some_and(|b| b & (1 << bit_idx) != 0)
     }
 
-    /// Count of mapped pages.
+    /// Count of mapped pages (in the active VM).
     pub fn mapped_page_count(&self) -> u32 {
-        let mut count = 0u32;
-        for &byte in &self.mapped_bitmap {
-            count += byte.count_ones();
-        }
-        count
+        self.mapped_bitmap.iter().map(|b| b.count_ones()).sum()
     }
 
-    /// Check if any page is mapped.
+    /// Check if any page is mapped (in the active VM).
     pub fn has_any_mapped(&self) -> bool {
         self.mapped_bitmap.iter().any(|&b| b != 0)
     }
 
-    /// Map pages \[page_offset..page_offset+page_count) with the given base and access.
-    /// First MAP sets base_offset and access; subsequent calls assert they match.
-    /// Returns true on success.
-    pub fn map_pages(
-        &mut self,
-        base_offset: u32,
-        access: Access,
-        page_offset: u32,
-        page_count: u32,
-    ) -> bool {
-        if page_offset + page_count > self.page_count {
-            return false;
-        }
-        // First MAP sets base_offset and access
-        if let Some(existing) = self.base_offset {
-            if existing != base_offset {
-                return false;
-            }
+    /// Insert or assert a (base, access) mapping for `vm_id`.
+    /// Returns false if `vm_id` already has a different mapping recorded.
+    fn record_mapping(&mut self, vm_id: crate::vm_pool::VmId, base: u32, access: Access) -> bool {
+        if let Some(existing) = self.mappings.iter().find(|m| m.vm_id == vm_id) {
+            existing.base == base && existing.access == access
         } else {
-            self.base_offset = Some(base_offset);
+            self.mappings.push(VmMapping {
+                vm_id,
+                base,
+                access,
+            });
+            true
         }
-        if let Some(existing) = self.access {
-            if existing != access {
-                return false;
-            }
-        } else {
-            self.access = Some(access);
-        }
-        // Set bits in bitmap
+    }
+
+    /// Forget a recorded mapping (without touching bitmap or active_in).
+    pub fn forget_mapping(&mut self, vm_id: crate::vm_pool::VmId) {
+        self.mappings.retain(|m| m.vm_id != vm_id);
+    }
+
+    fn set_bits(&mut self, page_offset: u32, page_count: u32) {
         for i in page_offset..page_offset + page_count {
             let byte_idx = i as usize / 8;
             let bit_idx = i as usize % 8;
@@ -148,11 +170,9 @@ impl DataCap {
                 self.mapped_bitmap[byte_idx] |= 1 << bit_idx;
             }
         }
-        true
     }
 
-    /// Unmap pages \[page_offset..page_offset+page_count). Base_offset preserved.
-    pub fn unmap_pages(&mut self, page_offset: u32, page_count: u32) {
+    fn clear_bits(&mut self, page_offset: u32, page_count: u32) {
         for i in page_offset..page_offset.saturating_add(page_count).min(self.page_count) {
             let byte_idx = i as usize / 8;
             let bit_idx = i as usize % 8;
@@ -162,46 +182,115 @@ impl DataCap {
         }
     }
 
-    /// Unmap all pages. Base_offset and access preserved.
-    pub fn unmap_all(&mut self) {
+    /// MAP pages [page_offset..page_offset+page_count) in `vm_id`'s window.
+    /// First MAP for a (cap, vm_id) pair records the `(base, access)`;
+    /// subsequent MAPs in the same VM assert match. Sets `active_in` to
+    /// `vm_id`. Returns false on bound violation, conflicting mapping, or
+    /// active-in-different-VM violation.
+    pub fn map_pages(
+        &mut self,
+        vm_id: crate::vm_pool::VmId,
+        base: u32,
+        access: Access,
+        page_offset: u32,
+        page_count: u32,
+    ) -> bool {
+        if page_offset + page_count > self.page_count {
+            return false;
+        }
+        if let Some(other) = self.active_in
+            && other != vm_id
+        {
+            // Cap is currently mapped in another VM — must unmap first.
+            return false;
+        }
+        if !self.record_mapping(vm_id, base, access) {
+            return false;
+        }
+        self.active_in = Some(vm_id);
+        self.set_bits(page_offset, page_count);
+        true
+    }
+
+    /// UNMAP pages in the active VM. Bitmap cleared for the range. Mapping
+    /// memory preserved (so a future re-MAP at the same address asserts
+    /// consistency, and a future re-arrival in this VM auto-remaps). When
+    /// no pages remain mapped, `active_in` clears.
+    pub fn unmap_pages(&mut self, page_offset: u32, page_count: u32) {
+        self.clear_bits(page_offset, page_count);
+        if !self.has_any_mapped() {
+            self.active_in = None;
+        }
+    }
+
+    /// Clear every page from the bitmap and the active VM. Mapping memory
+    /// is preserved. Returns the (vm_id, base, access) the cap was active in,
+    /// for the caller to pass to `BackingStore::unmap_pages`.
+    pub fn unmap_all(&mut self) -> Option<(crate::vm_pool::VmId, u32, Access)> {
+        let result = self
+            .active_in
+            .and_then(|vm| self.mapping_for(vm).map(|(b, a)| (vm, b, a)));
         for b in &mut self.mapped_bitmap {
             *b = 0;
         }
+        self.active_in = None;
+        result
     }
 
-    /// Legacy compat: map all pages at once (used by kernel init for blob DATA caps).
-    pub fn map(&mut self, base_page: u32, access: Access) -> Option<(u32, Access)> {
+    /// On arrival in `vm_id`'s persistent Frame: if a mapping is recorded,
+    /// mark all pages mapped and return `(base, access)` for the kernel to
+    /// call `BackingStore::map_pages`. Otherwise returns None (cap stays
+    /// unmapped; callee can explicitly MAP).
+    pub fn auto_remap_for(&mut self, vm_id: crate::vm_pool::VmId) -> Option<(u32, Access)> {
+        let (base, access) = self.mapping_for(vm_id)?;
+        // Mark every page bit (caller does the actual mmap).
+        for b in &mut self.mapped_bitmap {
+            *b = 0xFF;
+        }
+        let bits_in_last = (self.page_count as usize) % 8;
+        if bits_in_last != 0
+            && let Some(last) = self.mapped_bitmap.last_mut()
+        {
+            *last &= (1u8 << bits_in_last) - 1;
+        }
+        self.active_in = Some(vm_id);
+        Some((base, access))
+    }
+
+    /// Legacy compat: map all pages at once (used by kernel init for blob
+    /// DATA caps and `handle_reply`'s auto-return). Records mapping for
+    /// `vm_id`, marks all pages. Returns the prior active mapping if any.
+    pub fn map(
+        &mut self,
+        vm_id: crate::vm_pool::VmId,
+        base: u32,
+        access: Access,
+    ) -> Option<(crate::vm_pool::VmId, u32, Access)> {
         let prev = if self.has_any_mapped() {
-            Some((
-                self.base_offset.unwrap_or(0),
-                self.access.unwrap_or(Access::RO),
-            ))
+            self.active_in
+                .and_then(|vm| self.mapping_for(vm).map(|(b, a)| (vm, b, a)))
         } else {
             None
         };
-        self.unmap_all();
-        self.base_offset = Some(base_page);
-        self.access = Some(access);
-        // Map all pages
-        self.map_pages(base_page, access, 0, self.page_count);
-        prev
-    }
-
-    /// Legacy compat: unmap all pages. Returns previous mapping state.
-    pub fn unmap(&mut self) -> Option<(u32, Access)> {
-        if !self.has_any_mapped() {
-            return None;
+        // Clear bitmap, then re-set after recording new mapping.
+        for b in &mut self.mapped_bitmap {
+            *b = 0;
         }
-        let prev = Some((
-            self.base_offset.unwrap_or(0),
-            self.access.unwrap_or(Access::RO),
-        ));
-        self.unmap_all();
+        self.active_in = None;
+        if !self.record_mapping(vm_id, base, access) {
+            // Conflicting prior mapping for this VM — refuse.
+            return prev;
+        }
+        self.active_in = Some(vm_id);
+        let pc = self.page_count;
+        self.set_bits(0, pc);
         prev
     }
 
     /// Split into two sub-ranges at `page_offset`. Must be fully unmapped.
-    /// Returns (lo, hi) where lo covers \[0, page_offset) and hi covers \[page_offset, page_count).
+    /// Returns `(lo, hi)` where `lo` covers `[0, page_offset)` and `hi`
+    /// covers `[page_offset, page_count)`. Mapping memory is dropped — the
+    /// new caps start fresh.
     pub fn split(self, page_offset: u32) -> Option<(DataCap, DataCap)> {
         if self.has_any_mapped() || page_offset == 0 || page_offset >= self.page_count {
             return None;
@@ -543,14 +632,15 @@ mod tests {
 
     #[test]
     fn test_data_cap_partial_map() {
+        let vm = crate::vm_pool::VmId::ROOT;
         let mut data = DataCap::new(0, 10);
         assert!(!data.has_any_mapped());
         assert_eq!(data.mapped_page_count(), 0);
 
         // Map pages 2-4
-        assert!(data.map_pages(0x1000, Access::RW, 2, 3));
-        assert_eq!(data.base_offset, Some(0x1000));
-        assert_eq!(data.access, Some(Access::RW));
+        assert!(data.map_pages(vm, 0x1000, Access::RW, 2, 3));
+        assert_eq!(data.mapping_for(vm), Some((0x1000, Access::RW)));
+        assert_eq!(data.active_in, Some(vm));
         assert!(!data.is_page_mapped(0));
         assert!(!data.is_page_mapped(1));
         assert!(data.is_page_mapped(2));
@@ -559,14 +649,14 @@ mod tests {
         assert!(!data.is_page_mapped(5));
         assert_eq!(data.mapped_page_count(), 3);
 
-        // Map more pages (same base)
-        assert!(data.map_pages(0x1000, Access::RW, 7, 2));
+        // Map more pages (same base) in the same VM
+        assert!(data.map_pages(vm, 0x1000, Access::RW, 7, 2));
         assert!(data.is_page_mapped(7));
         assert!(data.is_page_mapped(8));
         assert_eq!(data.mapped_page_count(), 5);
 
-        // Different base fails
-        assert!(!data.map_pages(0x2000, Access::RW, 0, 1));
+        // Different base fails (assert match on existing mapping for vm)
+        assert!(!data.map_pages(vm, 0x2000, Access::RW, 0, 1));
 
         // Unmap specific pages
         data.unmap_pages(3, 2); // unmap pages 3-4
@@ -578,15 +668,16 @@ mod tests {
 
     #[test]
     fn test_data_cap_legacy_map_unmap() {
+        let vm = crate::vm_pool::VmId::ROOT;
         let mut data = DataCap::new(0, 10);
         assert!(!data.has_any_mapped());
 
-        let prev = data.map(0x5, Access::RW);
+        let prev = data.map(vm, 0x5, Access::RW);
         assert!(prev.is_none());
         assert!(data.has_any_mapped());
         assert_eq!(data.mapped_page_count(), 10);
 
-        let prev = data.unmap();
+        let prev = data.unmap_all();
         assert!(prev.is_some());
         assert!(!data.has_any_mapped());
     }
@@ -604,8 +695,9 @@ mod tests {
 
     #[test]
     fn test_data_cap_split_mapped_fails() {
+        let vm = crate::vm_pool::VmId::ROOT;
         let mut data = DataCap::new(0, 10);
-        data.map(0, Access::RW);
+        data.map(vm, 0, Access::RW);
         assert!(data.split(5).is_none());
     }
 

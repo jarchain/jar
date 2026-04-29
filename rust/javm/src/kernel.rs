@@ -250,9 +250,7 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
             if let Cap::Data(ref d) = cap {
                 init_pages += d.page_count;
                 // Record DATA caps that need mapping into the CODE window
-                if d.has_any_mapped()
-                    && let (Some(base_page), Some(access)) = (d.base_offset, d.access)
-                {
+                if let Some((base_page, access)) = d.mapping_for(crate::vm_pool::VmId::ROOT) {
                     data_caps_to_map.push((base_page, d.backing_offset, d.page_count, access));
                 }
             }
@@ -346,8 +344,7 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         let mut max_addr: usize = 0;
         for slot in 0..=255u8 {
             if let Some(Cap::Data(d)) = vm.cap_table.get(slot)
-                && d.has_any_mapped()
-                && let Some(base_page) = d.base_offset
+                && let Some((base_page, _access)) = d.active_mapping()
             {
                 let end =
                     (base_page as usize + d.page_count as usize) * crate::PVM_PAGE_SIZE as usize;
@@ -362,8 +359,7 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
             let wb = self.active_window_base();
             for slot in 0..=255u8 {
                 if let Some(Cap::Data(d)) = vm.cap_table.get(slot)
-                    && d.has_any_mapped()
-                    && let Some(base_page) = d.base_offset
+                    && let Some((base_page, _access)) = d.active_mapping()
                 {
                     let addr = base_page as usize * crate::PVM_PAGE_SIZE as usize;
                     let len = d.page_count as usize * crate::PVM_PAGE_SIZE as usize;
@@ -383,8 +379,7 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         {
             for slot in 0..=255u8 {
                 if let Some(Cap::Data(d)) = vm.cap_table.get(slot)
-                    && d.has_any_mapped()
-                    && let Some(base_page) = d.base_offset
+                    && let Some((base_page, _access)) = d.active_mapping()
                 {
                     let addr = base_page as usize * crate::PVM_PAGE_SIZE as usize;
                     let len = d.page_count as usize * crate::PVM_PAGE_SIZE as usize;
@@ -432,9 +427,8 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
             let wb = kernel.active_window_base();
             for slot in 0..=255u8 {
                 if let Some(Cap::Data(d)) = vm.cap_table.get(slot)
-                    && d.has_any_mapped()
-                    && d.access == Some(Access::RW)
-                    && let Some(base_page) = d.base_offset
+                    && let Some((base_page, access)) = d.active_mapping()
+                    && access == Access::RW
                 {
                     let addr = base_page as usize * crate::PVM_PAGE_SIZE as usize;
                     let len = d.page_count as usize * crate::PVM_PAGE_SIZE as usize;
@@ -460,10 +454,10 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
                     } else {
                         return None;
                     };
-                    if !d.has_any_mapped() || d.access != Some(Access::RW) {
+                    let (base_page, access) = d.active_mapping()?;
+                    if access != Access::RW {
                         return None;
                     }
-                    let base_page = d.base_offset?;
                     let addr = base_page as usize * crate::PVM_PAGE_SIZE as usize;
                     let len = d.page_count as usize * crate::PVM_PAGE_SIZE as usize;
                     if addr + len > flat_mem.len() {
@@ -559,9 +553,14 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
                     }
                 }
 
-                // Create DATA cap, marked as mapped (actual mmap happens after all caps are created)
+                // Create DATA cap, marked as mapped in the root VM
+                // (actual mmap happens after all caps are created).
                 let mut data_cap = DataCap::new(backing_offset, entry.page_count);
-                data_cap.map(entry.base_page, entry.init_access);
+                data_cap.map(
+                    crate::vm_pool::VmId::ROOT,
+                    entry.base_page,
+                    entry.init_access,
+                );
                 Ok(Cap::Data(data_cap))
             }
         }
@@ -845,28 +844,28 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         // Handle IPC cap (φ[12]). 0 = no cap to pass (slot 0 is IPC itself).
         let ipc_cap_slot = self.active_reg(12) as u8;
         let mut ipc_cap_idx = None;
-        let mut ipc_was_mapped = None;
 
-        if ipc_cap_slot != 0 && !self.vm_arena.vm(caller_id).cap_table.is_empty(ipc_cap_slot) {
-            // Take cap from caller, auto-unmap if DATA
-            if let Some(mut cap) = self.vm_arena.vm_mut(caller_id).cap_table.take(ipc_cap_slot) {
-                if let Cap::Data(ref mut d) = cap {
-                    ipc_was_mapped = d.unmap();
-                }
-                ipc_cap_idx = Some(ipc_cap_slot);
-                // Place in callee's IPC slot [0]
-                self.vm_arena
-                    .vm_mut(target_vm_id)
-                    .cap_table
-                    .set(IPC_SLOT, cap);
+        if ipc_cap_slot != 0
+            && !self.vm_arena.vm(caller_id).cap_table.is_empty(ipc_cap_slot)
+            && let Some(mut cap) = self.vm_arena.vm_mut(caller_id).cap_table.take(ipc_cap_slot)
+        {
+            // Cross-frame MOVE from caller's persistent Frame to callee's
+            // slot 0. Auto-unmap from caller's window; mappings[caller]
+            // is preserved on the cap so REPLY's MOVE-back auto-remaps.
+            if let Cap::Data(ref mut d) = cap {
+                self.cross_frame_unmap(d);
             }
+            ipc_cap_idx = Some(ipc_cap_slot);
+            self.vm_arena
+                .vm_mut(target_vm_id)
+                .cap_table
+                .set(IPC_SLOT, cap);
         }
 
         // Push call frame
         self.call_stack.push(CallFrame {
             caller_vm_id: caller_id,
             ipc_cap_idx,
-            ipc_was_mapped,
         });
 
         // Pass args: caller's φ[7]..φ[10] → callee's φ[7]..φ[10]
@@ -910,15 +909,15 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         self.vm_arena.vm_mut(caller_id).set_gas(cg + unused_gas);
         self.vm_arena.vm_mut(callee_id).set_gas(0);
 
-        // Return IPC cap
+        // Return IPC cap (cross-frame MOVE back to caller's persistent Frame).
         if let Some(caller_slot) = frame.ipc_cap_idx
             && let Some(mut cap) = self.vm_arena.vm_mut(callee_id).cap_table.take(IPC_SLOT)
         {
-            // Auto-remap DATA cap at caller's original base_page
-            if let Some((base_page, access)) = frame.ipc_was_mapped
-                && let Cap::Data(d) = &mut cap
-            {
-                d.map(base_page, access);
+            if let Cap::Data(ref mut d) = cap {
+                // Unmap from callee's window if active there, then auto-remap
+                // in caller's window if mappings[caller] is recorded.
+                self.cross_frame_unmap(d);
+                self.cross_frame_remap(d, caller_id);
             }
             self.vm_arena
                 .vm_mut(caller_id)
@@ -1195,50 +1194,75 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
             }
         };
 
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        let wb = self.active_window_base();
-        let vm = &mut self.vm_arena.vm_mut(self.active_vm);
-        match vm.cap_table.get_mut(cap_idx) {
-            Some(Cap::Data(d)) => {
-                // Unmap previous mapping if remapping
-                if let Some((_old_base, _)) = d.map(base_page, access) {
-                    // SAFETY: wb is from active_window_base() (valid 4GB window).
-                    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-                    unsafe {
-                        BackingStore::unmap_pages(wb, _old_base, d.page_count);
-                    }
+        let active_vm = self.active_vm;
+        let active_vm_id =
+            crate::vm_pool::VmId::new(active_vm, self.vm_arena.generation_of(active_vm));
+
+        // Step 1: update DataCap state (record mapping, set bits) and capture
+        // the previous active mapping + (backing_offset, page_count) for the
+        // post-update mmap calls. Done in a closed scope so the &mut to vm
+        // is dropped before we call &self methods like vm_window_base.
+        let (prev_active, backing_offset, page_count) = {
+            let vm = &mut self.vm_arena.vm_mut(active_vm);
+            match vm.cap_table.get_mut(cap_idx) {
+                Some(Cap::Data(d)) => {
+                    let prev = d.map(active_vm_id, base_page, access);
+                    (prev, d.backing_offset, d.page_count)
                 }
-                // Map new location
-                // SAFETY: wb is from active_window_base() (valid 4GB window).
-                #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-                unsafe {
-                    self.backing
-                        .map_pages(wb, base_page, d.backing_offset, d.page_count, access);
+                _ => {
+                    self.set_active_reg(7, RESULT_WHAT);
+                    return DispatchResult::Continue;
                 }
             }
-            _ => {
-                self.set_active_reg(7, RESULT_WHAT);
+        };
+
+        // Step 2: unmap the prior mapping's window (if any).
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        if let Some((old_vm, old_base, _)) = prev_active
+            && let Some(old_wb) = self.vm_window_base(old_vm.index())
+        {
+            // SAFETY: old_wb is from vm_window_base (valid 4GB window).
+            unsafe {
+                BackingStore::unmap_pages(old_wb, old_base, page_count);
             }
         }
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        let _ = prev_active;
+
+        // Step 3: mmap at the new (base, access) in the active VM's window.
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            let wb = self.active_window_base();
+            // SAFETY: wb is from active_window_base() (valid 4GB window).
+            unsafe {
+                self.backing
+                    .map_pages(wb, base_page, backing_offset, page_count, access);
+            }
+        }
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        let _ = (backing_offset, page_count);
         DispatchResult::Continue
     }
 
     fn mgmt_unmap(&mut self, cap_idx: u8) -> DispatchResult {
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        let wb = self.active_window_base();
-        let vm = &mut self.vm_arena.vm_mut(self.active_vm);
-        match vm.cap_table.get_mut(cap_idx) {
-            Some(Cap::Data(d)) => {
-                if let Some((_base_page, _)) = d.unmap() {
-                    // SAFETY: wb is from active_window_base() (valid 4GB window).
-                    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-                    unsafe {
-                        BackingStore::unmap_pages(wb, _base_page, d.page_count);
-                    }
+        let (prev, page_count) = {
+            let vm = &mut self.vm_arena.vm_mut(self.active_vm);
+            match vm.cap_table.get_mut(cap_idx) {
+                Some(Cap::Data(d)) => (d.unmap_all(), d.page_count),
+                _ => {
+                    self.set_active_reg(7, RESULT_WHAT);
+                    return DispatchResult::Continue;
                 }
             }
-            _ => {
-                self.set_active_reg(7, RESULT_WHAT);
+        };
+        if let Some((vm_id, base, _)) = prev {
+            let _ = (vm_id, base, page_count);
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            if let Some(wb) = self.vm_window_base(vm_id.index()) {
+                // SAFETY: wb is from vm_window_base (valid 4GB window).
+                unsafe {
+                    BackingStore::unmap_pages(wb, base, page_count);
+                }
             }
         }
         DispatchResult::Continue
@@ -1300,8 +1324,7 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         let vm = &mut self.vm_arena.vm_mut(self.active_vm);
         // Unmap DATA caps before dropping
         if let Some(Cap::Data(d)) = vm.cap_table.get(cap_idx)
-            && d.has_any_mapped()
-            && let Some(_base_page) = d.base_offset
+            && let Some((_base_page, _)) = d.active_mapping()
         {
             let _page_count = d.page_count;
             // SAFETY: wb is from active_window_base() (valid 4GB window).
@@ -1426,7 +1449,6 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         self.call_stack.push(CallFrame {
             caller_vm_id: caller_id,
             ipc_cap_idx: None,
-            ipc_was_mapped: None,
         });
 
         // Resume callee: FAULTED → RUNNING, registers/PC preserved
@@ -1457,12 +1479,14 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
             }
         };
 
+        let vm_id =
+            crate::vm_pool::VmId::new(vm_idx as u16, self.vm_arena.generation_of(vm_idx as u16));
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         let window_base = self.vm_window_base(vm_idx as u16);
         let vm = &mut self.vm_arena.vm_mut(vm_idx as u16);
         match vm.cap_table.get_mut(slot) {
             Some(Cap::Data(d)) => {
-                if !d.map_pages(base_offset, access, page_offset, page_count) {
+                if !d.map_pages(vm_id, base_offset, access, page_offset, page_count) {
                     self.set_active_reg(7, RESULT_WHAT);
                     return DispatchResult::Continue;
                 }
@@ -1490,7 +1514,7 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         DispatchResult::Continue
     }
 
-    /// UNMAP pages of a DATA cap in its CNode.
+    /// UNMAP pages of a DATA cap in its Frame.
     /// φ[7]=page_offset, φ[8]=page_count.
     fn ecall_unmap(&mut self, vm_idx: usize, slot: u8) -> DispatchResult {
         let page_offset = self.active_reg(7) as u32;
@@ -1501,7 +1525,7 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         let vm = &mut self.vm_arena.vm_mut(vm_idx as u16);
         match vm.cap_table.get_mut(slot) {
             Some(Cap::Data(d)) => {
-                if let Some(_base_offset) = d.base_offset {
+                if let Some((_base_offset, _)) = d.active_mapping() {
                     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
                     if let Some(wb) = window_base {
                         for p in
@@ -1568,8 +1592,7 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
             return DispatchResult::Continue;
         }
         if let Some(Cap::Data(d)) = self.vm_arena.vm(vm_idx as u16).cap_table.get(slot)
-            && d.has_any_mapped()
-            && let Some(_base_offset) = d.base_offset
+            && let Some((_base_offset, _)) = d.active_mapping()
         {
             let _page_count = d.page_count;
             #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -1584,7 +1607,8 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         DispatchResult::Continue
     }
 
-    /// MOVE a cap between CNodes. Auto-unmaps DATA on CNode change.
+    /// MOVE a cap between Frames. Auto-unmaps DATA from source if cross-frame;
+    /// auto-remaps in destination if `mappings[dst_vm]` is recorded.
     fn ecall_move(&mut self, s_vm: usize, s_slot: u8, o_vm: usize, o_slot: u8) -> DispatchResult {
         if s_vm == o_vm && s_slot == o_slot {
             return DispatchResult::Continue;
@@ -1602,24 +1626,51 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
             }
         };
 
-        // Auto-unmap DATA caps crossing CNode boundaries
         if s_vm != o_vm
             && let Cap::Data(ref mut d) = cap
-            && d.has_any_mapped()
-            && let Some(_base_offset) = d.base_offset
         {
-            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-            if let Some(wb) = self.vm_window_base(s_vm as u16) {
-                // SAFETY: wb is from vm_window_base() (valid 4GB window).
-                unsafe {
-                    BackingStore::unmap_pages(wb, _base_offset, d.page_count);
-                }
-            }
-            d.unmap_all();
+            // Cross-frame: unmap from source's window, then auto-remap in
+            // destination's window if mappings[dst_vm] is recorded.
+            self.cross_frame_unmap(d);
+            self.cross_frame_remap(d, o_vm as u16);
         }
 
         self.vm_arena.vm_mut(o_vm as u16).cap_table.set(o_slot, cap);
         DispatchResult::Continue
+    }
+
+    /// Unmap a DATA cap from its currently-active VM's window. Mapping
+    /// memory on the cap is preserved (so a future arrival in that VM
+    /// auto-remaps).
+    fn cross_frame_unmap(&self, d: &mut DataCap) {
+        if let Some((vm_id, base, _access)) = d.unmap_all() {
+            let _ = (vm_id, base);
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            if let Some(wb) = self.vm_window_base(vm_id.index()) {
+                // SAFETY: wb is from vm_window_base (valid 4GB window).
+                unsafe {
+                    BackingStore::unmap_pages(wb, base, d.page_count);
+                }
+            }
+        }
+    }
+
+    /// Auto-remap a DATA cap on arrival in `vm_idx`'s persistent Frame, if
+    /// `mappings[vm_idx]` is recorded. No-op otherwise (callee can MAP at a
+    /// fresh address).
+    fn cross_frame_remap(&self, d: &mut DataCap, vm_idx: u16) {
+        let vm_id = crate::vm_pool::VmId::new(vm_idx, self.vm_arena.generation_of(vm_idx));
+        if let Some((base, access)) = d.auto_remap_for(vm_id) {
+            let _ = (base, access);
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            if let Some(wb) = self.vm_window_base(vm_idx) {
+                // SAFETY: wb is from vm_window_base (valid 4GB window).
+                unsafe {
+                    self.backing
+                        .map_pages(wb, base, d.backing_offset, d.page_count, access);
+                }
+            }
+        }
     }
 
     /// COPY a cap between CNodes (copyable types only).
@@ -1819,15 +1870,14 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         self.active_window = assignment.window_idx;
     }
 
-    /// Unmap all of a VM's mapped DATA caps from a window.
+    /// Unmap all of a VM's currently-mapped DATA caps from a window.
     #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
     fn unmap_vm_data_caps(&self, vm_idx: u16, window_idx: usize) {
         let wb = self.window_pool.window(window_idx).base();
         let vm = self.vm_arena.vm(vm_idx);
         for slot in 0..=255u8 {
             if let Some(Cap::Data(d)) = vm.cap_table.get(slot)
-                && d.has_any_mapped()
-                && let Some(base_offset) = d.base_offset
+                && let Some((base_offset, _access)) = d.active_mapping()
             {
                 // SAFETY: wb is from window_pool (valid 4GB window).
                 unsafe {
@@ -1837,17 +1887,15 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         }
     }
 
-    /// Map all of a VM's mapped DATA caps into a window.
+    /// Map all of a VM's currently-mapped DATA caps into a window.
     #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
     fn map_vm_data_caps(&self, vm_idx: u16, window_idx: usize) {
         let wb = self.window_pool.window(window_idx).base();
         let vm = self.vm_arena.vm(vm_idx);
         for slot in 0..=255u8 {
             if let Some(Cap::Data(d)) = vm.cap_table.get(slot)
-                && d.has_any_mapped()
-                && let Some(base_offset) = d.base_offset
+                && let Some((base_offset, access)) = d.active_mapping()
             {
-                let access = d.access.unwrap_or(Access::RO);
                 // SAFETY: wb is from window_pool (valid 4GB window).
                 unsafe {
                     self.backing
@@ -2032,8 +2080,7 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         let mut max_addr: usize = 0;
         for slot in 0..=255u8 {
             if let Some(Cap::Data(d)) = vm.cap_table.get(slot)
-                && d.has_any_mapped()
-                && let Some(base_page) = d.base_offset
+                && let Some((base_page, _access)) = d.active_mapping()
             {
                 let end =
                     (base_page as usize + d.page_count as usize) * crate::PVM_PAGE_SIZE as usize;
@@ -2047,8 +2094,7 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         let window_base = self.active_window_base();
         for slot in 0..=255u8 {
             if let Some(Cap::Data(d)) = vm.cap_table.get(slot)
-                && d.has_any_mapped()
-                && let Some(base_page) = d.base_offset
+                && let Some((base_page, _access)) = d.active_mapping()
             {
                 let addr = base_page as usize * crate::PVM_PAGE_SIZE as usize;
                 let len = d.page_count as usize * crate::PVM_PAGE_SIZE as usize;
@@ -2096,9 +2142,8 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
             let wb = self.active_window_base();
             for slot in 0..=255u8 {
                 if let Some(Cap::Data(d)) = vm_ref.cap_table.get(slot)
-                    && d.has_any_mapped()
-                    && d.access == Some(Access::RW)
-                    && let Some(base_page) = d.base_offset
+                    && let Some((base_page, access)) = d.active_mapping()
+                    && access == Access::RW
                 {
                     let addr = base_page as usize * crate::PVM_PAGE_SIZE as usize;
                     let len = d.page_count as usize * crate::PVM_PAGE_SIZE as usize;
@@ -2346,10 +2391,7 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
             Cap::Data(d) => d,
             _ => return None,
         };
-        let base_page = d.base_offset?;
-        if !d.has_any_mapped() {
-            return None;
-        }
+        let (base_page, _access) = d.active_mapping()?;
         let addr = base_page as usize * crate::PVM_PAGE_SIZE as usize + offset as usize;
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         {
@@ -2397,8 +2439,7 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
             let offset_in_page = (addr % crate::PVM_PAGE_SIZE) as usize;
             for slot in 0..=255u8 {
                 if let Some(Cap::Data(d)) = vm.cap_table.get(slot)
-                    && let Some(base_page) = d.base_offset
-                    && d.has_any_mapped()
+                    && let Some((base_page, _access)) = d.active_mapping()
                     && addr_page >= base_page
                     && addr_page < base_page + d.page_count
                 {
@@ -2426,10 +2467,7 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
                 Some(Cap::Data(d)) => d,
                 _ => return false,
             };
-            match d.base_offset {
-                Some(b) if d.has_any_mapped() => Some((b, d.backing_offset)),
-                _ => None,
-            }
+            d.active_mapping().map(|(b, _)| (b, d.backing_offset))
         };
         let (base_page, backing_offset) = match cap_info {
             Some(info) => info,
@@ -2481,8 +2519,7 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
                 let mut found = None;
                 for slot in 0..=255u8 {
                     if let Some(Cap::Data(d)) = vm.cap_table.get(slot)
-                        && let Some(base_page) = d.base_offset
-                        && d.has_any_mapped()
+                        && let Some((base_page, _access)) = d.active_mapping()
                         && addr_page >= base_page
                         && addr_page < base_page + d.page_count
                     {
@@ -2518,14 +2555,13 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
                 let cg = self.vm_arena.vm(caller_id).gas();
                 self.vm_arena.vm_mut(caller_id).set_gas(cg + unused_gas);
 
-                // Return IPC cap
+                // Return IPC cap (cross-frame MOVE back to caller).
                 if let Some(caller_slot) = frame.ipc_cap_idx
                     && let Some(mut cap) = self.vm_arena.vm_mut(callee_id).cap_table.take(IPC_SLOT)
                 {
-                    if let Some((bp, acc)) = frame.ipc_was_mapped
-                        && let Cap::Data(d) = &mut cap
-                    {
-                        d.map(bp, acc);
+                    if let Cap::Data(ref mut d) = cap {
+                        self.cross_frame_unmap(d);
+                        self.cross_frame_remap(d, caller_id);
                     }
                     self.vm_arena
                         .vm_mut(caller_id)

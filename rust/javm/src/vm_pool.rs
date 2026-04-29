@@ -149,10 +149,10 @@ impl<P: ProtocolCapT> VmInstance<P> {
 pub struct CallFrame {
     /// VM that initiated the CALL.
     pub caller_vm_id: u16,
-    /// Cap slot in the caller that held the IPC DATA cap (for auto-return on REPLY).
+    /// Cap slot in the caller that held the IPC cap (for auto-return on REPLY).
+    /// DataCap auto-remap on the return path is handled by the cap's own
+    /// per-VM `mappings` memory — no snapshot needed here.
     pub ipc_cap_idx: Option<u8>,
-    /// If the IPC DATA cap was mapped, its original mapping state (for auto-remap on REPLY).
-    pub ipc_was_mapped: Option<(u32, crate::cap::Access)>,
 }
 
 /// Errors from VM state transitions.
@@ -180,9 +180,15 @@ pub const MAX_VMS: usize = u16::MAX as usize;
 pub struct VmId(u32);
 
 impl VmId {
-    pub fn new(index: u16, generation: u16) -> Self {
+    pub const fn new(index: u16, generation: u16) -> Self {
         Self((generation as u32) << 16 | index as u32)
     }
+
+    /// The root VM's id — VmArena always assigns this to the first inserted
+    /// VM (index 0, generation 0). Useful during invocation init when the
+    /// kernel needs to record DataCap mappings for VM 0 before the VM
+    /// actually exists in the arena.
+    pub const ROOT: VmId = VmId::new(0, 0);
 
     pub fn index(self) -> u16 {
         self.0 as u16
