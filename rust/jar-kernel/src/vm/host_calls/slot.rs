@@ -1,15 +1,13 @@
 //! Slot host calls (step-3-only): slot_clear, slot_read.
 
-use javm::kernel::InvocationKernel;
-
 use crate::runtime::Hardware;
 use crate::types::{KResult, KernelError, KernelRole, SlotContent};
 use crate::vm::host_abi::*;
 use crate::vm::host_calls::write_window;
-use crate::vm::{HostCallOutcome, InvocationCtx};
+use crate::vm::{HostCallOutcome, InvocationCtx, Vm};
 
 pub fn host_slot_clear<H: Hardware>(
-    _vm: &mut InvocationKernel,
+    _vm: &mut Vm,
     ctx: &mut InvocationCtx<'_, H>,
 ) -> KResult<HostCallOutcome> {
     if !matches!(ctx.role, KernelRole::AggregateMerge) {
@@ -27,7 +25,7 @@ pub fn host_slot_clear<H: Hardware>(
 }
 
 pub fn host_slot_read<H: Hardware>(
-    vm: &mut InvocationKernel,
+    vm: &mut Vm,
     ctx: &mut InvocationCtx<'_, H>,
 ) -> KResult<HostCallOutcome> {
     let out_ptr = vm.active_reg(7) as u32;

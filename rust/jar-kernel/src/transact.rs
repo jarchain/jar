@@ -18,13 +18,13 @@ use crate::types::{
 };
 
 use crate::cap::attest::AttestCursor;
+use crate::cap::{KERNEL_CAP_SLOT, KernelCap};
 use crate::reach::ReachSet;
 use crate::runtime::Hardware;
 use crate::state::cap_registry;
 use crate::state::code_blobs;
 use crate::state::snapshot::StateSnapshot;
-use crate::vm::frame::Frame;
-use crate::vm::{INVOCATION_GAS_BUDGET, InvocationCtx, drive_invocation};
+use crate::vm::{INVOCATION_GAS_BUDGET, InvocationCtx, Vm, drive_invocation};
 
 /// What kind of slot we're running for. Affects whether body events are
 /// consumed and how reach is recorded.
@@ -114,19 +114,22 @@ pub fn run_one_invocation<H: Hardware>(
     // to the InvocationCtx as `&mut`.
     let code_hash = state.vault(target)?.code_hash;
     let blob = code_blobs::resolve_code_blob(state, &code_hash)?.to_vec();
-    let mut vm = javm::kernel::InvocationKernel::new(&blob, payload, INVOCATION_GAS_BUDGET)
+    let mut vm: Vm = Vm::new(&blob, payload, INVOCATION_GAS_BUDGET)
         .map_err(|e| KernelError::Internal(format!("javm init: {:?}", e)))?;
+    populate_host_call_slots(&mut vm);
+    populate_storage_slot(
+        &mut vm, target, /* writable */ true, /* snapshot */ None,
+    );
+
     let mut commands: Vec<Command> = Vec::new();
     let mut reach = ReachSet::default();
     reach.note(target);
     let mut slot_emission = None;
-    let frame = build_invocation_frame(state, target)?;
 
     let mut ctx = InvocationCtx {
         state,
         role: KernelRole::TransactEntry,
         current_vault: target,
-        frame,
         caller: Caller::Kernel(KernelRole::TransactEntry),
         commands: &mut commands,
         reach: &mut reach,
@@ -165,27 +168,51 @@ pub fn run_one_invocation<H: Hardware>(
     }
 }
 
-/// Build the Frame for a Transact / Schedule invocation. Slot 0 holds an
-/// RW Storage cap to the entrypoint Vault's overlay. Real chain authors
-/// decide their own Frame layout via VaultRef.Initialize args.
-fn build_invocation_frame(state: &mut State, vault_id: VaultId) -> KResult<Frame> {
-    use crate::types::{KeyRange, StorageCap, StorageRights};
+/// Populate the kernel's host-call selectors at slots 1..=21 in the
+/// running VM's cap-table. Each slot N holds `KernelCap::HostCall(N)`,
+/// so the guest's `ecalli N` yields `KernelResult::ProtocolCall { slot: N }`
+/// to the host loop.
+pub(crate) fn populate_host_call_slots(vm: &mut Vm) {
+    use crate::vm::host_abi::HostCall;
+    // The current host-call range — see `host_abi::HostCall`. Slot 1
+    // through SlotRead (21).
+    for id in (HostCall::Gas as u8)..=(HostCall::SlotRead as u8) {
+        vm.cap_table_set_original(id, javm::cap::Cap::Protocol(KernelCap::HostCall(id)));
+    }
+}
 
-    let mut frame = Frame::new();
-    let storage_cap = cap_registry::alloc(
-        state,
-        crate::types::CapRecord {
-            cap: Capability::Storage(StorageCap {
-                vault_id,
-                key_range: KeyRange::all(),
-                rights: StorageRights::RW,
-            }),
-            issuer: None,
-            narrowing: Vec::new(),
-        },
+/// Populate the running VM's cap-table at `KERNEL_CAP_SLOT` with the
+/// per-invocation storage cap. Pass `snapshot = Some(root)` for
+/// SnapshotStorage (read-only at a prior root); `None` + `writable`
+/// for an in-progress overlay Storage cap.
+pub(crate) fn populate_storage_slot(
+    vm: &mut Vm,
+    vault_id: VaultId,
+    writable: bool,
+    snapshot: Option<crate::types::Hash>,
+) {
+    use crate::types::{KeyRange, SnapshotStorageCap, StorageCap, StorageRights};
+    let cap = if let Some(root) = snapshot {
+        Capability::SnapshotStorage(SnapshotStorageCap {
+            vault_id,
+            key_range: KeyRange::all(),
+            root,
+        })
+    } else {
+        Capability::Storage(StorageCap {
+            vault_id,
+            key_range: KeyRange::all(),
+            rights: if writable {
+                StorageRights::RW
+            } else {
+                StorageRights::RO
+            },
+        })
+    };
+    vm.cap_table_set(
+        KERNEL_CAP_SLOT,
+        javm::cap::Cap::Protocol(KernelCap::Cap(cap)),
     );
-    frame.set(0, storage_cap);
-    Ok(frame)
 }
 
 /// Run the entire transact phase. Walks σ.transact_space_cnode in slot

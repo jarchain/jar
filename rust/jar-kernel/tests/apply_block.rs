@@ -136,7 +136,12 @@ fn transact_event_with_unconsumed_attestation_trace_faults() {
 }
 
 #[test]
-fn state_root_advances_with_schedule_slots_firing() {
+fn state_root_stable_when_schedule_slots_only_halt() {
+    // Halt-blob Schedule slots don't mutate σ. Storage caps live in the
+    // running VM's cap-table (not the persistent cap-registry), so
+    // ephemeral Frame setup no longer perturbs σ. The state-root is
+    // stable across a body-less block whose only effect is firing the
+    // three halt-blob Schedule slots in σ.transact_space_cnode.
     let mut k = build_kernel();
     let pre_root = k.state_root();
     let block = Block {
@@ -146,7 +151,7 @@ fn state_root_advances_with_schedule_slots_firing() {
     let out = k.advance(Some(block)).unwrap();
     assert!(matches!(out.block_outcome, BlockOutcome::Accepted));
     let post_root = k.state_root();
-    assert_ne!(pre_root, post_root);
+    assert_eq!(pre_root, post_root);
     assert_eq!(out.state_root, post_root);
 }
 

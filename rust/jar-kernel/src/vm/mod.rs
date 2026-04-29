@@ -1,4 +1,4 @@
-//! Invocation driver for `javm::kernel::InvocationKernel`.
+//! Invocation driver for `javm::kernel::InvocationKernel<KernelCap>`.
 //!
 //! `drive_invocation` runs a real PVM VM until terminal (Halt / Panic /
 //! PageFault / OutOfGas), routing every `ProtocolCall(slot)` through
@@ -11,20 +11,24 @@
 //! own DATA caps. The kernel routes through `read_data_cap_window` /
 //! `write_data_cap_window`; failures are guest-driven faults, not kernel
 //! errors.
+//!
+//! Per-invocation kernel caps (Storage, SnapshotStorage) live in the
+//! running VM's javm cap-table at `KERNEL_CAP_SLOT`. Host calls fetch
+//! them via `vm.cap_table_get(slot)`. There is no separate kernel-side
+//! `Frame` struct any more.
 
 use crate::types::{
     AttestationEntry, Caller, Command, KResult, KernelError, KernelRole, ResultEntry, SlotContent,
     State, VaultId,
 };
 
-pub mod frame;
 pub mod host_abi;
 pub mod host_calls;
 
+use crate::cap::KernelCap;
 use crate::cap::attest::AttestCursor;
 use crate::reach::ReachSet;
 use crate::runtime::Hardware;
-use crate::vm::frame::Frame;
 use crate::vm::host_abi::HostCall;
 
 /// Default per-invocation gas budget. javm charges per instruction and per
@@ -33,17 +37,20 @@ use crate::vm::host_abi::HostCall;
 // TODO(spec): per-event gas budget should come from Event/cap.
 pub const INVOCATION_GAS_BUDGET: u64 = 100_000_000;
 
+/// Convenience alias: the `InvocationKernel` parameterized over the
+/// kernel's protocol-cap payload.
+pub type Vm = javm::kernel::InvocationKernel<KernelCap>;
+
 /// Per-invocation kernel-side context. Carried by reference into every
 /// host-call handler.
 ///
-/// Storage authority is encoded in the `Frame`'s caps. Transact / Schedule
-/// frames carry `Storage` (overlay) caps; Dispatch step-2/3 frames carry
-/// `SnapshotStorage` caps.
+/// Storage authority is encoded in the running VM's cap-table:
+/// Transact / Schedule invocations place `Storage` (overlay) caps;
+/// Dispatch step-2/3 invocations place `SnapshotStorage` caps.
 pub struct InvocationCtx<'a, H: Hardware> {
     pub state: &'a mut State,
     pub role: KernelRole,
     pub current_vault: VaultId,
-    pub frame: Frame,
     pub caller: Caller,
     pub commands: &'a mut Vec<Command>,
     pub reach: &'a mut ReachSet,
@@ -96,7 +103,7 @@ pub enum HostCallOutcome {
 /// Drive a real javm VM to a terminal state, routing each ProtocolCall to
 /// the kernel's host-call dispatcher.
 pub fn drive_invocation<H: Hardware>(
-    vm: &mut javm::kernel::InvocationKernel,
+    vm: &mut Vm,
     ctx: &mut InvocationCtx<'_, H>,
 ) -> KResult<InvocationResult> {
     loop {

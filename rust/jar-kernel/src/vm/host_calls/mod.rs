@@ -16,18 +16,27 @@ pub mod cnode;
 pub mod slot;
 pub mod storage;
 
-use javm::kernel::InvocationKernel;
-
+use crate::cap::KernelCap;
 use crate::runtime::Hardware;
-use crate::types::{Caller, KResult, KernelRole};
+use crate::types::{Caller, Capability, KResult, KernelRole};
 use crate::vm::host_abi::*;
-use crate::vm::{HostCallOutcome, InvocationCtx};
+use crate::vm::{HostCallOutcome, InvocationCtx, Vm};
+
+/// Fetch the kernel `Capability` value held at `slot` in the running
+/// VM's cap-table, if any. Returns `None` for empty slots, host-call
+/// selector slots (`KernelCap::HostCall`), or non-Protocol caps.
+pub(crate) fn fetch_kernel_cap(vm: &Vm, slot: u8) -> Option<&Capability> {
+    match vm.cap_table_get(slot) {
+        Some(javm::cap::Cap::Protocol(KernelCap::Cap(c))) => Some(c),
+        _ => None,
+    }
+}
 
 /// Top-level host-call dispatcher. Returns the action the driver should
 /// take next: resume the VM with `(r0, r1)` or fault the invocation.
 pub fn dispatch_host_call<H: Hardware>(
     call: HostCall,
-    vm: &mut InvocationKernel,
+    vm: &mut Vm,
     ctx: &mut InvocationCtx<'_, H>,
 ) -> KResult<HostCallOutcome> {
     match call {
@@ -59,12 +68,7 @@ pub fn dispatch_host_call<H: Hardware>(
 }
 
 /// Read a guest memory window or return a guest fault outcome.
-pub(crate) fn read_window(
-    vm: &InvocationKernel,
-    addr: u32,
-    len: u32,
-    what: &str,
-) -> Result<Vec<u8>, String> {
+pub(crate) fn read_window(vm: &Vm, addr: u32, len: u32, what: &str) -> Result<Vec<u8>, String> {
     if len == 0 {
         return Ok(Vec::new());
     }
@@ -73,12 +77,7 @@ pub(crate) fn read_window(
 }
 
 /// Write to a guest memory window or return a guest fault outcome.
-pub(crate) fn write_window(
-    vm: &mut InvocationKernel,
-    addr: u32,
-    data: &[u8],
-    what: &str,
-) -> Result<(), String> {
+pub(crate) fn write_window(vm: &mut Vm, addr: u32, data: &[u8], what: &str) -> Result<(), String> {
     if data.is_empty() {
         return Ok(());
     }

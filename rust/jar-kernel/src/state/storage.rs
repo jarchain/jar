@@ -15,18 +15,10 @@ use std::sync::Arc;
 
 use crate::types::{Capability, KResult, KernelError, State, StorageRights, VaultId};
 
-use crate::state::cap_registry;
-
 /// Resolve a storage-class cap and check rights + key coverage. Returns the
 /// underlying `vault_id` if the cap is well-formed for `need`.
-fn resolve_storage(
-    state: &State,
-    storage_cap: crate::types::CapId,
-    key: &[u8],
-    need: StorageRights,
-) -> KResult<VaultId> {
-    let record = cap_registry::lookup(state, storage_cap)?;
-    match &record.cap {
+fn resolve_storage(cap: &Capability, key: &[u8], need: StorageRights) -> KResult<VaultId> {
+    match cap {
         Capability::Storage(c) => {
             if need.read && !c.rights.read {
                 return Err(KernelError::Internal("Storage cap lacks Read".into()));
@@ -60,26 +52,17 @@ fn resolve_storage(
     }
 }
 
-/// `storage_read(storage_cap, key) -> Option<Vec<u8>>`.
-pub fn storage_read(
-    state: &State,
-    storage_cap: crate::types::CapId,
-    key: &[u8],
-) -> KResult<Option<Vec<u8>>> {
-    let vault_id = resolve_storage(state, storage_cap, key, StorageRights::RO)?;
+/// `storage_read(cap, key) -> Option<Vec<u8>>`.
+pub fn storage_read(state: &State, cap: &Capability, key: &[u8]) -> KResult<Option<Vec<u8>>> {
+    let vault_id = resolve_storage(cap, key, StorageRights::RO)?;
     let vault = state.vault(vault_id)?;
     Ok(vault.storage.get(key).cloned())
 }
 
-/// `storage_write(storage_cap, key, value)` — quota-checked. Requires a
-/// `Storage` cap with write rights; rejects `SnapshotStorage`.
-pub fn storage_write(
-    state: &mut State,
-    storage_cap: crate::types::CapId,
-    key: &[u8],
-    value: &[u8],
-) -> KResult<()> {
-    let vault_id = resolve_storage(state, storage_cap, key, StorageRights::RW)?;
+/// `storage_write(cap, key, value)` — quota-checked. Requires a `Storage`
+/// cap with write rights; rejects `SnapshotStorage`.
+pub fn storage_write(state: &mut State, cap: &Capability, key: &[u8], value: &[u8]) -> KResult<()> {
+    let vault_id = resolve_storage(cap, key, StorageRights::RW)?;
     let vault_arc = state
         .vaults
         .get(&vault_id)
@@ -123,13 +106,9 @@ pub fn storage_write(
     Ok(())
 }
 
-/// `storage_delete(storage_cap, key)` — refunds quota.
-pub fn storage_delete(
-    state: &mut State,
-    storage_cap: crate::types::CapId,
-    key: &[u8],
-) -> KResult<()> {
-    let vault_id = resolve_storage(state, storage_cap, key, StorageRights::RW)?;
+/// `storage_delete(cap, key)` — refunds quota.
+pub fn storage_delete(state: &mut State, cap: &Capability, key: &[u8]) -> KResult<()> {
+    let vault_id = resolve_storage(cap, key, StorageRights::RW)?;
     let vault_arc = state
         .vaults
         .get(&vault_id)

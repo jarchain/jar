@@ -1,27 +1,23 @@
 //! AttestationCap and ResultCap host calls.
 
-use javm::kernel::InvocationKernel;
-
 use crate::cap::attest;
 use crate::runtime::Hardware;
-use crate::state::cap_registry;
 use crate::types::{AttestationScope, Capability, KResult, KernelError, ResultEntry};
 use crate::vm::host_abi::*;
-use crate::vm::host_calls::{read_window, write_window};
-use crate::vm::{HostCallOutcome, InvocationCtx};
+use crate::vm::host_calls::{fetch_kernel_cap, read_window, write_window};
+use crate::vm::{HostCallOutcome, InvocationCtx, Vm};
 
 pub fn host_attest<H: Hardware>(
-    vm: &mut InvocationKernel,
+    vm: &mut Vm,
     ctx: &mut InvocationCtx<'_, H>,
 ) -> KResult<HostCallOutcome> {
-    let cap_fs = vm.active_reg(7) as u8;
+    let cap_slot = vm.active_reg(7) as u8;
     let blob_ptr = vm.active_reg(8) as u32;
     let blob_len = vm.active_reg(9) as u32;
-    let cap_id = match ctx.frame.get(cap_fs) {
-        Some(c) => c,
+    let cap = match fetch_kernel_cap(vm, cap_slot) {
+        Some(c) => c.clone(),
         None => return Ok(HostCallOutcome::Resume(RC_BAD_CAP, 0)),
     };
-    let cap = cap_registry::lookup(ctx.state, cap_id)?.cap.clone();
     let blob_owned = if blob_len > 0 {
         match read_window(vm, blob_ptr, blob_len, "attest blob") {
             Ok(b) => Some(b),
@@ -58,16 +54,15 @@ pub fn host_attest<H: Hardware>(
 }
 
 pub fn host_attestation_key<H: Hardware>(
-    vm: &mut InvocationKernel,
-    ctx: &mut InvocationCtx<'_, H>,
+    vm: &mut Vm,
+    _ctx: &mut InvocationCtx<'_, H>,
 ) -> KResult<HostCallOutcome> {
-    let cap_fs = vm.active_reg(7) as u8;
+    let cap_slot = vm.active_reg(7) as u8;
     let out_ptr = vm.active_reg(8) as u32;
-    let cap_id = match ctx.frame.get(cap_fs) {
-        Some(c) => c,
+    let cap = match fetch_kernel_cap(vm, cap_slot) {
+        Some(c) => c.clone(),
         None => return Ok(HostCallOutcome::Resume(RC_BAD_CAP, 0)),
     };
-    let cap = cap_registry::lookup(ctx.state, cap_id)?.cap.clone();
     let key = attest::key_of(&cap)?;
     let key_bytes = key.as_ref().to_vec();
     let key_len = key_bytes.len() as u64;
@@ -78,7 +73,7 @@ pub fn host_attestation_key<H: Hardware>(
 }
 
 pub fn host_result_equal<H: Hardware>(
-    vm: &mut InvocationKernel,
+    vm: &mut Vm,
     ctx: &mut InvocationCtx<'_, H>,
 ) -> KResult<HostCallOutcome> {
     let blob_ptr = vm.active_reg(7) as u32;

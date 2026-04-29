@@ -30,8 +30,8 @@ use crate::reach::ReachSet;
 use crate::runtime::{Hardware, NodeOffchain};
 use crate::state::cap_registry;
 use crate::state::code_blobs;
-use crate::vm::frame::Frame;
-use crate::vm::{INVOCATION_GAS_BUDGET, InvocationCtx, drive_invocation};
+use crate::transact::{populate_host_call_slots, populate_storage_slot};
+use crate::vm::{INVOCATION_GAS_BUDGET, InvocationCtx, Vm, drive_invocation};
 
 #[derive(Debug, Default)]
 pub struct InboundOutcome {
@@ -80,14 +80,14 @@ pub fn handle_inbound_dispatch<H: Hardware>(
     reach.note(entrypoint);
 
     // The dispatch pipeline runs against a kernel-side clone of σ — RO at
-    // the protocol level; mutations are discarded after step-3. The frame's
-    // cap is `SnapshotStorage` rooted at the kernel's current state-root.
+    // the protocol level; mutations are discarded after step-3. Each
+    // running VM gets a `SnapshotStorage` cap at `KERNEL_CAP_SLOT` rooted
+    // at the kernel's current state-root.
     let mut state_clone = state.clone();
     let prior_root = crate::state::state_root::state_root(state);
     let mut attestation_trace: Vec<AttestationEntry> = event.attestation_trace.clone();
     let mut result_trace: Vec<ResultEntry> = event.result_trace.clone();
     let mut cursor = AttestCursor::default();
-    let frame = build_dispatch_frame(&mut state_clone, entrypoint, &event.caps, prior_root)?;
 
     // Resolve the entrypoint blob (same blob runs both phases). Use
     // `code_cache` so the second phase reuses the first phase's compile.
@@ -103,7 +103,6 @@ pub fn handle_inbound_dispatch<H: Hardware>(
             state: &mut state_clone,
             role: KernelRole::AggregateStandalone,
             current_vault: entrypoint,
-            frame: frame.clone(),
             caller: Caller::Kernel(KernelRole::AggregateStandalone),
             commands: &mut commands,
             reach: &mut reach,
@@ -114,13 +113,15 @@ pub fn handle_inbound_dispatch<H: Hardware>(
             prev_slot: None,
             hw,
         };
-        let mut vm = javm::kernel::InvocationKernel::new_cached(
+        let mut vm: Vm = Vm::new_cached(
             &blob,
             &event.payload,
             INVOCATION_GAS_BUDGET,
             &mut node.code_cache,
         )
         .map_err(|e| KernelError::Internal(format!("javm init step-2: {:?}", e)))?;
+        populate_host_call_slots(&mut vm);
+        populate_storage_slot(&mut vm, entrypoint, false, Some(prior_root));
         vm.set_active_reg(7, 0);
         let _ = drive_invocation(&mut vm, &mut ctx)?;
     }
@@ -139,7 +140,6 @@ pub fn handle_inbound_dispatch<H: Hardware>(
             state: &mut state_clone,
             role: KernelRole::AggregateMerge,
             current_vault: entrypoint,
-            frame: frame.clone(),
             caller: Caller::Kernel(KernelRole::AggregateMerge),
             commands: &mut commands,
             reach: &mut reach,
@@ -150,13 +150,15 @@ pub fn handle_inbound_dispatch<H: Hardware>(
             prev_slot: Some(&prev_slot_owned),
             hw,
         };
-        let mut vm = javm::kernel::InvocationKernel::new_cached(
+        let mut vm: Vm = Vm::new_cached(
             &blob,
             &event.payload,
             INVOCATION_GAS_BUDGET,
             &mut node.code_cache,
         )
         .map_err(|e| KernelError::Internal(format!("javm init step-3: {:?}", e)))?;
+        populate_host_call_slots(&mut vm);
+        populate_storage_slot(&mut vm, entrypoint, false, Some(prior_root));
         vm.set_active_reg(7, 1);
         let _ = drive_invocation(&mut vm, &mut ctx)?;
     }
@@ -185,31 +187,4 @@ pub fn handle_inbound_dispatch<H: Hardware>(
         commands,
         slot_changed: changed,
     })
-}
-
-/// Frame for a Dispatch invocation. Slot 0: a SnapshotStorage cap rooted at
-/// `prior_root`, RO by construction. Slot 1+: opaque caps from the inbound
-/// event (placeholder — wire-side caps aren't yet de-serialized).
-fn build_dispatch_frame(
-    state: &mut State,
-    vault_id: VaultId,
-    _caps: &[u8],
-    prior_root: crate::types::Hash,
-) -> KResult<Frame> {
-    use crate::types::{KeyRange, SnapshotStorageCap};
-    let mut frame = Frame::new();
-    let storage_cap = cap_registry::alloc(
-        state,
-        crate::types::CapRecord {
-            cap: Capability::SnapshotStorage(SnapshotStorageCap {
-                vault_id,
-                key_range: KeyRange::all(),
-                root: prior_root,
-            }),
-            issuer: None,
-            narrowing: Vec::new(),
-        },
-    );
-    frame.set(0, storage_cap);
-    Ok(frame)
 }
