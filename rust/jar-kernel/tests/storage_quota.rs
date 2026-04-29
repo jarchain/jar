@@ -7,7 +7,8 @@ use std::sync::Arc;
 
 use jar_kernel::state::storage;
 use jar_kernel::{
-    CapRecord, Capability, Hash, KernelError, KeyRange, State, StorageRights, Vault, VaultId,
+    CapRecord, Capability, Hash, KernelError, KeyRange, SnapshotStorageCap, State, StorageCap,
+    StorageRights, Vault, VaultId,
 };
 
 fn setup() -> (State, VaultId, jar_kernel::CapId) {
@@ -20,11 +21,11 @@ fn setup() -> (State, VaultId, jar_kernel::CapId) {
     let cap = jar_kernel::state::cap_registry::alloc(
         &mut s,
         CapRecord {
-            cap: Capability::Storage {
+            cap: Capability::Storage(StorageCap {
                 vault_id: id,
                 key_range: KeyRange::all(),
                 rights: StorageRights::RW,
-            },
+            }),
             issuer: None,
             narrowing: vec![],
         },
@@ -51,11 +52,11 @@ fn snapshot_storage_blocks_writes() {
     let cap = jar_kernel::state::cap_registry::alloc(
         &mut s,
         CapRecord {
-            cap: Capability::SnapshotStorage {
+            cap: Capability::SnapshotStorage(SnapshotStorageCap {
                 vault_id: id,
                 key_range: KeyRange::all(),
                 root: Hash::ZERO,
-            },
+            }),
             issuer: None,
             narrowing: vec![],
         },
@@ -81,11 +82,11 @@ fn read_only_storage_cap_blocks_writes() {
     let cap = jar_kernel::state::cap_registry::alloc(
         &mut s,
         CapRecord {
-            cap: Capability::Storage {
+            cap: Capability::Storage(StorageCap {
                 vault_id: id,
                 key_range: KeyRange::all(),
                 rights: StorageRights::RO,
-            },
+            }),
             issuer: None,
             narrowing: vec![],
         },

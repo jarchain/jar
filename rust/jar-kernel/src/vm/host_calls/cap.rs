@@ -7,8 +7,8 @@ use crate::cap::pinning;
 use crate::runtime::Hardware;
 use crate::state::cap_registry;
 use crate::types::{
-    CapId, CapRecord, Capability, Command, KResult, KernelError, KernelRole, ResourceKind,
-    SlotContent,
+    CapId, CapRecord, Capability, Command, DispatchCap, DispatchRefCap, KResult, KernelError,
+    KernelRole, ResourceCap, ResourceKind, SlotContent, TransactCap, TransactRefCap, VaultRefCap,
 };
 use crate::vm::host_abi::*;
 use crate::vm::host_calls::read_window;
@@ -38,69 +38,69 @@ pub fn host_cap_derive<H: Hardware>(
     let src_record = cap_registry::lookup(ctx.state, src_cap)?.clone();
     // Compute the new capability shape (kernel chooses based on src + mode).
     let (new_cap, dest_persistent) = match (&src_record.cap, mode) {
-        (Capability::Dispatch { vault_id, .. }, 0) => (
-            Capability::DispatchRef {
-                vault_id: *vault_id,
-            },
+        (Capability::Dispatch(c), 0) => (
+            Capability::DispatchRef(DispatchRefCap {
+                vault_id: c.vault_id,
+            }),
             false,
         ),
-        (Capability::Dispatch { vault_id, .. }, 1) => {
+        (Capability::Dispatch(c), 1) => {
             let dest_cnode_cap = match ctx.frame.get(dest_cnode_fs) {
                 Some(c) => c,
                 None => return Ok(HostCallOutcome::Resume(RC_BAD_CAP, 0)),
             };
             let dest_cnode_id = match &cap_registry::lookup(ctx.state, dest_cnode_cap)?.cap {
-                Capability::CNode { cnode_id } => *cnode_id,
+                Capability::CNode(c) => c.cnode_id,
                 _ => return Ok(HostCallOutcome::Resume(RC_BAD_CAP, 0)),
             };
             (
-                Capability::Dispatch {
-                    vault_id: *vault_id,
+                Capability::Dispatch(DispatchCap {
+                    vault_id: c.vault_id,
                     born_in: dest_cnode_id,
-                },
+                }),
                 true,
             )
         }
-        (Capability::Transact { vault_id, .. }, 0) => (
-            Capability::TransactRef {
-                vault_id: *vault_id,
-            },
+        (Capability::Transact(c), 0) => (
+            Capability::TransactRef(TransactRefCap {
+                vault_id: c.vault_id,
+            }),
             false,
         ),
-        (Capability::Transact { vault_id, .. }, 1) => {
+        (Capability::Transact(c), 1) => {
             let dest_cnode_cap = match ctx.frame.get(dest_cnode_fs) {
                 Some(c) => c,
                 None => return Ok(HostCallOutcome::Resume(RC_BAD_CAP, 0)),
             };
             let dest_cnode_id = match &cap_registry::lookup(ctx.state, dest_cnode_cap)?.cap {
-                Capability::CNode { cnode_id } => *cnode_id,
+                Capability::CNode(c) => c.cnode_id,
                 _ => return Ok(HostCallOutcome::Resume(RC_BAD_CAP, 0)),
             };
             (
-                Capability::Transact {
-                    vault_id: *vault_id,
+                Capability::Transact(TransactCap {
+                    vault_id: c.vault_id,
                     born_in: dest_cnode_id,
-                },
+                }),
                 true,
             )
         }
-        (Capability::DispatchRef { vault_id }, 0) => (
-            Capability::DispatchRef {
-                vault_id: *vault_id,
-            },
+        (Capability::DispatchRef(c), 0) => (
+            Capability::DispatchRef(DispatchRefCap {
+                vault_id: c.vault_id,
+            }),
             false,
         ),
-        (Capability::TransactRef { vault_id }, 0) => (
-            Capability::TransactRef {
-                vault_id: *vault_id,
-            },
+        (Capability::TransactRef(c), 0) => (
+            Capability::TransactRef(TransactRefCap {
+                vault_id: c.vault_id,
+            }),
             false,
         ),
-        (Capability::VaultRef { vault_id, rights }, _) => (
-            Capability::VaultRef {
-                vault_id: *vault_id,
-                rights: *rights,
-            },
+        (Capability::VaultRef(c), _) => (
+            Capability::VaultRef(VaultRefCap {
+                vault_id: c.vault_id,
+                rights: c.rights,
+            }),
             mode == 1,
         ),
         _ => return Ok(HostCallOutcome::Resume(RC_BAD_CAP, 0)),
@@ -148,12 +148,23 @@ pub fn host_cap_call<H: Hardware>(
         arg_caps.push(cid);
     }
 
+    let dispatch_target = match &cap {
+        Capability::Dispatch(c) => Some(c.vault_id),
+        Capability::DispatchRef(c) => Some(c.vault_id),
+        _ => None,
+    };
+    let transact_target = match &cap {
+        Capability::Transact(c) => Some(c.vault_id),
+        Capability::TransactRef(c) => Some(c.vault_id),
+        _ => None,
+    };
     match cap {
-        Capability::VaultRef { rights, .. } if rights.initialize => {
+        Capability::VaultRef(c) if c.rights.initialize => {
             // Sub-CALL stub. No arg-scan for sub-CALLs.
             Ok(HostCallOutcome::Resume(RC_UNIMPLEMENTED, 0))
         }
-        Capability::Dispatch { vault_id, .. } | Capability::DispatchRef { vault_id } => {
+        _ if dispatch_target.is_some() => {
+            let vault_id = dispatch_target.unwrap();
             pinning::arg_scan(ctx.state, &arg_caps)?;
             if matches!(ctx.role, KernelRole::AggregateMerge) && vault_id == ctx.current_vault {
                 if ctx.slot_emission.is_some() {
@@ -176,7 +187,8 @@ pub fn host_cap_call<H: Hardware>(
             });
             Ok(HostCallOutcome::Resume(RC_OK, 0))
         }
-        Capability::Transact { vault_id, .. } | Capability::TransactRef { vault_id } => {
+        _ if transact_target.is_some() => {
+            let vault_id = transact_target.unwrap();
             pinning::arg_scan(ctx.state, &arg_caps)?;
             if matches!(ctx.role, KernelRole::AggregateMerge) {
                 if ctx.slot_emission.is_some() {
@@ -200,7 +212,7 @@ pub fn host_cap_call<H: Hardware>(
             });
             Ok(HostCallOutcome::Resume(RC_OK, 0))
         }
-        Capability::Schedule { .. } => Ok(HostCallOutcome::Resume(RC_BAD_CAP, 0)),
+        Capability::Schedule(_) => Ok(HostCallOutcome::Resume(RC_BAD_CAP, 0)),
         _ => Ok(HostCallOutcome::Resume(RC_BAD_CAP, 0)),
     }
 }
@@ -234,10 +246,10 @@ pub fn host_create_vault<H: Hardware>(
         None => return Ok(HostCallOutcome::Resume(RC_BAD_CAP, 0)),
     };
     let (quota_items, quota_bytes) = match &cap_registry::lookup(ctx.state, res_cap_id)?.cap {
-        Capability::Resource(ResourceKind::CreateVault {
+        Capability::Resource(ResourceCap(ResourceKind::CreateVault {
             quota_items,
             quota_bytes,
-        }) => (*quota_items, *quota_bytes),
+        })) => (*quota_items, *quota_bytes),
         _ => return Ok(HostCallOutcome::Resume(RC_BAD_CAP, 0)),
     };
     let code_hash_bytes = match read_window(vm, code_hash_ptr, 32, "create_vault code_hash") {
@@ -259,10 +271,10 @@ pub fn host_create_vault<H: Hardware>(
     let cap_id = cap_registry::alloc(
         ctx.state,
         CapRecord {
-            cap: Capability::VaultRef {
+            cap: Capability::VaultRef(VaultRefCap {
                 vault_id: new_vault_id,
                 rights: crate::types::VaultRights::ALL,
-            },
+            }),
             issuer: Some(res_cap_id),
             narrowing: Vec::new(),
         },
@@ -283,7 +295,7 @@ pub fn host_quota_set<H: Hardware>(
         None => return Ok(HostCallOutcome::Resume(RC_BAD_CAP, 0)),
     };
     let target = match &cap_registry::lookup(ctx.state, res_cap_id)?.cap {
-        Capability::Resource(ResourceKind::SetQuota { target }) => *target,
+        Capability::Resource(ResourceCap(ResourceKind::SetQuota { target })) => *target,
         _ => return Ok(HostCallOutcome::Resume(RC_BAD_CAP, 0)),
     };
     let arc = ctx

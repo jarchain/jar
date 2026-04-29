@@ -51,7 +51,7 @@ pub fn handle_inbound_dispatch<H: Hardware>(
 ) -> KResult<InboundOutcome> {
     // Validate entrypoint is reachable via dispatch_space_cnode (top-level).
     let cnode_id = match &cap_registry::lookup(state, state.dispatch_space_cnode)?.cap {
-        Capability::CNode { cnode_id } => *cnode_id,
+        Capability::CNode(c) => c.cnode_id,
         _ => {
             return Err(KernelError::Internal(
                 "dispatch_space_cnode is not a CNode cap".into(),
@@ -61,8 +61,8 @@ pub fn handle_inbound_dispatch<H: Hardware>(
     let cn = state.cnode(cnode_id)?;
     let mut found = false;
     for (_, cap_id) in cn.iter() {
-        if let Capability::Dispatch { vault_id, .. } = cap_registry::lookup(state, cap_id)?.cap
-            && vault_id == entrypoint
+        if let Capability::Dispatch(d) = cap_registry::lookup(state, cap_id)?.cap
+            && d.vault_id == entrypoint
         {
             found = true;
             break;
@@ -196,16 +196,16 @@ fn build_dispatch_frame(
     _caps: &[u8],
     prior_root: crate::types::Hash,
 ) -> KResult<Frame> {
-    use crate::types::KeyRange;
+    use crate::types::{KeyRange, SnapshotStorageCap};
     let mut frame = Frame::new();
     let storage_cap = cap_registry::alloc(
         state,
         crate::types::CapRecord {
-            cap: Capability::SnapshotStorage {
+            cap: Capability::SnapshotStorage(SnapshotStorageCap {
                 vault_id,
                 key_range: KeyRange::all(),
                 root: prior_root,
-            },
+            }),
             issuer: None,
             narrowing: Vec::new(),
         },

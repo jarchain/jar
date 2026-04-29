@@ -8,19 +8,20 @@
 pub(crate) use std::collections::BTreeMap;
 
 mod block;
-mod cap;
 mod runtime;
 mod slot;
 mod trace;
 
 pub use block::*;
-pub use cap::*;
 pub use runtime::*;
 pub use slot::*;
 pub use trace::*;
 
 // State + Vault + IdCounters live in `crate::state`.
 pub use crate::state::{IdCounters, State, Vault};
+
+// Capability variants + helper types live in `crate::cap`.
+pub use crate::cap::capability::*;
 
 /// 32-byte hash. Used for state roots, blob hashes, and code hashes. The
 /// chain commits to a single hash function (blake2b-256) at the protocol

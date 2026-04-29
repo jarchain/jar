@@ -38,7 +38,7 @@ pub enum SlotKind {
 /// (Schedule slots are not returned.)
 pub fn transact_entrypoints(state: &State) -> KResult<Vec<VaultId>> {
     let cnode_id = match &cap_registry::lookup(state, state.transact_space_cnode)?.cap {
-        Capability::CNode { cnode_id } => *cnode_id,
+        Capability::CNode(c) => c.cnode_id,
         _ => {
             return Err(KernelError::Internal(
                 "transact_space_cnode is not a CNode cap".into(),
@@ -48,8 +48,8 @@ pub fn transact_entrypoints(state: &State) -> KResult<Vec<VaultId>> {
     let cnode = state.cnode(cnode_id)?;
     let mut entrypoints = Vec::new();
     for (_slot, cap_id) in cnode.iter() {
-        if let Capability::Transact { vault_id, .. } = cap_registry::lookup(state, cap_id)?.cap {
-            entrypoints.push(vault_id);
+        if let Capability::Transact(c) = cap_registry::lookup(state, cap_id)?.cap {
+            entrypoints.push(c.vault_id);
         }
     }
     Ok(entrypoints)
@@ -59,7 +59,7 @@ pub fn transact_entrypoints(state: &State) -> KResult<Vec<VaultId>> {
 /// `(slot_idx, kind, vault_id)` tuples.
 pub fn schedule_walk(state: &State) -> KResult<Vec<(u8, SlotKind, VaultId)>> {
     let cnode_id = match &cap_registry::lookup(state, state.transact_space_cnode)?.cap {
-        Capability::CNode { cnode_id } => *cnode_id,
+        Capability::CNode(c) => c.cnode_id,
         _ => {
             return Err(KernelError::Internal(
                 "transact_space_cnode is not a CNode cap".into(),
@@ -70,11 +70,11 @@ pub fn schedule_walk(state: &State) -> KResult<Vec<(u8, SlotKind, VaultId)>> {
     let mut walk = Vec::new();
     for (slot_idx, cap_id) in cnode.iter() {
         match cap_registry::lookup(state, cap_id)?.cap {
-            Capability::Transact { vault_id, .. } => {
-                walk.push((slot_idx, SlotKind::Transact, vault_id));
+            Capability::Transact(c) => {
+                walk.push((slot_idx, SlotKind::Transact, c.vault_id));
             }
-            Capability::Schedule { vault_id, .. } => {
-                walk.push((slot_idx, SlotKind::Schedule, vault_id));
+            Capability::Schedule(c) => {
+                walk.push((slot_idx, SlotKind::Schedule, c.vault_id));
             }
             _ => {
                 return Err(KernelError::Internal(format!(
@@ -169,17 +169,17 @@ pub fn run_one_invocation<H: Hardware>(
 /// RW Storage cap to the entrypoint Vault's overlay. Real chain authors
 /// decide their own Frame layout via VaultRef.Initialize args.
 fn build_invocation_frame(state: &mut State, vault_id: VaultId) -> KResult<Frame> {
-    use crate::types::{KeyRange, StorageRights};
+    use crate::types::{KeyRange, StorageCap, StorageRights};
 
     let mut frame = Frame::new();
     let storage_cap = cap_registry::alloc(
         state,
         crate::types::CapRecord {
-            cap: Capability::Storage {
+            cap: Capability::Storage(StorageCap {
                 vault_id,
                 key_range: KeyRange::all(),
                 rights: StorageRights::RW,
-            },
+            }),
             issuer: None,
             narrowing: Vec::new(),
         },

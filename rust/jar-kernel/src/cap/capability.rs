@@ -1,0 +1,329 @@
+//! Capability variants.
+//!
+//! Per spec §01: capabilities are the kernel's authority primitive. They
+//! live in CNode slots (persistent) or Frames (ephemeral). Two pinned
+//! variants (Dispatch / Transact) carry a `born_in` CNode and may not move
+//! across CNodes; their ephemeral counterparts (DispatchRef / TransactRef)
+//! live only in Frames and are derived from a pinned source.
+//!
+//! Each variant is a named struct so generic code can pass a variant by
+//! reference (e.g. `&DispatchCap`). The `Capability` enum wraps them as a
+//! sum type.
+
+use crate::types::{CNodeId, CapId, Hash, KeyId, VaultId};
+
+// -----------------------------------------------------------------------------
+// Per-variant structs
+// -----------------------------------------------------------------------------
+
+/// Owner cap; immovable to a Frame; may not be granted to another CNode.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct VaultCap {
+    pub vault_id: VaultId,
+}
+
+/// Callable handle for `vault_initialize`; may also gate slot mutation
+/// (Grant / Revoke) on the target Vault.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct VaultRefCap {
+    pub vault_id: VaultId,
+    pub rights: VaultRights,
+}
+
+/// Persistent Dispatch entrypoint cap; pinned to `born_in`.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct DispatchCap {
+    pub vault_id: VaultId,
+    pub born_in: CNodeId,
+}
+
+/// Persistent Transact entrypoint cap; pinned to `born_in`.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct TransactCap {
+    pub vault_id: VaultId,
+    pub born_in: CNodeId,
+}
+
+/// Persistent Schedule entrypoint cap; pinned to `born_in`. Kernel-fired
+/// once per block at this slot's position in σ.transact_space_cnode, with
+/// no body event input. Used for chain-author block_init / block_final /
+/// consensus / cleanup hooks. Never `cap_call`'d by userspace; not
+/// derivable to a callable ref.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct ScheduleCap {
+    pub vault_id: VaultId,
+    pub born_in: CNodeId,
+}
+
+/// Ephemeral Dispatch reference, derived from a `Dispatch`. Frame-only.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct DispatchRefCap {
+    pub vault_id: VaultId,
+}
+
+/// Ephemeral Transact reference, derived from a `Transact`. Frame-only.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct TransactRefCap {
+    pub vault_id: VaultId,
+}
+
+/// Reference to a CNode (used to grant slot positions).
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct CNodeCap {
+    pub cnode_id: CNodeId,
+}
+
+/// Authority over the **in-progress overlay** of a Vault's storage. Held
+/// inside Transact / Schedule frames. Reads see the current (this-block)
+/// overlay; writes / deletes apply to it. Kernel rejects the write half if
+/// `rights.write` is false.
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub struct StorageCap {
+    pub vault_id: VaultId,
+    pub key_range: KeyRange,
+    pub rights: StorageRights,
+}
+
+/// Authority over a Vault's storage at a **committed prior block's**
+/// state-root. Read-only by construction. Held inside Dispatch step-2/step-3
+/// frames and Schedule frames that need to inspect the parent block. The
+/// `root` field is the state-root the reads are against. Phase 1 stubs
+/// the merkle proof out; Phase 2 wires real proofs through hardware.
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub struct SnapshotStorageCap {
+    pub vault_id: VaultId,
+    pub key_range: KeyRange,
+    pub root: Hash,
+}
+
+/// Resource cap (e.g. allocate a Vault, set quota).
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub struct ResourceCap(pub ResourceKind);
+
+/// Meta cap — manage another cap (Grant / Revoke / Derive permissions).
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct MetaCap {
+    pub op: MetaOp,
+    pub over: CapId,
+}
+
+/// Mode-blind attestation handle: kernel decides verify-vs-sign per call.
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub struct AttestationCap {
+    pub key: KeyId,
+    pub scope: AttestationScope,
+}
+
+/// Aggregate signature handle (BLS / threshold). Stubbed for now.
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub struct AttestationAggregateCap {
+    pub key: KeyId,
+}
+
+/// Result handle: produce mode writes blob to result_trace; verify mode
+/// checks blob against trace at the bound index.
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
+pub struct ResultCap;
+
+// -----------------------------------------------------------------------------
+// Capability sum type
+// -----------------------------------------------------------------------------
+
+/// All capability variants. Persistent variants live in CNodes (and σ); the
+/// two `*Ref` variants are ephemeral and live only in Frames.
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub enum Capability {
+    Vault(VaultCap),
+    VaultRef(VaultRefCap),
+    Dispatch(DispatchCap),
+    Transact(TransactCap),
+    Schedule(ScheduleCap),
+    DispatchRef(DispatchRefCap),
+    TransactRef(TransactRefCap),
+    CNode(CNodeCap),
+    Storage(StorageCap),
+    SnapshotStorage(SnapshotStorageCap),
+    Resource(ResourceCap),
+    Meta(MetaCap),
+    AttestationCap(AttestationCap),
+    AttestationAggregateCap(AttestationAggregateCap),
+    ResultCap(ResultCap),
+}
+
+impl Capability {
+    pub fn is_pinned_or_ref(&self) -> bool {
+        matches!(
+            self,
+            Capability::Dispatch(_)
+                | Capability::Transact(_)
+                | Capability::Schedule(_)
+                | Capability::DispatchRef(_)
+                | Capability::TransactRef(_)
+        )
+    }
+
+    pub fn is_ephemeral(&self) -> bool {
+        matches!(
+            self,
+            Capability::DispatchRef(_) | Capability::TransactRef(_)
+        )
+    }
+
+    pub fn vault_id(&self) -> Option<VaultId> {
+        match self {
+            Capability::Vault(c) => Some(c.vault_id),
+            Capability::VaultRef(c) => Some(c.vault_id),
+            Capability::Dispatch(c) => Some(c.vault_id),
+            Capability::Transact(c) => Some(c.vault_id),
+            Capability::Schedule(c) => Some(c.vault_id),
+            Capability::DispatchRef(c) => Some(c.vault_id),
+            Capability::TransactRef(c) => Some(c.vault_id),
+            Capability::Storage(c) => Some(c.vault_id),
+            Capability::SnapshotStorage(c) => Some(c.vault_id),
+            _ => None,
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Variant-shape helpers
+// -----------------------------------------------------------------------------
+
+/// VaultRef rights. A bag of bits; uses a small struct rather than bitflags.
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
+pub struct VaultRights {
+    pub initialize: bool,
+    pub grant: bool,
+    pub revoke: bool,
+    pub derive: bool,
+}
+
+impl VaultRights {
+    pub const ALL: VaultRights = VaultRights {
+        initialize: true,
+        grant: true,
+        revoke: true,
+        derive: true,
+    };
+    pub const INITIALIZE: VaultRights = VaultRights {
+        initialize: true,
+        grant: false,
+        revoke: false,
+        derive: false,
+    };
+}
+
+/// Storage rights.
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
+pub struct StorageRights {
+    pub read: bool,
+    pub write: bool,
+}
+
+impl StorageRights {
+    pub const RO: StorageRights = StorageRights {
+        read: true,
+        write: false,
+    };
+    pub const RW: StorageRights = StorageRights {
+        read: true,
+        write: true,
+    };
+}
+
+/// Inclusive key prefix for Storage caps. An empty prefix grants the entire
+/// vault's storage.
+#[derive(Clone, Eq, PartialEq, Debug, Default)]
+pub struct KeyRange {
+    pub prefix: Vec<u8>,
+}
+
+impl KeyRange {
+    pub fn all() -> Self {
+        Self { prefix: Vec::new() }
+    }
+
+    pub fn covers(&self, key: &[u8]) -> bool {
+        key.starts_with(&self.prefix)
+    }
+}
+
+/// Resource cap kinds. Quotas are kernel-tracked; placement/use is gated.
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub enum ResourceKind {
+    /// Authorizes creating a fresh Vault, with the given storage budget.
+    CreateVault { quota_items: u64, quota_bytes: u64 },
+    /// Authorizes setting quotas on the named Vault.
+    SetQuota { target: VaultId },
+    /// Authorizes preimage-store for the given budget.
+    PreimageStore { items: u64, bytes: u64 },
+}
+
+/// Meta-op categories. Used for Meta caps that manage other caps.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum MetaOp {
+    Grant,
+    Revoke,
+    Derive,
+}
+
+/// AttestationCap blob scope.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum AttestationScope {
+    /// Userspace supplies the blob at `attest()` time.
+    Direct,
+    /// The blob is the surrounding container minus this trace entry; the
+    /// kernel reconstructs (verifier) or fills in (proposer) post-execution.
+    Sealing,
+}
+
+// -----------------------------------------------------------------------------
+// CapRecord and CNode (cap-table)
+// -----------------------------------------------------------------------------
+
+/// One entry in the kernel's cap registry.
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub struct CapRecord {
+    pub cap: Capability,
+    /// Issuer cap-id (for derived caps); None for caps minted ex nihilo
+    /// (e.g. genesis).
+    pub issuer: Option<CapId>,
+    /// Opaque kernel-side narrowing data. Userspace doesn't see this.
+    pub narrowing: Vec<u8>,
+}
+
+/// A 256-slot capability table. Used for both Vault slots and σ-rooted CNodes.
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub struct CNode {
+    pub slots: [Option<CapId>; 256],
+}
+
+impl Default for CNode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CNode {
+    pub fn new() -> Self {
+        const EMPTY: Option<CapId> = None;
+        CNode {
+            slots: [EMPTY; 256],
+        }
+    }
+
+    pub fn get(&self, slot: u8) -> Option<CapId> {
+        self.slots[slot as usize]
+    }
+
+    pub fn set(&mut self, slot: u8, cap: Option<CapId>) {
+        self.slots[slot as usize] = cap;
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (u8, CapId)> + '_ {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| s.map(|c| (i as u8, c)))
+    }
+}

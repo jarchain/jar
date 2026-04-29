@@ -31,7 +31,7 @@ pub fn host_attest<H: Hardware>(
         None
     };
     let scope = match &cap {
-        Capability::AttestationCap { scope, .. } => *scope,
+        Capability::AttestationCap(c) => c.scope,
         _ => return Ok(HostCallOutcome::Resume(RC_BAD_CAP, 0)),
     };
     let outcome = match (scope, blob_owned.as_deref()) {

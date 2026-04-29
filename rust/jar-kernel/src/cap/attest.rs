@@ -61,7 +61,7 @@ pub fn attest<H: Hardware>(
     hw: &H,
 ) -> KResult<AttestOutcome> {
     let (key, scope) = match cap {
-        Capability::AttestationCap { key, scope } => (key.clone(), *scope),
+        Capability::AttestationCap(c) => (c.key.clone(), c.scope),
         _ => {
             return Err(KernelError::Internal(
                 "attest() called on non-AttestationCap".into(),
@@ -141,8 +141,8 @@ pub fn attest<H: Hardware>(
 /// Inspect the public key of an AttestationCap.
 pub fn key_of(cap: &Capability) -> KResult<KeyId> {
     match cap {
-        Capability::AttestationCap { key, .. } => Ok(key.clone()),
-        Capability::AttestationAggregateCap { key } => Ok(key.clone()),
+        Capability::AttestationCap(c) => Ok(c.key.clone()),
+        Capability::AttestationAggregateCap(c) => Ok(c.key.clone()),
         _ => Err(KernelError::Internal(
             "attestation_key on non-attestation cap".into(),
         )),

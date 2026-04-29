@@ -1,8 +1,8 @@
-//! Capability helpers: pinning rules + attestation dispatch.
-//!
-//! The `Capability` enum + variant-data structs live in `crate::types::cap`
-//! today; commit 3 lifts each variant into its own struct under this
-//! module.
+//! Capabilities — variant structs, the `Capability` enum, and shared
+//! helpers (pinning rules + attestation dispatch).
 
 pub mod attest;
+pub mod capability;
 pub mod pinning;
+
+pub use capability::*;

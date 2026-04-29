@@ -25,7 +25,7 @@ pub fn host_cnode_grant<H: Hardware>(
         None => return Ok(HostCallOutcome::Resume(RC_BAD_CAP, 0)),
     };
     let dest_cnode_id = match &cap_registry::lookup(ctx.state, dest_cnode_cap)?.cap {
-        Capability::CNode { cnode_id } => *cnode_id,
+        Capability::CNode(c) => c.cnode_id,
         _ => return Ok(HostCallOutcome::Resume(RC_BAD_CAP, 0)),
     };
     match cnode::cnode_grant(ctx.state, src_cap, dest_cnode_id, dest_slot) {
@@ -46,7 +46,7 @@ pub fn host_cnode_revoke<H: Hardware>(
         None => return Ok(HostCallOutcome::Resume(RC_BAD_CAP, 0)),
     };
     let cnode_id = match &cap_registry::lookup(ctx.state, cnode_cap)?.cap {
-        Capability::CNode { cnode_id } => *cnode_id,
+        Capability::CNode(c) => c.cnode_id,
         _ => return Ok(HostCallOutcome::Resume(RC_BAD_CAP, 0)),
     };
     cnode::cnode_revoke(ctx.state, cnode_id, cnode_slot)?;
@@ -68,7 +68,7 @@ pub fn host_cnode_move<H: Hardware>(
             .get(fs)
             .ok_or_else(|| KernelError::Internal(format!("frame slot {} empty", fs)))?;
         match &cap_registry::lookup(state, cap)?.cap {
-            Capability::CNode { cnode_id } => Ok(*cnode_id),
+            Capability::CNode(c) => Ok(c.cnode_id),
             _ => Err(KernelError::Internal("expected CNode cap".into())),
         }
     };

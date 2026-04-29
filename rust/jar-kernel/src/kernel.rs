@@ -209,7 +209,7 @@ impl<H: Hardware> Kernel<H> {
         )?
         .cap
         {
-            Capability::CNode { cnode_id } => *cnode_id,
+            Capability::CNode(c) => c.cnode_id,
             _ => {
                 return Err(KernelError::Internal(
                     "dispatch_space_cnode is not a CNode cap".into(),
@@ -218,10 +218,8 @@ impl<H: Hardware> Kernel<H> {
         };
         let cn = self.last_state.cnode(cnode_id)?;
         for (_, cap_id) in cn.iter() {
-            if let Capability::Dispatch { vault_id, .. } =
-                cap_registry::lookup(&self.last_state, cap_id)?.cap
-            {
-                self.hw.subscribe(vault_id);
+            if let Capability::Dispatch(c) = cap_registry::lookup(&self.last_state, cap_id)?.cap {
+                self.hw.subscribe(c.vault_id);
             }
         }
         Ok(())

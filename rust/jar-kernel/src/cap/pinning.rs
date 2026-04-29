@@ -18,29 +18,30 @@ use crate::state::cap_registry;
 /// Check that placing `cap` at `(target_cnode)` is permissible. `target_cnode`
 /// is the CNodeId being granted into; for moves use the destination cnode.
 pub fn check_grant_or_move(cap: &Capability, target_cnode: CNodeId) -> KResult<()> {
-    match cap {
-        Capability::Dispatch { born_in, .. }
-        | Capability::Transact { born_in, .. }
-        | Capability::Schedule { born_in, .. } => {
-            if *born_in != target_cnode {
-                Err(KernelError::Pinning(format!(
-                    "Dispatch/Transact/Schedule cap pinned to {:?}; cannot place in {:?}",
-                    born_in, target_cnode
-                )))
-            } else {
-                Ok(())
-            }
-        }
-        Capability::DispatchRef { .. } | Capability::TransactRef { .. } => {
-            Err(KernelError::Pinning(
+    let born_in = match cap {
+        Capability::Dispatch(c) => c.born_in,
+        Capability::Transact(c) => c.born_in,
+        Capability::Schedule(c) => c.born_in,
+        Capability::DispatchRef(_) | Capability::TransactRef(_) => {
+            return Err(KernelError::Pinning(
                 "DispatchRef/TransactRef are Frame-only — cannot grant to a persistent CNode"
                     .into(),
-            ))
+            ));
         }
-        Capability::Vault { .. } => Err(KernelError::Pinning(
-            "Vault owner cap is immovable to a CNode slot".into(),
-        )),
-        _ => Ok(()),
+        Capability::Vault(_) => {
+            return Err(KernelError::Pinning(
+                "Vault owner cap is immovable to a CNode slot".into(),
+            ));
+        }
+        _ => return Ok(()),
+    };
+    if born_in != target_cnode {
+        Err(KernelError::Pinning(format!(
+            "Dispatch/Transact/Schedule cap pinned to {:?}; cannot place in {:?}",
+            born_in, target_cnode
+        )))
+    } else {
+        Ok(())
     }
 }
 
@@ -55,7 +56,7 @@ pub fn check_derive(
     let src = cap_registry::lookup(state, source)?;
     match (&src.cap, new_cap) {
         // Dispatch → Dispatch: persistent dest only.
-        (Capability::Dispatch { .. }, Capability::Dispatch { .. }) => {
+        (Capability::Dispatch(_), Capability::Dispatch(_)) => {
             if !dest_persistent {
                 return Err(KernelError::Pinning(
                     "Dispatch derivation must target a persistent CNode".into(),
@@ -63,7 +64,7 @@ pub fn check_derive(
             }
             Ok(())
         }
-        (Capability::Dispatch { .. }, Capability::DispatchRef { .. }) => {
+        (Capability::Dispatch(_), Capability::DispatchRef(_)) => {
             if dest_persistent {
                 return Err(KernelError::Pinning(
                     "DispatchRef must be derived into a Frame, not a persistent CNode".into(),
@@ -71,7 +72,7 @@ pub fn check_derive(
             }
             Ok(())
         }
-        (Capability::DispatchRef { .. }, Capability::DispatchRef { .. }) => {
+        (Capability::DispatchRef(_), Capability::DispatchRef(_)) => {
             if dest_persistent {
                 return Err(KernelError::Pinning(
                     "DispatchRef derivation must target a Frame".into(),
@@ -79,7 +80,7 @@ pub fn check_derive(
             }
             Ok(())
         }
-        (Capability::Transact { .. }, Capability::Transact { .. }) => {
+        (Capability::Transact(_), Capability::Transact(_)) => {
             if !dest_persistent {
                 return Err(KernelError::Pinning(
                     "Transact derivation must target a persistent CNode".into(),
@@ -87,8 +88,8 @@ pub fn check_derive(
             }
             Ok(())
         }
-        (Capability::Transact { .. }, Capability::TransactRef { .. })
-        | (Capability::TransactRef { .. }, Capability::TransactRef { .. }) => {
+        (Capability::Transact(_), Capability::TransactRef(_))
+        | (Capability::TransactRef(_), Capability::TransactRef(_)) => {
             if dest_persistent {
                 return Err(KernelError::Pinning(
                     "TransactRef derivation must target a Frame".into(),
@@ -97,7 +98,7 @@ pub fn check_derive(
             Ok(())
         }
         // Schedule → Schedule: persistent dest only. No SchedRef variant.
-        (Capability::Schedule { .. }, Capability::Schedule { .. }) => {
+        (Capability::Schedule(_), Capability::Schedule(_)) => {
             if !dest_persistent {
                 return Err(KernelError::Pinning(
                     "Schedule derivation must target a persistent CNode".into(),
@@ -106,15 +107,15 @@ pub fn check_derive(
             Ok(())
         }
         // VaultRef → VaultRef (rights subset, not enforced here): any dest OK.
-        (Capability::VaultRef { .. }, Capability::VaultRef { .. }) => Ok(()),
+        (Capability::VaultRef(_), Capability::VaultRef(_)) => Ok(()),
         // Storage → Storage: any dest OK.
-        (Capability::Storage { .. }, Capability::Storage { .. }) => Ok(()),
+        (Capability::Storage(_), Capability::Storage(_)) => Ok(()),
         // SnapshotStorage → SnapshotStorage: any dest OK (still RO).
-        (Capability::SnapshotStorage { .. }, Capability::SnapshotStorage { .. }) => Ok(()),
+        (Capability::SnapshotStorage(_), Capability::SnapshotStorage(_)) => Ok(()),
         // Storage → SnapshotStorage: deriving an RO snapshot view from an
         // overlay cap is allowed at any dest. Reverse direction (snapshot →
         // overlay) is NOT — that would grant write rights.
-        (Capability::Storage { .. }, Capability::SnapshotStorage { .. }) => Ok(()),
+        (Capability::Storage(_), Capability::SnapshotStorage(_)) => Ok(()),
         _ => Err(KernelError::Pinning(format!(
             "unsupported derive source/destination shape: {:?} → {:?}",
             std::mem::discriminant(&src.cap),

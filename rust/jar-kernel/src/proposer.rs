@@ -20,7 +20,7 @@ use crate::state::cap_registry;
 /// reservation in proposer mode).
 pub fn drain_for_body(node: &NodeOffchain, state: &State) -> KResult<Body> {
     let transact_cnode_id = match &cap_registry::lookup(state, state.transact_space_cnode)?.cap {
-        Capability::CNode { cnode_id } => *cnode_id,
+        Capability::CNode(c) => c.cnode_id,
         _ => {
             return Err(KernelError::Internal(
                 "transact_space_cnode is not a CNode cap".into(),
@@ -30,13 +30,13 @@ pub fn drain_for_body(node: &NodeOffchain, state: &State) -> KResult<Body> {
     let tcnode = state.cnode(transact_cnode_id)?;
     let mut transact_slot_index: BTreeMap<VaultId, u8> = BTreeMap::new();
     for (slot_idx, cap_id) in tcnode.iter() {
-        if let Capability::Transact { vault_id, .. } = cap_registry::lookup(state, cap_id)?.cap {
-            transact_slot_index.insert(vault_id, slot_idx);
+        if let Capability::Transact(c) = cap_registry::lookup(state, cap_id)?.cap {
+            transact_slot_index.insert(c.vault_id, slot_idx);
         }
     }
 
     let dispatch_cnode_id = match &cap_registry::lookup(state, state.dispatch_space_cnode)?.cap {
-        Capability::CNode { cnode_id } => *cnode_id,
+        Capability::CNode(c) => c.cnode_id,
         _ => {
             return Err(KernelError::Internal(
                 "dispatch_space_cnode is not a CNode cap".into(),
@@ -48,14 +48,14 @@ pub fn drain_for_body(node: &NodeOffchain, state: &State) -> KResult<Body> {
     let mut targets_in_slot_order: BTreeMap<u8, VaultId> = BTreeMap::new();
 
     for (_slot, cap_id) in dcnode.iter() {
-        if let Capability::Dispatch { vault_id, .. } = cap_registry::lookup(state, cap_id)?.cap
+        if let Capability::Dispatch(d) = cap_registry::lookup(state, cap_id)?.cap
             && let Some(SlotContent::AggregatedTransact {
                 target,
                 payload,
                 caps,
                 attestation_trace,
                 result_trace,
-            }) = node.slots.get(&vault_id)
+            }) = node.slots.get(&d.vault_id)
         {
             let slot_idx = match transact_slot_index.get(target) {
                 Some(idx) => *idx,

@@ -27,40 +27,32 @@ fn resolve_storage(
 ) -> KResult<VaultId> {
     let record = cap_registry::lookup(state, storage_cap)?;
     match &record.cap {
-        Capability::Storage {
-            vault_id,
-            key_range,
-            rights,
-        } => {
-            if need.read && !rights.read {
+        Capability::Storage(c) => {
+            if need.read && !c.rights.read {
                 return Err(KernelError::Internal("Storage cap lacks Read".into()));
             }
-            if need.write && !rights.write {
+            if need.write && !c.rights.write {
                 return Err(KernelError::Internal("Storage cap lacks Write".into()));
             }
-            if !key_range.covers(key) {
+            if !c.key_range.covers(key) {
                 return Err(KernelError::Internal(format!(
                     "key {:?} outside Storage cap range",
                     key
                 )));
             }
-            Ok(*vault_id)
+            Ok(c.vault_id)
         }
-        Capability::SnapshotStorage {
-            vault_id,
-            key_range,
-            ..
-        } => {
+        Capability::SnapshotStorage(c) => {
             if need.write {
                 return Err(KernelError::ReadOnly("storage_write on SnapshotStorage"));
             }
-            if !key_range.covers(key) {
+            if !c.key_range.covers(key) {
                 return Err(KernelError::Internal(format!(
                     "key {:?} outside SnapshotStorage cap range",
                     key
                 )));
             }
-            Ok(*vault_id)
+            Ok(c.vault_id)
         }
         _ => Err(KernelError::Internal(
             "expected Storage or SnapshotStorage cap for storage_*".into(),

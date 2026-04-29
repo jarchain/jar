@@ -5,7 +5,10 @@
 //! order — plus a registered Dispatch entrypoint. This is the minimum
 //! shape for kernel-mechanics tests; real chains add many more slots.
 
-use crate::types::{CapId, Capability, Hash, KResult, State, VaultId};
+use crate::types::{
+    CNodeCap, CapId, Capability, DispatchCap, Hash, KResult, ScheduleCap, State, TransactCap,
+    VaultId,
+};
 
 use crate::state::cap_registry;
 use crate::state::cnode;
@@ -83,9 +86,9 @@ impl GenesisBuilder {
         let tcn_cap = cap_registry::alloc(
             &mut state,
             crate::types::CapRecord {
-                cap: Capability::CNode {
+                cap: Capability::CNode(CNodeCap {
                     cnode_id: transact_cnode,
-                },
+                }),
                 issuer: None,
                 narrowing: Vec::new(),
             },
@@ -93,9 +96,9 @@ impl GenesisBuilder {
         let dcn_cap = cap_registry::alloc(
             &mut state,
             crate::types::CapRecord {
-                cap: Capability::CNode {
+                cap: Capability::CNode(CNodeCap {
                     cnode_id: dispatch_cnode,
-                },
+                }),
                 issuer: None,
                 narrowing: Vec::new(),
             },
@@ -112,10 +115,10 @@ impl GenesisBuilder {
         );
         let bi_cap = cnode::mint_and_place(
             &mut state,
-            Capability::Schedule {
+            Capability::Schedule(ScheduleCap {
                 vault_id: bi_vault,
                 born_in: transact_cnode,
-            },
+            }),
             Vec::new(),
             transact_cnode,
             0,
@@ -130,10 +133,10 @@ impl GenesisBuilder {
         );
         let t_cap = cnode::mint_and_place(
             &mut state,
-            Capability::Transact {
+            Capability::Transact(TransactCap {
                 vault_id: t_vault,
                 born_in: transact_cnode,
-            },
+            }),
             Vec::new(),
             transact_cnode,
             1,
@@ -148,10 +151,10 @@ impl GenesisBuilder {
         );
         let bf_cap = cnode::mint_and_place(
             &mut state,
-            Capability::Schedule {
+            Capability::Schedule(ScheduleCap {
                 vault_id: bf_vault,
                 born_in: transact_cnode,
-            },
+            }),
             Vec::new(),
             transact_cnode,
             2,
@@ -166,10 +169,10 @@ impl GenesisBuilder {
         );
         let d_cap = cnode::mint_and_place(
             &mut state,
-            Capability::Dispatch {
+            Capability::Dispatch(DispatchCap {
                 vault_id: d_vault,
                 born_in: dispatch_cnode,
-            },
+            }),
             Vec::new(),
             dispatch_cnode,
             0,

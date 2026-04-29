@@ -3,7 +3,10 @@
 use jar_kernel::cap::pinning;
 use jar_kernel::state::cap_registry;
 use jar_kernel::state::cnode;
-use jar_kernel::{CapRecord, Capability, KernelError, State, StorageRights, VaultId, VaultRights};
+use jar_kernel::{
+    CapRecord, Capability, DispatchCap, DispatchRefCap, KernelError, State, StorageRights,
+    VaultCap, VaultId, VaultRefCap, VaultRights,
+};
 
 fn empty_state() -> State {
     State::empty()
@@ -15,9 +18,9 @@ fn alloc_assigns_monotonic_ids() {
     let a = cap_registry::alloc(
         &mut s,
         CapRecord {
-            cap: Capability::Vault {
+            cap: Capability::Vault(VaultCap {
                 vault_id: VaultId(0),
-            },
+            }),
             issuer: None,
             narrowing: vec![],
         },
@@ -25,9 +28,9 @@ fn alloc_assigns_monotonic_ids() {
     let b = cap_registry::alloc(
         &mut s,
         CapRecord {
-            cap: Capability::Vault {
+            cap: Capability::Vault(VaultCap {
                 vault_id: VaultId(1),
-            },
+            }),
             issuer: None,
             narrowing: vec![],
         },
@@ -43,10 +46,10 @@ fn revoke_cascades_to_derived() {
     let parent = cap_registry::alloc(
         &mut s,
         CapRecord {
-            cap: Capability::Dispatch {
+            cap: Capability::Dispatch(DispatchCap {
                 vault_id: VaultId(0),
                 born_in: parent_cnode,
-            },
+            }),
             issuer: None,
             narrowing: vec![],
         },
@@ -54,9 +57,9 @@ fn revoke_cascades_to_derived() {
     let dispatch_ref = cap_registry::derive(
         &mut s,
         parent,
-        Capability::DispatchRef {
+        Capability::DispatchRef(DispatchRefCap {
             vault_id: VaultId(0),
-        },
+        }),
         vec![],
         false,
     )
@@ -77,10 +80,10 @@ fn pinning_rejects_dispatch_into_wrong_cnode() {
     let cn_b = cnode::cnode_create(&mut s);
     let dispatch_cap = cnode::mint_and_place(
         &mut s,
-        Capability::Dispatch {
+        Capability::Dispatch(DispatchCap {
             vault_id: VaultId(7),
             born_in: cn_a,
-        },
+        }),
         vec![],
         cn_a,
         0,
@@ -103,10 +106,10 @@ fn pinning_rejects_dispatchref_to_persistent_cnode() {
     let cn = cnode::cnode_create(&mut s);
     let dispatch = cnode::mint_and_place(
         &mut s,
-        Capability::Dispatch {
+        Capability::Dispatch(DispatchCap {
             vault_id: VaultId(0),
             born_in: cn,
-        },
+        }),
         vec![],
         cn,
         0,
@@ -116,9 +119,9 @@ fn pinning_rejects_dispatchref_to_persistent_cnode() {
     match cap_registry::derive(
         &mut s,
         dispatch,
-        Capability::DispatchRef {
+        Capability::DispatchRef(DispatchRefCap {
             vault_id: VaultId(0),
-        },
+        }),
         vec![],
         true,
     ) {
@@ -134,10 +137,10 @@ fn arg_scan_rejects_pinned_caps() {
     let pinned_dispatch = cap_registry::alloc(
         &mut s,
         CapRecord {
-            cap: Capability::Dispatch {
+            cap: Capability::Dispatch(DispatchCap {
                 vault_id: VaultId(0),
                 born_in: cn,
-            },
+            }),
             issuer: None,
             narrowing: vec![],
         },
@@ -145,9 +148,9 @@ fn arg_scan_rejects_pinned_caps() {
     let dispatch_ref = cap_registry::alloc(
         &mut s,
         CapRecord {
-            cap: Capability::DispatchRef {
+            cap: Capability::DispatchRef(DispatchRefCap {
                 vault_id: VaultId(0),
-            },
+            }),
             issuer: None,
             narrowing: vec![],
         },
@@ -155,10 +158,10 @@ fn arg_scan_rejects_pinned_caps() {
     let plain = cap_registry::alloc(
         &mut s,
         CapRecord {
-            cap: Capability::VaultRef {
+            cap: Capability::VaultRef(VaultRefCap {
                 vault_id: VaultId(1),
                 rights: VaultRights::ALL,
-            },
+            }),
             issuer: None,
             narrowing: vec![],
         },
@@ -183,10 +186,10 @@ fn vaultref_derive_into_frame_or_persistent_works() {
     let parent = cap_registry::alloc(
         &mut s,
         CapRecord {
-            cap: Capability::VaultRef {
+            cap: Capability::VaultRef(VaultRefCap {
                 vault_id: VaultId(0),
                 rights: VaultRights::ALL,
-            },
+            }),
             issuer: None,
             narrowing: vec![],
         },
@@ -195,10 +198,10 @@ fn vaultref_derive_into_frame_or_persistent_works() {
     cap_registry::derive(
         &mut s,
         parent,
-        Capability::VaultRef {
+        Capability::VaultRef(VaultRefCap {
             vault_id: VaultId(0),
             rights: VaultRights::INITIALIZE,
-        },
+        }),
         vec![],
         false,
     )
@@ -207,10 +210,10 @@ fn vaultref_derive_into_frame_or_persistent_works() {
     cap_registry::derive(
         &mut s,
         parent,
-        Capability::VaultRef {
+        Capability::VaultRef(VaultRefCap {
             vault_id: VaultId(0),
             rights: VaultRights::INITIALIZE,
-        },
+        }),
         vec![],
         true,
     )
