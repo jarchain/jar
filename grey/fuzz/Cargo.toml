@@ -48,3 +48,8 @@ doc = false
 name = "fuzz_pvm_differential"
 path = "fuzz_targets/fuzz_pvm_differential.rs"
 doc = false
+
+[[bin]]
+name = "fuzz_gossipsub_message"
+path = "fuzz_targets/fuzz_gossipsub_message.rs"
+doc = false
