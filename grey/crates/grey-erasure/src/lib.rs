@@ -152,7 +152,7 @@ pub fn recover(
             }
         }
         if originals.iter().all(|o| o.is_some()) {
-            Some(originals.into_iter().map(|o| o.unwrap()).collect())
+            Some(originals.into_iter().map(|o| o.expect("all originals verified as Some")).collect())
         } else {
             None
         }
