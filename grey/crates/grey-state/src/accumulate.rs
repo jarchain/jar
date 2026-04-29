@@ -1986,12 +1986,11 @@ mod proptests {
 
     /// Generate a list of distinct package hash bytes.
     fn arb_distinct_bytes(max: usize) -> impl Strategy<Value = Vec<u8>> {
-        proptest::collection::vec(any::<u8>(), 1..=max)
-            .prop_map(|mut v| {
-                v.sort();
-                v.dedup();
-                v
-            })
+        proptest::collection::vec(any::<u8>(), 1..=max).prop_map(|mut v| {
+            v.sort();
+            v.dedup();
+            v
+        })
     }
 
     proptest! {
