@@ -14,9 +14,13 @@ use jar_types::{SlotContent, VaultId};
 pub use hardware::{Hardware, HwError, TracingEvent};
 pub use in_memory::{ForkTree, InMemoryBus, InMemoryHardware, NetMessage};
 
-/// Per-node off-chain state, **not** in σ. Slots persist across blocks but
-/// are lost on restart. Bootstrap is chain-defined; we start with all slots
-/// `Empty`.
+/// Per-node off-chain state, **not** in σ. Owned by `Kernel<H>`. Slots
+/// persist across blocks but are lost on restart. Bootstrap is chain-
+/// defined; we start with all slots `Empty`.
+///
+/// Public-but-not-re-exported: callers normally interact with this through
+/// `Kernel::dispatch` / `Kernel::advance`. Direct construction is for
+/// internal use (Kernel) and tests.
 pub struct NodeOffchain {
     pub slots: BTreeMap<VaultId, SlotContent>,
     pub subscriptions: BTreeSet<VaultId>,

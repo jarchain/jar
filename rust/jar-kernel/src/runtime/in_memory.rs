@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use jar_crypto::ed25519::KeyPair;
-use jar_types::{BlockHash, Command, KeyId, Signature, SlotContent, VaultId};
+use jar_types::{BlockHash, Command, Hash, KeyId, Signature, SlotContent, State, VaultId};
 
 use super::hardware::{Hardware, HwError, TracingEvent};
 
@@ -62,21 +62,30 @@ pub struct ForkTree {
 }
 
 /// In-memory Hardware: holds a set of validator keys + bus reference +
-/// fork-tree bookkeeping.
+/// genesis state + a state log keyed by `block_hash` + fork-tree
+/// bookkeeping. One per node.
 pub struct InMemoryHardware {
-    pub keys: BTreeMap<KeyId, KeyPair>,
-    pub bus: Arc<InMemoryBus>,
-    pub trace: Mutex<Vec<TracingEvent>>,
-    pub fork_tree: Mutex<ForkTree>,
+    keys: BTreeMap<KeyId, KeyPair>,
+    bus: Arc<InMemoryBus>,
+    trace: Mutex<Vec<TracingEvent>>,
+    fork_tree: Mutex<ForkTree>,
+    genesis: State,
+    states: Mutex<BTreeMap<BlockHash, State>>,
+    subscriptions: Mutex<BTreeSet<VaultId>>,
 }
 
 impl InMemoryHardware {
-    pub fn new(bus: Arc<InMemoryBus>) -> Self {
+    /// Build hardware seeded with `genesis`. `bus` is shared across nodes
+    /// in a testnet for in-process networking.
+    pub fn new(genesis: State, bus: Arc<InMemoryBus>) -> Self {
         Self {
             keys: BTreeMap::new(),
             bus,
             trace: Mutex::new(Vec::new()),
             fork_tree: Mutex::new(ForkTree::default()),
+            genesis,
+            states: Mutex::new(BTreeMap::new()),
+            subscriptions: Mutex::new(BTreeSet::new()),
         }
     }
 
@@ -84,9 +93,31 @@ impl InMemoryHardware {
         self.keys.insert(kp.key_id(), kp);
         self
     }
+
+    /// Read access to recorded subscriptions — useful for tests.
+    pub fn subscriptions_snapshot(&self) -> BTreeSet<VaultId> {
+        self.subscriptions.lock().unwrap().clone()
+    }
+
+    /// Read access to recorded tracing events — useful for tests.
+    pub fn drain_trace(&self) -> Vec<TracingEvent> {
+        std::mem::take(&mut *self.trace.lock().unwrap())
+    }
 }
 
 impl Hardware for InMemoryHardware {
+    fn genesis_state(&self) -> State {
+        self.genesis.clone()
+    }
+
+    fn state_at(&self, block_hash: &Hash) -> Option<State> {
+        self.states.lock().unwrap().get(block_hash).cloned()
+    }
+
+    fn commit_state(&self, block_hash: BlockHash, state: State) {
+        self.states.lock().unwrap().insert(block_hash, state);
+    }
+
     fn holds_key(&self, key: &KeyId) -> bool {
         self.keys.contains_key(key)
     }
@@ -123,10 +154,13 @@ impl Hardware for InMemoryHardware {
         }
     }
 
+    fn subscribe(&self, vault_id: VaultId) {
+        self.subscriptions.lock().unwrap().insert(vault_id);
+    }
+
     fn score(&self, block_hash: BlockHash, score: u64) {
         let mut t = self.fork_tree.lock().unwrap();
         t.scores.insert(block_hash, score);
-        // Naive head choice: highest score wins. Phase 1 placeholder.
         match t.head {
             Some(head) if t.scores.get(&head).copied().unwrap_or(0) >= score => {}
             _ => t.head = Some(block_hash),

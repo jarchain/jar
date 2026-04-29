@@ -1,8 +1,9 @@
 //! `jar` — in-process N-node testnet driver for the JAR minimum kernel.
 //!
-//! Spawns N nodes in one process. Each node has its own σ + NodeOffchain +
-//! `Kernel<InMemoryHardware>`. Networking is a same-process broadcast bus.
-//! Block production rotates round-robin per slot.
+//! Spawns N nodes in one process. Each node owns its own
+//! `Kernel<InMemoryHardware>` directly (no `Arc<H>`); a shared
+//! `InMemoryBus` is the same-process broadcast wire. Block production
+//! rotates round-robin per slot.
 //!
 //! Usage:
 //!
@@ -12,9 +13,8 @@
 
 use clap::{Parser, Subcommand};
 use jar_kernel::genesis::GenesisBuilder;
-use jar_kernel::runtime::{InMemoryBus, InMemoryHardware, NodeOffchain};
-use jar_kernel::{BlockOutcome, Hardware, Kernel};
-use jar_types::{Block, BlockHash, Hash, State};
+use jar_kernel::runtime::{InMemoryBus, InMemoryHardware};
+use jar_kernel::{BlockOutcome, Kernel};
 
 #[derive(Parser, Debug)]
 #[command(name = "jar")]
@@ -53,70 +53,62 @@ fn run_testnet(num_nodes: u32, num_slots: u32) {
     let g = GenesisBuilder::default().build().expect("genesis ok");
 
     let bus = InMemoryBus::new();
-    let mut nodes: Vec<NodeState> = Vec::new();
-    for i in 0..num_nodes {
-        nodes.push(NodeState {
+    let mut nodes: Vec<NodeState> = (0..num_nodes)
+        .map(|i| NodeState {
             id: i,
-            state: g.state.clone(),
-            offchain: NodeOffchain::new(),
-            kernel: Kernel::new(InMemoryHardware::new(bus.clone())),
-            prior_block: BlockHash::ZERO,
-        });
-    }
+            kernel: Kernel::new(None, InMemoryHardware::new(g.state.clone(), bus.clone()))
+                .expect("kernel new ok"),
+        })
+        .collect();
 
     for slot_n in 1..=num_slots {
-        let proposer_idx = (slot_n - 1) % num_nodes;
-        let proposer = &mut nodes[proposer_idx as usize];
+        let proposer_idx = ((slot_n - 1) % num_nodes) as usize;
 
-        let body = proposer
-            .kernel
-            .drain_for_body(&proposer.offchain, &proposer.state)
-            .expect("drain ok");
-        let block_in = Block {
-            parent: proposer.prior_block,
-            body,
+        // Proposer builds the block.
+        let proposed = {
+            let proposer = &mut nodes[proposer_idx];
+            let out = proposer.kernel.advance(None).expect("propose ok");
+            match &out.block_outcome {
+                BlockOutcome::Accepted => {
+                    tracing::info!(
+                        proposer = proposer_idx,
+                        slot = slot_n,
+                        state_root = ?out.state_root,
+                        block_hash = ?out.block_hash,
+                        "proposed"
+                    );
+                }
+                BlockOutcome::Panicked(reason) => {
+                    tracing::error!(reason, "block panicked at proposer; aborting");
+                    return;
+                }
+            }
+            out
         };
-        let out = proposer
-            .kernel
-            .apply_block(&proposer.state, proposer.prior_block, &block_in)
-            .expect("apply_block ok");
-        match &out.block_outcome {
-            BlockOutcome::Accepted => {
-                tracing::info!(
-                    proposer = proposer_idx,
-                    slot = slot_n,
-                    state_root = ?out.state_root,
-                    "accepted"
-                );
-            }
-            BlockOutcome::Panicked(reason) => {
-                tracing::error!(reason, "block panicked at proposer; aborting");
-                return;
-            }
-        }
 
-        // Hardware-side: tell the proposer's hardware about the block hash
-        // it produced + its score (placeholder: 1 per accepted block). In a
-        // real chain this comes from Schedule(block_final).
-        let block_hash = proposer.kernel.block_hash(&out.block);
-        proposer.kernel.hardware().score(block_hash, 1);
-
-        let new_root = out.state_root;
-        let proposed_block = out.block.clone();
-        for node in &mut nodes {
+        // Verifiers replay the proposed block. (The proposer already
+        // advanced; verifiers re-derive identical state and confirm.)
+        let new_root = proposed.state_root;
+        let new_hash = proposed.block_hash;
+        for (i, node) in nodes.iter_mut().enumerate() {
+            if i == proposer_idx {
+                continue;
+            }
             let ver = node
                 .kernel
-                .apply_block(&node.state, node.prior_block, &proposed_block)
-                .expect("verifier apply_block ok");
+                .advance(Some(proposed.block.clone()))
+                .expect("verifier advance ok");
             assert!(matches!(ver.block_outcome, BlockOutcome::Accepted));
             assert_eq!(
                 ver.state_root, new_root,
                 "node {} diverged from proposer at slot {}",
                 node.id, slot_n
             );
-            node.state = ver.state_next;
-            node.prior_block = Hash::ZERO; // we don't yet hash headers
-            node.kernel.hardware().score(block_hash, 1);
+            assert_eq!(
+                ver.block_hash, new_hash,
+                "node {} hash diverged from proposer at slot {}",
+                node.id, slot_n
+            );
         }
         tracing::info!(slot = slot_n, "all nodes converged on root {:?}", new_root);
     }
@@ -124,8 +116,5 @@ fn run_testnet(num_nodes: u32, num_slots: u32) {
 
 struct NodeState {
     id: u32,
-    state: State,
-    offchain: NodeOffchain,
     kernel: Kernel<InMemoryHardware>,
-    prior_block: BlockHash,
 }
