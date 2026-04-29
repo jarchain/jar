@@ -262,7 +262,7 @@ mod tests {
     #[test]
     fn test_build_v2_minimal() {
         let blob = javm::program::build_simple_blob(&[0, 1, 0], &[1, 1, 1], &[]);
-        let kernel = javm::kernel::InvocationKernel::new(&blob, &[], 100_000);
+        let kernel = javm::kernel::InvocationKernel::<u8>::new(&blob, &[], 100_000);
         assert!(
             kernel.is_ok(),
             "blob should be loadable: {:?}",
@@ -275,7 +275,7 @@ mod tests {
         let code = vec![0, 1, 0]; // trap, fallthrough, trap
         let bitmask = vec![1, 1, 1];
         let blob = build_service_program(&code, &bitmask, &[], &[], &[], 1, 0, 4);
-        let kernel = javm::kernel::InvocationKernel::new(&blob, &[], 100_000);
+        let kernel = javm::kernel::InvocationKernel::<u8>::new(&blob, &[], 100_000);
         assert!(
             kernel.is_ok(),
             "service blob should be loadable: {:?}",

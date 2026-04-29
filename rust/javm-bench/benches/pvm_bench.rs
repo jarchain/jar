@@ -132,7 +132,7 @@ fn bench_standard(c: &mut Criterion, name: &str, javm_blob: &[u8], pvm_blob: &[u
     group.bench_function("javm-recompiler-exec", |b| {
         b.iter_batched(
             || {
-                javm::kernel::InvocationKernel::new_with_backend(
+                javm::kernel::InvocationKernel::<u8>::new_with_backend(
                     javm_blob,
                     &[],
                     GAS_LIMIT,
@@ -252,7 +252,7 @@ fn bench_ecrecover(c: &mut Criterion) {
     group.bench_function("javm-recompiler-compile", |b| {
         b.iter(|| {
             std::hint::black_box(
-                javm::kernel::InvocationKernel::new_with_backend(
+                javm::kernel::InvocationKernel::<u8>::new_with_backend(
                     javm_blob,
                     &[],
                     ecrecover_gas,
@@ -267,7 +267,7 @@ fn bench_ecrecover(c: &mut Criterion) {
     group.bench_function("javm-recompiler-exec", |b| {
         b.iter_batched(
             || {
-                javm::kernel::InvocationKernel::new_with_backend(
+                javm::kernel::InvocationKernel::<u8>::new_with_backend(
                     javm_blob,
                     &[],
                     ecrecover_gas,

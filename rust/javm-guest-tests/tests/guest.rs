@@ -19,8 +19,9 @@ fn run_kernel(backend: javm::PvmBackend, input: &[u8], test_id: u32) -> KernelRu
     use javm::vm_pool::VmState;
 
     let gas = 100_000_000_000u64;
-    let mut kernel = InvocationKernel::new_with_backend(GUEST_TESTS_BLOB, input, gas, backend)
-        .expect("kernel should initialize");
+    let mut kernel: InvocationKernel =
+        InvocationKernel::new_with_backend(GUEST_TESTS_BLOB, input, gas, backend)
+            .expect("kernel should initialize");
     let _ = kernel.vm_arena.vm_mut(0).transition(VmState::Running);
 
     let result = kernel.run();

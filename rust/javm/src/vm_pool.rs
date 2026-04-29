@@ -5,7 +5,7 @@
 //! Only IDLE VMs can be CALLed — this prevents reentrancy by construction.
 
 use crate::PVM_REGISTER_COUNT;
-use crate::cap::CapTable;
+use crate::cap::{CapTable, ProtocolCapT};
 
 /// VM lifecycle states.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,7 +24,7 @@ pub enum VmState {
 
 /// A single VM instance in the pool.
 #[derive(Debug)]
-pub struct VmInstance {
+pub struct VmInstance<P: ProtocolCapT = u8> {
     /// Current lifecycle state.
     pub state: VmState,
     /// Index of the CODE cap this VM runs (in the kernel's code_caps list).
@@ -34,7 +34,7 @@ pub struct VmInstance {
     /// Program counter.
     pub pc: u32,
     /// Per-VM capability table.
-    pub cap_table: CapTable,
+    pub cap_table: CapTable<P>,
     /// Who called this VM (for REPLY routing). None if called by kernel.
     pub caller: Option<u16>,
     /// Jump table entry index (used on first CALL).
@@ -47,9 +47,9 @@ pub struct VmInstance {
     heap_top: u32,
 }
 
-impl VmInstance {
+impl<P: ProtocolCapT> VmInstance<P> {
     /// Create a new VM in IDLE state.
-    pub fn new(code_cap_id: u16, entry_index: u32, cap_table: CapTable, gas: u64) -> Self {
+    pub fn new(code_cap_id: u16, entry_index: u32, cap_table: CapTable<P>, gas: u64) -> Self {
         let registers = [0u64; PVM_REGISTER_COUNT];
         Self {
             state: VmState::Idle,
@@ -195,27 +195,27 @@ impl VmId {
 
 /// Arena entry: optional VM + generation counter.
 #[derive(Debug)]
-struct ArenaEntry {
-    vm: Option<VmInstance>,
+struct ArenaEntry<P: ProtocolCapT> {
+    vm: Option<VmInstance<P>>,
     generation: u16,
 }
 
 /// Generational arena for VM instances. Supports O(1) create, lookup,
 /// and drop with slot reuse. Stale handles detected via generation mismatch.
 #[derive(Debug)]
-pub struct VmArena {
-    entries: Vec<ArenaEntry>,
+pub struct VmArena<P: ProtocolCapT = u8> {
+    entries: Vec<ArenaEntry<P>>,
     free_list: Vec<u16>,
     live_count: u16,
 }
 
-impl Default for VmArena {
+impl<P: ProtocolCapT> Default for VmArena<P> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl VmArena {
+impl<P: ProtocolCapT> VmArena<P> {
     pub fn new() -> Self {
         Self {
             entries: Vec::with_capacity(16),
@@ -225,7 +225,7 @@ impl VmArena {
     }
 
     /// Insert a new VM into the arena. Returns its VmId.
-    pub fn insert(&mut self, vm: VmInstance) -> Option<VmId> {
+    pub fn insert(&mut self, vm: VmInstance<P>) -> Option<VmId> {
         if self.live_count as usize >= MAX_VMS {
             return None;
         }
@@ -248,7 +248,7 @@ impl VmArena {
     }
 
     /// Look up a VM by ID. Returns None if the slot is empty or generation mismatches.
-    pub fn get(&self, id: VmId) -> Option<&VmInstance> {
+    pub fn get(&self, id: VmId) -> Option<&VmInstance<P>> {
         let idx = id.index() as usize;
         if idx >= self.entries.len() {
             return None;
@@ -261,7 +261,7 @@ impl VmArena {
     }
 
     /// Mutable lookup by ID.
-    pub fn get_mut(&mut self, id: VmId) -> Option<&mut VmInstance> {
+    pub fn get_mut(&mut self, id: VmId) -> Option<&mut VmInstance<P>> {
         let idx = id.index() as usize;
         if idx >= self.entries.len() {
             return None;
@@ -276,7 +276,7 @@ impl VmArena {
     /// Remove a VM from the arena, reclaiming the slot.
     /// Increments generation so stale handles are detected.
     /// Returns the removed VmInstance (for cleanup).
-    pub fn remove(&mut self, id: VmId) -> Option<VmInstance> {
+    pub fn remove(&mut self, id: VmId) -> Option<VmInstance<P>> {
         let idx = id.index() as usize;
         if idx >= self.entries.len() {
             return None;
@@ -294,7 +294,7 @@ impl VmArena {
 
     /// Direct access by arena index (no generation check). Panics if slot is empty.
     /// Use for VMs known to be live (active VM, caller on call stack).
-    pub fn vm(&self, idx: u16) -> &VmInstance {
+    pub fn vm(&self, idx: u16) -> &VmInstance<P> {
         self.entries[idx as usize]
             .vm
             .as_ref()
@@ -302,7 +302,7 @@ impl VmArena {
     }
 
     /// Mutable direct access by arena index (no generation check). Panics if slot is empty.
-    pub fn vm_mut(&mut self, idx: u16) -> &mut VmInstance {
+    pub fn vm_mut(&mut self, idx: u16) -> &mut VmInstance<P> {
         self.entries[idx as usize]
             .vm
             .as_mut()
@@ -482,7 +482,7 @@ mod tests {
 
     #[test]
     fn test_vm_state_transitions() {
-        let mut vm = VmInstance::new(0, 0, CapTable::new(), 1_000_000);
+        let mut vm: VmInstance = VmInstance::new(0, 0, CapTable::new(), 1_000_000);
         assert_eq!(vm.state, VmState::Idle);
         assert!(vm.can_call());
 
@@ -504,7 +504,7 @@ mod tests {
 
     #[test]
     fn test_invalid_transitions() {
-        let mut vm = VmInstance::new(0, 0, CapTable::new(), 1_000_000);
+        let mut vm: VmInstance = VmInstance::new(0, 0, CapTable::new(), 1_000_000);
 
         // Idle -> WaitingForReply (invalid — must go through Running)
         assert!(vm.transition(VmState::WaitingForReply).is_err());
@@ -522,7 +522,7 @@ mod tests {
 
     #[test]
     fn test_vm_initial_registers() {
-        let vm = VmInstance::new(0, 5, CapTable::new(), 1_000_000);
+        let vm: VmInstance = VmInstance::new(0, 5, CapTable::new(), 1_000_000);
         assert_eq!(vm.registers[0], 0); // no halt address, all regs start at 0
         for i in 1..13 {
             assert_eq!(vm.registers[i], 0);
@@ -532,7 +532,7 @@ mod tests {
 
     #[test]
     fn test_faulted_is_terminal() {
-        let mut vm = VmInstance::new(0, 0, CapTable::new(), 1_000_000);
+        let mut vm: VmInstance = VmInstance::new(0, 0, CapTable::new(), 1_000_000);
         vm.transition(VmState::Running).unwrap();
         vm.transition(VmState::Faulted).unwrap();
         assert!(!vm.can_call());
@@ -556,8 +556,8 @@ mod tests {
 
     #[test]
     fn test_arena_insert_get() {
-        let mut arena = VmArena::new();
-        let vm = VmInstance::new(0, 0, CapTable::new(), 1000);
+        let mut arena: VmArena = VmArena::new();
+        let vm: VmInstance = VmInstance::new(0, 0, CapTable::new(), 1000);
         let id = arena.insert(vm).unwrap();
         assert_eq!(arena.len(), 1);
 
@@ -567,7 +567,7 @@ mod tests {
 
     #[test]
     fn test_arena_remove_reuse() {
-        let mut arena = VmArena::new();
+        let mut arena: VmArena = VmArena::new();
 
         let id1 = arena
             .insert(VmInstance::new(0, 0, CapTable::new(), 100))
@@ -598,7 +598,7 @@ mod tests {
 
     #[test]
     fn test_arena_stale_handle() {
-        let mut arena = VmArena::new();
+        let mut arena: VmArena = VmArena::new();
 
         let id = arena
             .insert(VmInstance::new(0, 0, CapTable::new(), 100))
@@ -618,7 +618,7 @@ mod tests {
 
     #[test]
     fn test_arena_multiple_slots() {
-        let mut arena = VmArena::new();
+        let mut arena: VmArena = VmArena::new();
         let mut ids = Vec::new();
 
         for i in 0..10 {

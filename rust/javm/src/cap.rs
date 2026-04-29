@@ -257,41 +257,69 @@ pub struct CallableCap {
     pub max_gas: Option<u64>,
 }
 
-/// Protocol cap slot number (0-63). Kernel-handled, replaceable with CALLABLE.
-#[derive(Debug, Clone, Copy)]
-pub struct ProtocolCap {
-    /// Protocol cap ID matching GP host call numbering.
-    pub id: u8,
+/// Per-variant policy for `Cap::Protocol(P)` payloads.
+///
+/// javm consults these methods when handling cap-table mutation
+/// management ecallis (COPY / MOVE / DROP). The default impls allow
+/// every operation; consumers that want stricter rules (e.g. jar-kernel
+/// rejecting copy of pinned caps) override the relevant method.
+pub trait ProtocolCapT: Clone + core::fmt::Debug {
+    /// May the guest COPY this cap to another cap-table slot?
+    fn is_copyable(&self) -> bool {
+        true
+    }
+    /// May the guest MOVE this cap between cap-table slots?
+    fn is_movable(&self) -> bool {
+        true
+    }
+    /// May the guest DROP this cap?
+    fn is_droppable(&self) -> bool {
+        true
+    }
 }
 
+/// `u8` is the default protocol-cap payload type used by tests, benches,
+/// and javm-bench guests. The byte typically encodes the host-call
+/// selector (1..=N), and `ecalli N` on slot N yields
+/// `KernelResult::ProtocolCall { slot: N }`.
+impl ProtocolCapT for u8 {}
+
 /// A capability in the cap table.
+///
+/// Generic over the protocol-cap payload type `P`. The default `P = u8`
+/// matches the legacy "protocol cap is just an id" shape; jar-kernel
+/// substitutes a richer type that wraps both host-call selectors and
+/// kernel cap data.
 #[derive(Debug)]
-pub enum Cap {
+pub enum Cap<P: ProtocolCapT = u8> {
     Untyped(Arc<UntypedCap>),
     Data(DataCap),
     Code(Arc<CodeCap>),
     Handle(HandleCap),
     Callable(CallableCap),
-    Protocol(ProtocolCap),
+    Protocol(P),
 }
 
-impl Cap {
-    /// Whether this cap type supports COPY.
+impl<P: ProtocolCapT> Cap<P> {
+    /// Whether this cap type supports COPY. Protocol caps consult `P`'s
+    /// `is_copyable` hook.
     pub fn is_copyable(&self) -> bool {
-        matches!(
-            self,
-            Cap::Untyped(_) | Cap::Code(_) | Cap::Callable(_) | Cap::Protocol(_)
-        )
+        match self {
+            Cap::Untyped(_) | Cap::Code(_) | Cap::Callable(_) => true,
+            Cap::Data(_) | Cap::Handle(_) => false,
+            Cap::Protocol(p) => p.is_copyable(),
+        }
     }
 
-    /// Create a copy of this cap (only for copyable types).
-    pub fn try_copy(&self) -> Option<Cap> {
+    /// Create a copy of this cap (only for copyable types). Protocol
+    /// caps clone `P` only when `p.is_copyable()` is true.
+    pub fn try_copy(&self) -> Option<Cap<P>> {
         match self {
             Cap::Untyped(u) => Some(Cap::Untyped(Arc::clone(u))),
             Cap::Code(c) => Some(Cap::Code(Arc::clone(c))),
             Cap::Callable(c) => Some(Cap::Callable(c.clone())),
-            Cap::Protocol(p) => Some(Cap::Protocol(*p)),
-            Cap::Data(_) | Cap::Handle(_) => None,
+            Cap::Protocol(p) if p.is_copyable() => Some(Cap::Protocol(p.clone())),
+            Cap::Data(_) | Cap::Handle(_) | Cap::Protocol(_) => None,
         }
     }
 }
@@ -311,21 +339,21 @@ pub const PROTOCOL_SLOT_COUNT: usize = 29;
 /// original kernel-populated protocol cap. The compiler uses this for
 /// fast-path inlining of ecalli on protocol caps.
 #[derive(Debug)]
-pub struct CapTable {
-    slots: [Option<Cap>; CAP_TABLE_SIZE],
+pub struct CapTable<P: ProtocolCapT = u8> {
+    slots: [Option<Cap<P>>; CAP_TABLE_SIZE],
     /// Per-slot original bitmap (32 bytes = 256 bits). True = slot holds original
     /// kernel-populated protocol cap. Only meaningful for slots < PROTOCOL_SLOT_COUNT.
     /// Set to false on DROP, MOVE-in, COPY-in, or MOVE-out. Never goes back to true.
     original_bitmap: [u8; 32],
 }
 
-impl Default for CapTable {
+impl<P: ProtocolCapT> Default for CapTable<P> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl CapTable {
+impl<P: ProtocolCapT> CapTable<P> {
     pub fn new() -> Self {
         Self {
             slots: core::array::from_fn(|_| None),
@@ -368,30 +396,30 @@ impl CapTable {
     }
 
     /// Get a reference to the cap at `index`.
-    pub fn get(&self, index: u8) -> Option<&Cap> {
+    pub fn get(&self, index: u8) -> Option<&Cap<P>> {
         self.slots[index as usize].as_ref()
     }
 
     /// Get a mutable reference to the cap at `index`.
-    pub fn get_mut(&mut self, index: u8) -> Option<&mut Cap> {
+    pub fn get_mut(&mut self, index: u8) -> Option<&mut Cap<P>> {
         self.slots[index as usize].as_mut()
     }
 
     /// Set a cap at `index`, returning any previous cap.
     /// Clears the original bit for the slot.
-    pub fn set(&mut self, index: u8, cap: Cap) -> Option<Cap> {
+    pub fn set(&mut self, index: u8, cap: Cap<P>) -> Option<Cap<P>> {
         self.clear_original(index);
         self.slots[index as usize].replace(cap)
     }
 
     /// Set a cap at `index` and mark it as original (for kernel init of protocol caps).
-    pub fn set_original(&mut self, index: u8, cap: Cap) -> Option<Cap> {
+    pub fn set_original(&mut self, index: u8, cap: Cap<P>) -> Option<Cap<P>> {
         self.mark_original(index);
         self.slots[index as usize].replace(cap)
     }
 
     /// Take (remove) the cap at `index`. Clears the original bit.
-    pub fn take(&mut self, index: u8) -> Option<Cap> {
+    pub fn take(&mut self, index: u8) -> Option<Cap<P>> {
         self.clear_original(index);
         self.slots[index as usize].take()
     }
@@ -431,7 +459,7 @@ impl CapTable {
 
     /// Drop the cap at `index`. Returns the dropped cap (caller handles cleanup).
     /// Clears the original bit.
-    pub fn drop_cap(&mut self, index: u8) -> Option<Cap> {
+    pub fn drop_cap(&mut self, index: u8) -> Option<Cap<P>> {
         self.clear_original(index);
         self.slots[index as usize].take()
     }
@@ -568,19 +596,19 @@ mod tests {
 
     #[test]
     fn test_cap_table_original_bitmap() {
-        let mut table = CapTable::new();
+        let mut table: CapTable = CapTable::new();
         assert!(!table.is_original(3));
 
         // Mark as original (kernel init)
-        table.set_original(3, Cap::Protocol(ProtocolCap { id: 3 }));
+        table.set_original(3, Cap::Protocol(3u8));
         assert!(table.is_original(3));
 
         // Regular set clears original
-        table.set(3, Cap::Protocol(ProtocolCap { id: 3 }));
+        table.set(3, Cap::Protocol(3u8));
         assert!(!table.is_original(3));
 
         // Mark again, then take clears it
-        table.set_original(5, Cap::Protocol(ProtocolCap { id: 5 }));
+        table.set_original(5, Cap::Protocol(5u8));
         assert!(table.is_original(5));
         table.take(5);
         assert!(!table.is_original(5));
@@ -588,11 +616,11 @@ mod tests {
 
     #[test]
     fn test_cap_copyability() {
-        let untyped = Cap::Untyped(Arc::new(UntypedCap::new(10)));
+        let untyped: Cap = Cap::Untyped(Arc::new(UntypedCap::new(10)));
         assert!(untyped.is_copyable());
         assert!(untyped.try_copy().is_some());
 
-        let data = Cap::Data(DataCap::new(0, 1));
+        let data: Cap = Cap::Data(DataCap::new(0, 1));
         assert!(!data.is_copyable());
         assert!(data.try_copy().is_none());
 
@@ -603,27 +631,27 @@ mod tests {
             // Verified by type: Cap::Code(_) => true in is_copyable
         }
 
-        let handle = Cap::Handle(HandleCap {
+        let handle: Cap = Cap::Handle(HandleCap {
             vm_id: crate::vm_pool::VmId::new(0, 0),
             max_gas: None,
         });
         assert!(!handle.is_copyable());
         assert!(handle.try_copy().is_none());
 
-        let callable = Cap::Callable(CallableCap {
+        let callable: Cap = Cap::Callable(CallableCap {
             vm_id: crate::vm_pool::VmId::new(0, 0),
             max_gas: None,
         });
         assert!(callable.is_copyable());
         assert!(callable.try_copy().is_some());
 
-        let proto = Cap::Protocol(ProtocolCap { id: 0 });
+        let proto: Cap = Cap::Protocol(0u8);
         assert!(proto.is_copyable());
     }
 
     #[test]
     fn test_cap_table_move() {
-        let mut table = CapTable::new();
+        let mut table: CapTable = CapTable::new();
         table.set(10, Cap::Data(DataCap::new(0, 5)));
 
         assert!(table.move_cap(10, 20).is_ok());
@@ -639,7 +667,7 @@ mod tests {
 
     #[test]
     fn test_cap_table_copy() {
-        let mut table = CapTable::new();
+        let mut table: CapTable = CapTable::new();
         table.set(
             10,
             Cap::Callable(CallableCap {
@@ -659,7 +687,7 @@ mod tests {
 
     #[test]
     fn test_cap_table_copy_occupied_fails() {
-        let mut table = CapTable::new();
+        let mut table: CapTable = CapTable::new();
         table.set(
             10,
             Cap::Callable(CallableCap {

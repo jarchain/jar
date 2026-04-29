@@ -864,7 +864,7 @@ mod tests {
         let blob = build_sample_service();
         assert!(!blob.is_empty());
         // Verify it can be loaded by kernel
-        let kernel = javm::kernel::InvocationKernel::new(&blob, &[], 1_000_000);
+        let kernel = javm::kernel::InvocationKernel::<u8>::new(&blob, &[], 1_000_000);
         assert!(
             kernel.is_ok(),
             "Sample service blob should be loadable: {:?}",
@@ -877,7 +877,7 @@ mod tests {
         let blob = build_sample_service();
         let args = b"hello world";
         // Kernel runs single entrypoint at PC=0.
-        let mut kernel =
+        let mut kernel: javm::kernel::InvocationKernel =
             javm::kernel::InvocationKernel::new(&blob, args, 1_000_000).expect("should initialize");
         let result = kernel.run();
         // The sample service executes and
