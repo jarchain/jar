@@ -28,7 +28,7 @@ pub const RC_READONLY: u64 = u64::MAX - 2;
 /// Quota exceeded (storage_write).
 pub const RC_QUOTA: u64 = u64::MAX - 3;
 
-/// Pinning violation (cnode_grant / cnode_move / cap_call arg-scan).
+/// Pinning violation (cnode_grant / cnode_move / arg-scan at invocation entry).
 pub const RC_PINNING: u64 = u64::MAX - 4;
 
 /// Cap not found / slot empty.
@@ -38,7 +38,10 @@ pub const RC_BAD_CAP: u64 = u64::MAX - 5;
 pub const RC_UNIMPLEMENTED: u64 = u64::MAX - 6;
 
 /// The protocol slot numbers we assign to each kernel host call. javm reserves
-/// slots 1..=28 as ProtocolCaps; we use 1..=20.
+/// slots 1..=28 as ProtocolCaps; we use a subset (with a gap at 11 — see below).
+///
+/// Slot 11 is reserved/unused: it formerly held `CapCall`, which has retired
+/// in favour of plain javm CALL on a Handle / Callable cap-table slot.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 #[repr(u8)]
 pub enum HostCall {
@@ -52,7 +55,7 @@ pub enum HostCall {
     CnodeRevoke = 8,
     CnodeMove = 9,
     CapDerive = 10,
-    CapCall = 11,
+    // 11 — formerly CapCall, retired (use javm CALL instead).
     VaultInitialize = 12,
     CreateVault = 13,
     QuotaSet = 14,
@@ -61,7 +64,7 @@ pub enum HostCall {
     AttestationAggregate = 17,
     ResultEqual = 18,
     SlotClear = 19,
-    SlotEmit = 20, // synthesized by step-3 cap_call when target is self-DispatchRef
+    SlotEmit = 20, // synthesized by step-3 dispatch when target is self-DispatchRef
     /// Read the prior-slot SCALE bytes into a guest memory window. Only valid
     /// during dispatch step-3 (`AggregateMerge`).
     SlotRead = 21,
@@ -80,7 +83,6 @@ impl HostCall {
             8 => Ok(HostCall::CnodeRevoke),
             9 => Ok(HostCall::CnodeMove),
             10 => Ok(HostCall::CapDerive),
-            11 => Ok(HostCall::CapCall),
             12 => Ok(HostCall::VaultInitialize),
             13 => Ok(HostCall::CreateVault),
             14 => Ok(HostCall::QuotaSet),

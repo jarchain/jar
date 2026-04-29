@@ -53,7 +53,6 @@ pub fn dispatch_host_call<H: Hardware>(
         HostCall::CnodeRevoke => cnode::host_cnode_revoke(vm, ctx),
         HostCall::CnodeMove => cnode::host_cnode_move(vm, ctx),
         HostCall::CapDerive => cap::host_cap_derive(vm, ctx),
-        HostCall::CapCall => cap::host_cap_call(vm, ctx),
         HostCall::VaultInitialize => cap::host_vault_initialize(vm, ctx),
         HostCall::CreateVault => cap::host_create_vault(vm, ctx),
         HostCall::QuotaSet => cap::host_quota_set(vm, ctx),

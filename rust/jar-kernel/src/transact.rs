@@ -175,8 +175,12 @@ pub fn run_one_invocation<H: Hardware>(
 pub(crate) fn populate_host_call_slots(vm: &mut Vm) {
     use crate::vm::host_abi::HostCall;
     // The current host-call range — see `host_abi::HostCall`. Slot 1
-    // through SlotRead (21).
+    // through SlotRead (21), with a gap at 11 (formerly CapCall, now
+    // plain javm CALL).
     for id in (HostCall::Gas as u8)..=(HostCall::SlotRead as u8) {
+        if id == 11 {
+            continue;
+        }
         vm.cap_table_set_original(id, javm::cap::Cap::Protocol(KernelCap::HostCall(id)));
     }
 }
