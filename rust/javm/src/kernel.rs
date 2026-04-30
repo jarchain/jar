@@ -69,7 +69,7 @@ use crate::cap::{
     Access, BARE_FRAME_SLOT, Cap, CapTable, CodeCap, DataCap, ForeignCnode, FrameRefCap,
     FrameRefRights, NoForeignCnode, ProtocolCapT, UntypedCap,
 };
-use crate::program::{self, CapEntryType, CapManifestEntry, ParsedBlob};
+use crate::program::{self, CapEntryType};
 #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
 use crate::vm_pool::WindowPool;
 use crate::vm_pool::{CallFrame, FrameId, MAX_CODE_CAPS, VmArena, VmId, VmInstance, VmState};
@@ -170,33 +170,6 @@ pub struct InvocationKernel<P: crate::cap::ProtocolCapT = u8> {
 }
 
 impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
-    /// Create a new kernel from a JAR blob.
-    ///
-    /// javm is a pure executor — it has no notion of "input args." Hosts
-    /// that want to pass byte payloads to the guest do so by writing
-    /// directly into a DATA cap of their choice (via
-    /// [`Self::write_data_cap_init`]) and placing it where the guest
-    /// expects it (typically ephemeral sub-slot 4 — the conventional
-    /// cap-arg location). Scalar args still flow through registers
-    /// φ[7..12] like any other CALL.
-    pub fn new(blob: &[u8], gas: u64) -> Result<Self, KernelError> {
-        Self::new_with_backend(blob, gas, crate::backend::PvmBackend::Default)
-    }
-
-    /// Create a new kernel, reusing cached JIT compilations when available.
-    pub fn new_cached(blob: &[u8], gas: u64, cache: &mut CodeCache) -> Result<Self, KernelError> {
-        Self::new_inner(blob, gas, crate::backend::PvmBackend::Default, Some(cache))
-    }
-
-    /// Create a new kernel with a specific backend selection.
-    pub fn new_with_backend(
-        blob: &[u8],
-        gas: u64,
-        backend: crate::backend::PvmBackend,
-    ) -> Result<Self, KernelError> {
-        Self::new_inner(blob, gas, backend, None)
-    }
-
     /// Construct a kernel from a pre-built [`InvocationArtifacts`].
     /// Used by hosts (jar-kernel's vault_init, plus
     /// [`cap_table_from_blob`] for legacy blob bootstrap) that have
@@ -224,70 +197,16 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         kernel.finalize_kernel(cap_table, init_code_id, gas, data_caps_to_map)
     }
 
-    fn new_inner(
-        blob: &[u8],
-        gas: u64,
-        backend: crate::backend::PvmBackend,
-        mut code_cache: Option<&mut CodeCache>,
-    ) -> Result<Self, KernelError> {
-        let parsed = program::parse_blob(blob).ok_or(KernelError::InvalidBlob)?;
-
-        let mut kernel = Self::build_kernel_skeleton(parsed.header.memory_pages, backend)?;
-
-        // Build VM 0's cap table from the manifest. Slot 0 (the bare-Frame
-        // FrameRef) is patched in `finalize_kernel` after both VMs are
-        // inserted into the arena. Protocol caps are NOT auto-populated
-        // — the caller (kernel host) is responsible for setting up
-        // whatever protocol slots it intends to expose, via
-        // `cap_table_set` / `set_original`. This avoids baking JAR's old
-        // 1..=28 host-call layout into javm itself.
-        let mut cap_table: CapTable<P> = CapTable::new();
-        let mut data_caps_to_map: Vec<(u32, u32, u32, Access)> = Vec::new(); // (base_page, backing_offset, page_count, access)
-
-        for entry in &parsed.caps {
-            let cap = kernel.create_cap_from_manifest(entry, &parsed, &mut code_cache)?;
-            if let Cap::Data(ref d) = cap {
-                // Record DATA caps that need mapping into the CODE window
-                if let Some((base_page, access)) = d.mapping_for(crate::vm_pool::VmId::ROOT) {
-                    data_caps_to_map.push((base_page, d.backing_offset, d.page_count, access));
-                }
-            }
-            cap_table.set(entry.cap_index, cap);
-        }
-
-        // Resolve the init CODE cap (the program run by Vault.initialize)
-        // to find its code_caps index.
-        let invoke_code_id = match cap_table.get(parsed.header.init_cap) {
-            Some(Cap::Code(c)) => c.id,
-            _ => return Err(KernelError::InvalidBlob),
-        };
-
-        kernel.finalize_kernel(cap_table, invoke_code_id, gas, data_caps_to_map)
-    }
-
-    /// Allocate the kernel's per-invocation infrastructure (BackingStore,
-    /// UntypedCap, WindowPool) and return a partially-initialized
-    /// `Self` with empty `code_caps`, an empty `vm_arena`, and
-    /// `bare_frame_id = VmId::ROOT` as a placeholder. `finalize_kernel`
-    /// fills in the rest.
+    /// Allocate the kernel's per-invocation infrastructure (mem_cycles,
+    /// WindowPool) on top of a caller-allocated `untyped` and `backing`,
+    /// and return a partially-initialized `Self` with empty `code_caps`,
+    /// an empty `vm_arena`, and `bare_frame_id = VmId::ROOT` as a
+    /// placeholder. [`Self::finalize_kernel`] fills in the rest.
     ///
-    /// `memory_pages` sizes the backing memfd and the UntypedCap budget;
-    /// for `Vault.initialize`-driven invocations this is the home Vault's
-    /// `quota_pages` capped at `u32::MAX`.
-    fn build_kernel_skeleton(
-        memory_pages: u32,
-        backend: crate::backend::PvmBackend,
-    ) -> Result<Self, KernelError> {
-        let backing = BackingStore::new(memory_pages).ok_or(KernelError::MemoryError)?;
-        let untyped = Arc::new(UntypedCap::new(memory_pages));
-        Self::build_kernel_skeleton_with(untyped, backing, backend)
-    }
-
-    /// Like [`Self::build_kernel_skeleton`] but takes a caller-allocated
-    /// `untyped` and `backing`. Used by [`Self::new_from_artifacts`]
-    /// when a host (e.g. jar-kernel's vault_init) has already
-    /// allocated the untyped pool and backing store and pre-populated
-    /// DataCaps from them.
+    /// Hosts construct `untyped` and `backing` outside javm because
+    /// they need them to allocate persistent → ephemeral DataCaps
+    /// before the kernel exists (see jar-kernel's `vault_init`); the
+    /// kernel takes ownership here.
     fn build_kernel_skeleton_with(
         untyped: Arc<UntypedCap>,
         backing: BackingStore,
@@ -522,140 +441,6 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         }
 
         (flat_mem, vm.heap_base(), vm.heap_top())
-    }
-
-    /// Create a warm-restart kernel: same as `new()` but overlays a saved
-    /// flat_mem snapshot onto the DATA cap pages after initialization.
-    ///
-    /// The kernel always starts at PC=0 (the guest's `_start` entry), but
-    /// the heap, statics, and actor instance survive from the previous tick
-    /// because the RW DATA pages are pre-populated.
-    /// Create a warm-restart kernel: same as [`new`](Self::new) but overlays
-    /// a saved flat_mem snapshot onto the RW DATA cap pages after init.
-    ///
-    /// If `cache` is provided, JIT compilations are reused via
-    /// [`CodeCache`] — important for the continuation hot path where the
-    /// same blob is re-entered every tick.
-    pub fn new_warm(
-        blob: &[u8],
-        gas: u64,
-        flat_mem: &[u8],
-        heap_base: u32,
-        heap_top: u32,
-        cache: Option<&mut CodeCache>,
-    ) -> Result<Self, KernelError> {
-        let mut kernel = match cache {
-            Some(c) => Self::new_cached(blob, gas, c)?,
-            None => Self::new(blob, gas)?,
-        };
-        // Overlay the saved flat_mem onto RW DATA cap pages.
-        let vm = &kernel.vm_arena.vm(0);
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        {
-            let wb = kernel.active_window_base();
-            for slot in 0..=255u8 {
-                if let Some(Cap::Data(d)) = vm.cap_table.get(slot)
-                    && let Some((base_page, access)) = d.active_mapping()
-                    && access == Access::RW
-                {
-                    let addr = base_page as usize * crate::PVM_PAGE_SIZE as usize;
-                    let len = d.page_count as usize * crate::PVM_PAGE_SIZE as usize;
-                    if addr + len <= flat_mem.len() {
-                        unsafe {
-                            core::ptr::copy_nonoverlapping(
-                                flat_mem.as_ptr().add(addr),
-                                wb.add(addr),
-                                len,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-        {
-            // Collect overlay info before taking &mut backing.
-            let overlays: Vec<(usize, u32, u32)> = (0..=255u8)
-                .filter_map(|slot| {
-                    let d = if let Some(Cap::Data(d)) = vm.cap_table.get(slot) {
-                        d
-                    } else {
-                        return None;
-                    };
-                    let (base_page, access) = d.active_mapping()?;
-                    if access != Access::RW {
-                        return None;
-                    }
-                    let addr = base_page as usize * crate::PVM_PAGE_SIZE as usize;
-                    let len = d.page_count as usize * crate::PVM_PAGE_SIZE as usize;
-                    if addr + len > flat_mem.len() {
-                        return None;
-                    }
-                    Some((addr, d.backing_offset, d.page_count))
-                })
-                .collect();
-            for (addr, backing_offset, page_count) in overlays {
-                let len = page_count as usize * crate::PVM_PAGE_SIZE as usize;
-                kernel
-                    .backing
-                    .write_page_slice(backing_offset, &flat_mem[addr..addr + len]);
-            }
-        }
-
-        // Set heap state on VM 0.
-        let vm = kernel.vm_arena.vm_mut(0);
-        vm.set_heap_base(heap_base);
-        vm.set_heap_top(heap_top);
-
-        Ok(kernel)
-    }
-
-    /// Create a capability from a manifest entry.
-    fn create_cap_from_manifest(
-        &mut self,
-        entry: &CapManifestEntry,
-        parsed: &ParsedBlob<'_>,
-        code_cache: &mut Option<&mut CodeCache>,
-    ) -> Result<Cap<P>, KernelError> {
-        match entry.cap_type {
-            CapEntryType::Code => {
-                let code_data = program::cap_data(entry, parsed.data_section);
-                let id = self.next_code_id;
-                self.next_code_id += 1;
-                if self.code_caps.len() >= MAX_CODE_CAPS {
-                    return Err(KernelError::TooManyCodeCaps);
-                }
-                let code_cap = compile_code_blob(
-                    code_data,
-                    id,
-                    self.mem_cycles,
-                    self.backend,
-                    code_cache.as_deref_mut(),
-                )?;
-                self.code_caps.push(Arc::clone(&code_cap));
-                Ok(Cap::Code(code_cap))
-            }
-            CapEntryType::Data => {
-                // Allocate fresh ephemeral pages and write the initial
-                // payload, then re-record the manifest's `(base_page,
-                // access)` mapping for the root VM. The actual mmap
-                // happens later in `finalize_kernel` once VM 0's window
-                // is assigned.
-                let initial = if entry.data_len > 0 {
-                    program::cap_data(entry, parsed.data_section)
-                } else {
-                    &[]
-                };
-                let mut data_cap =
-                    allocate_data_cap(initial, entry.page_count, &self.untyped, &mut self.backing)?;
-                data_cap.map(
-                    crate::vm_pool::VmId::ROOT,
-                    entry.base_page,
-                    entry.init_access,
-                );
-                Ok(Cap::Data(data_cap))
-            }
-        }
     }
 
     /// Dispatch an ecalli immediate from the active VM.

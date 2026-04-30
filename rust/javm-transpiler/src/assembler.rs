@@ -864,7 +864,10 @@ mod tests {
         let blob = build_sample_service();
         assert!(!blob.is_empty());
         // Verify it can be loaded by kernel
-        let kernel = javm::kernel::InvocationKernel::<u8>::new(&blob, 1_000_000);
+        let backend = javm::PvmBackend::Default;
+        let kernel = javm::kernel::cap_table_from_blob::<u8>(&blob, backend, None).and_then(|a| {
+            javm::kernel::InvocationKernel::new_from_artifacts(a, 1_000_000, backend)
+        });
         assert!(
             kernel.is_ok(),
             "Sample service blob should be loadable: {:?}",
