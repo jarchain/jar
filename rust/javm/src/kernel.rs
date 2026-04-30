@@ -585,65 +585,29 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
                 if self.code_caps.len() >= MAX_CODE_CAPS {
                     return Err(KernelError::TooManyCodeCaps);
                 }
-
-                // Check compile cache first (blake2b-256 makes collisions negligible).
-                let cache_key = CodeCache::hash_blob(code_data);
-                if let Some(cached) = code_cache.as_ref().and_then(|c| c.entries.get(&cache_key)) {
-                    let code_cap = Arc::clone(cached);
-                    self.code_caps.push(Arc::clone(&code_cap));
-                    return Ok(Cap::Code(code_cap));
-                }
-
-                // Parse the code sub-blob (jump_table + code + bitmask)
-                let code_blob =
-                    program::parse_code_blob(code_data).ok_or(KernelError::InvalidBlob)?;
-
-                // Compile via selected backend (interpreter or recompiler)
-                let compiled = crate::backend::compile(
-                    &code_blob.code,
-                    &code_blob.bitmask,
-                    &code_blob.jump_table,
+                let code_cap = compile_code_blob(
+                    code_data,
+                    id,
                     self.mem_cycles,
                     self.backend,
-                )
-                .map_err(|e| {
-                    tracing::warn!("compile failed: {e}");
-                    KernelError::CompileError
-                })?;
-
-                let code_cap = Arc::new(CodeCap {
-                    id,
-                    compiled,
-                    jump_table: code_blob.jump_table,
-                    bitmask: code_blob.bitmask,
-                });
+                    code_cache.as_deref_mut(),
+                )?;
                 self.code_caps.push(Arc::clone(&code_cap));
-
-                // Insert into cache.
-                if let Some(cache) = &mut *code_cache {
-                    cache.entries.insert(cache_key, Arc::clone(&code_cap));
-                }
-
                 Ok(Cap::Code(code_cap))
             }
             CapEntryType::Data => {
-                // Allocate pages from UNTYPED
-                let backing_offset = self
-                    .untyped
-                    .retype(entry.page_count)
-                    .ok_or(KernelError::OutOfMemory)?;
-
-                // Write initial data if present
-                if entry.data_len > 0 {
-                    let data = program::cap_data(entry, parsed.data_section);
-                    if !self.backing.write_init_data(backing_offset, data) {
-                        return Err(KernelError::MemoryError);
-                    }
-                }
-
-                // Create DATA cap, marked as mapped in the root VM
-                // (actual mmap happens after all caps are created).
-                let mut data_cap = DataCap::new(backing_offset, entry.page_count);
+                // Allocate fresh ephemeral pages and write the initial
+                // payload, then re-record the manifest's `(base_page,
+                // access)` mapping for the root VM. The actual mmap
+                // happens later in `finalize_kernel` once VM 0's window
+                // is assigned.
+                let initial = if entry.data_len > 0 {
+                    program::cap_data(entry, parsed.data_section)
+                } else {
+                    &[]
+                };
+                let mut data_cap =
+                    allocate_data_cap(initial, entry.page_count, &self.untyped, &mut self.backing)?;
                 data_cap.map(
                     crate::vm_pool::VmId::ROOT,
                     entry.base_page,
@@ -3095,6 +3059,97 @@ pub enum KernelError {
     CompileError,
 }
 
+// =============================================================================
+// Public construction helpers
+//
+// These free functions expose the building blocks of `InvocationKernel`
+// construction: hosts that build a `CapTable` directly (e.g. jar-kernel's
+// `Vault.initialize` flow walking `vault.slots`) call them to compile
+// CodeCap blobs and allocate ephemeral DataCap pages without going
+// through the JAR-blob manifest path.
+// =============================================================================
+
+/// Compile a raw PVM code blob into an [`Arc<CodeCap>`], hitting the
+/// supplied [`CodeCache`] when present. Mirrors the `CapEntryType::Code`
+/// arm of the JAR-manifest walk; the cache key is a blake2b-256 of the
+/// blob bytes.
+///
+/// `code_cap_id` is stamped into the returned `CodeCap` on a cache miss.
+/// On a cache hit the cached `Arc<CodeCap>` is returned as-is — its
+/// internal `id` field carries whatever value was assigned at first
+/// compile. Callers (e.g. `cap_table_from_blob`, `vault_init`) treat
+/// `id` as an opaque index they will install at the same position in
+/// their own `code_caps` Vec, so as long as code caps are pushed in
+/// matching compile order, lookup invariants hold. Mixing kernels that
+/// share a cache *and* push code caps in different orders is a footgun
+/// inherent to the existing model; not introduced here.
+pub fn compile_code_blob(
+    bytes: &[u8],
+    code_cap_id: u16,
+    mem_cycles: u8,
+    backend: crate::backend::PvmBackend,
+    code_cache: Option<&mut CodeCache>,
+) -> Result<Arc<CodeCap>, KernelError> {
+    // Cache lookup (blake2b-256 collision is negligible).
+    let cache_key = CodeCache::hash_blob(bytes);
+    if let Some(cache) = code_cache.as_deref()
+        && let Some(cached) = cache.entries.get(&cache_key)
+    {
+        return Ok(Arc::clone(cached));
+    }
+
+    // Parse the code sub-blob (jump_table + code + bitmask).
+    let code_blob = program::parse_code_blob(bytes).ok_or(KernelError::InvalidBlob)?;
+
+    // Compile via the selected backend.
+    let compiled = crate::backend::compile(
+        &code_blob.code,
+        &code_blob.bitmask,
+        &code_blob.jump_table,
+        mem_cycles,
+        backend,
+    )
+    .map_err(|e| {
+        tracing::warn!("compile failed: {e}");
+        KernelError::CompileError
+    })?;
+
+    let code_cap = Arc::new(CodeCap {
+        id: code_cap_id,
+        compiled,
+        jump_table: code_blob.jump_table,
+        bitmask: code_blob.bitmask,
+    });
+
+    if let Some(cache) = code_cache {
+        cache.entries.insert(cache_key, Arc::clone(&code_cap));
+    }
+
+    Ok(code_cap)
+}
+
+/// Allocate a fresh ephemeral [`DataCap`] backed by `untyped` pages and
+/// pre-populate it with `content`. Returns the cap **unmapped**: the
+/// caller must call [`DataCap::map`] (or the guest must `MGMT_MAP`) to
+/// install it in a VM window. Mirrors the `CapEntryType::Data` arm of
+/// the JAR-manifest walk minus the per-manifest mapping step.
+///
+/// `content` may be shorter than `page_count * PVM_PAGE_SIZE`; trailing
+/// pages are zero-filled. Passing an empty slice yields a fully
+/// zero-filled cap (no `write_init_data` call).
+pub fn allocate_data_cap(
+    content: &[u8],
+    page_count: u32,
+    untyped: &Arc<UntypedCap>,
+    backing: &mut BackingStore,
+) -> Result<DataCap, KernelError> {
+    let backing_offset = untyped.retype(page_count).ok_or(KernelError::OutOfMemory)?;
+    if !content.is_empty() && !backing.write_init_data(backing_offset, content) {
+        return Err(KernelError::MemoryError);
+    }
+    Ok(DataCap::new(backing_offset, page_count))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3145,6 +3200,77 @@ mod tests {
             },
         ];
         build_blob(memory_pages, 64, &caps, &code_data)
+    }
+
+    #[test]
+    fn compile_code_blob_round_trip_and_cache() {
+        let code_data = make_code_sub_blob();
+        // First compile: cache miss → compiles fresh.
+        let mut cache = CodeCache::new();
+        let cap_a = compile_code_blob(
+            &code_data,
+            0,
+            5,
+            crate::backend::PvmBackend::Default,
+            Some(&mut cache),
+        )
+        .expect("compile_code_blob succeeds");
+        assert_eq!(cap_a.id, 0);
+        assert_eq!(cache.entries.len(), 1);
+
+        // Second compile of the same bytes → cache hit; same Arc returned.
+        let cap_b = compile_code_blob(
+            &code_data,
+            42, // ignored on cache hit
+            5,
+            crate::backend::PvmBackend::Default,
+            Some(&mut cache),
+        )
+        .expect("second compile_code_blob succeeds");
+        assert!(Arc::ptr_eq(&cap_a, &cap_b));
+        assert_eq!(cache.entries.len(), 1);
+
+        // Compile without a cache works too.
+        let cap_c = compile_code_blob(&code_data, 7, 5, crate::backend::PvmBackend::Default, None)
+            .expect("no-cache compile succeeds");
+        assert_eq!(cap_c.id, 7);
+    }
+
+    #[test]
+    fn allocate_data_cap_writes_content_unmapped() {
+        let untyped = Arc::new(UntypedCap::new(8));
+        let mut backing = BackingStore::new(8).expect("BackingStore::new");
+
+        let content = b"hello world\n";
+        let data_cap = allocate_data_cap(content, 1, &untyped, &mut backing)
+            .expect("allocate_data_cap succeeds");
+
+        // Cap is unmapped: no recorded mappings, no active VM, bitmap empty.
+        assert!(data_cap.mappings.is_empty());
+        assert!(data_cap.active_in.is_none());
+        assert!(!data_cap.has_any_mapped());
+        assert_eq!(data_cap.page_count, 1);
+
+        // Untyped consumed one page (offset 0 → 1).
+        assert_eq!(untyped.remaining(), 7);
+    }
+
+    #[test]
+    fn allocate_data_cap_zero_filled_when_content_empty() {
+        let untyped = Arc::new(UntypedCap::new(2));
+        let mut backing = BackingStore::new(2).expect("BackingStore::new");
+        let cap = allocate_data_cap(&[], 1, &untyped, &mut backing).expect("allocate");
+        assert_eq!(cap.page_count, 1);
+        assert!(cap.mappings.is_empty());
+    }
+
+    #[test]
+    fn allocate_data_cap_exhausts_untyped() {
+        let untyped = Arc::new(UntypedCap::new(1));
+        let mut backing = BackingStore::new(1).expect("BackingStore::new");
+        let _first = allocate_data_cap(&[], 1, &untyped, &mut backing).expect("first ok");
+        let second = allocate_data_cap(&[], 1, &untyped, &mut backing);
+        assert!(matches!(second, Err(KernelError::OutOfMemory)));
     }
 
     #[test]
