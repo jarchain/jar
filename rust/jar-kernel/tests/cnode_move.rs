@@ -276,3 +276,141 @@ fn vault_ref_without_read_does_not_announce_foreign_frame() {
     }));
     assert!(cap.as_foreign_frame().is_none());
 }
+
+// ---------------------------------------------------------------------------
+// Persistent DataCap (Step 2): the cnode-cross machinery moves CapIds across
+// Vaults; persistent → ephemeral content materialization is deferred to
+// Step 8 (the Vault.initialize protocol). These tests cover ID-level
+// movement and refcount-shared content.
+// ---------------------------------------------------------------------------
+
+fn place_data_cap(
+    state: &mut State,
+    vault: VaultId,
+    slot: u8,
+    content: Vec<u8>,
+    page_count: u32,
+) -> jar_kernel::CapId {
+    use jar_kernel::DataCap;
+    let cap_id = cap_registry::alloc(
+        state,
+        CapRecord {
+            cap: Capability::Data(DataCap {
+                content: Arc::new(content),
+                page_count,
+            }),
+            issuer: None,
+            narrowing: vec![],
+        },
+    );
+    let arc = state.vaults.get(&vault).unwrap().clone();
+    let mut v: Vault = (*arc).clone();
+    v.slots.set(slot, Some(cap_id));
+    state.vaults.insert(vault, Arc::new(v));
+    cap_id
+}
+
+#[test]
+fn data_cap_round_trips_via_vault_slot() {
+    let mut state = State::empty();
+    let vault_id = state.next_vault_id();
+    state.vaults.insert(vault_id, Arc::new(Vault::new()));
+    let cap_id = place_data_cap(&mut state, vault_id, 5, b"hello".to_vec(), 1);
+
+    // fc_take of a persistent DataCap returns the Registered cap.
+    let mut view = VaultCnodeView::new(&mut state);
+    let cap = view
+        .fc_take(vault_id, 5, VaultRights::ALL)
+        .expect("fc_take");
+    let (returned_id, returned_cap) = match cap {
+        Cap::Protocol(KernelCap::Registered { id, cap }) => (id, cap),
+        _ => panic!("expected Registered cap"),
+    };
+    assert_eq!(returned_id, cap_id);
+    match &returned_cap {
+        Capability::Data(d) => {
+            assert_eq!(d.page_count, 1);
+            assert_eq!(d.content.as_slice(), b"hello");
+        }
+        _ => panic!("expected Data variant"),
+    }
+    // Slot now empty.
+    assert!(state.vaults.get(&vault_id).unwrap().slots.get(5).is_none());
+    // Place it back at a different slot.
+    let mut view = VaultCnodeView::new(&mut state);
+    view.fc_set(
+        vault_id,
+        9,
+        VaultRights::ALL,
+        Cap::Protocol(KernelCap::Registered {
+            id: returned_id,
+            cap: returned_cap,
+        }),
+    )
+    .expect("fc_set should accept persistent DataCap");
+    assert_eq!(
+        state.vaults.get(&vault_id).unwrap().slots.get(9),
+        Some(cap_id)
+    );
+}
+
+#[test]
+fn data_cap_clones_share_arc_content() {
+    let mut state = State::empty();
+    let vault_id = state.next_vault_id();
+    state.vaults.insert(vault_id, Arc::new(Vault::new()));
+    let _parent_id = place_data_cap(&mut state, vault_id, 3, b"abc".to_vec(), 1);
+
+    // fc_clone produces a child with derive-shared content (same Arc).
+    let mut view = VaultCnodeView::new(&mut state);
+    let cap = view
+        .fc_clone(vault_id, 3, VaultRights::ALL)
+        .expect("fc_clone");
+    let (parent_arc, child_arc) = match cap {
+        Cap::Protocol(KernelCap::Registered {
+            cap: Capability::Data(d),
+            ..
+        }) => {
+            let parent = match &state.cap_registry.get(&_parent_id).unwrap().cap {
+                Capability::Data(p) => Arc::clone(&p.content),
+                _ => unreachable!(),
+            };
+            (parent, d.content)
+        }
+        _ => panic!("expected Registered Data cap"),
+    };
+    assert!(
+        Arc::ptr_eq(&parent_arc, &child_arc),
+        "derived DataCap shares Arc<Vec<u8>> content"
+    );
+}
+
+#[test]
+fn data_cap_moves_between_vaults() {
+    // Vault A has a DataCap at slot 0; we MOVE it to Vault B's slot 1
+    // via fc_take + fc_set.
+    let mut state = State::empty();
+    let vault_a = state.next_vault_id();
+    state.vaults.insert(vault_a, Arc::new(Vault::new()));
+    let cap_id = place_data_cap(&mut state, vault_a, 0, b"shared".to_vec(), 2);
+    let vault_b = state.next_vault_id();
+    state.vaults.insert(vault_b, Arc::new(Vault::new()));
+
+    let cap = {
+        let mut view = VaultCnodeView::new(&mut state);
+        view.fc_take(vault_a, 0, VaultRights::ALL)
+            .expect("take from A")
+    };
+
+    {
+        let mut view = VaultCnodeView::new(&mut state);
+        view.fc_set(vault_b, 1, VaultRights::ALL, cap)
+            .expect("set into B");
+    }
+
+    assert!(state.vaults.get(&vault_a).unwrap().slots.get(0).is_none());
+    assert_eq!(
+        state.vaults.get(&vault_b).unwrap().slots.get(1),
+        Some(cap_id)
+    );
+}

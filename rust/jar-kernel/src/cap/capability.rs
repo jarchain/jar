@@ -153,6 +153,32 @@ impl PartialEq for CodeCap {
 
 impl Eq for CodeCap {}
 
+/// Persistent data capability. Holds a fixed-size byte payload at 4 KiB
+/// page granularity. Immutable + copyable + refcounted: COPY of a
+/// persistent DataCap (Vault → Frame, Vault → Vault) shares the same
+/// `Arc<Vec<u8>>` content; mutation requires creating a fresh DataCap
+/// with new content (typically by writing to an ephemeral mapped copy
+/// in a running Frame and MOVing the result back).
+///
+/// `page_count` is the logical size in 4 KiB pages; `content` may be
+/// shorter than `page_count * 4096` if trailing zero pages are
+/// implied — the kernel writes zero-padding when materializing into
+/// ephemeral pages.
+#[derive(Clone, Debug)]
+pub struct DataCap {
+    pub content: Arc<Vec<u8>>,
+    pub page_count: u32,
+}
+
+impl PartialEq for DataCap {
+    fn eq(&self, other: &Self) -> bool {
+        self.page_count == other.page_count
+            && (Arc::ptr_eq(&self.content, &other.content) || *self.content == *other.content)
+    }
+}
+
+impl Eq for DataCap {}
+
 /// Per-frame self identity. The kernel rewrites ephemeral sub-slot 2 on
 /// every CALL/REPLY so the active VM's "who am I" is correct.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -185,6 +211,7 @@ pub enum Capability {
     Vault(VaultCap),
     VaultRef(VaultRefCap),
     Code(CodeCap),
+    Data(DataCap),
     Dispatch(DispatchCap),
     Transact(TransactCap),
     Schedule(ScheduleCap),

@@ -108,6 +108,12 @@ pub fn check_derive(
         }
         // VaultRef → VaultRef (rights subset, not enforced here): any dest OK.
         (Capability::VaultRef(_), Capability::VaultRef(_)) => Ok(()),
+        // Code → Code: refcount-shared blob; any dest OK.
+        (Capability::Code(_), Capability::Code(_)) => Ok(()),
+        // Data → Data: Arc-shared content; any dest OK. The persistent
+        // DataCap is immutable, so a derived child holding the same
+        // Arc<Vec<u8>> is just an alias for refcount purposes.
+        (Capability::Data(_), Capability::Data(_)) => Ok(()),
         // Storage → Storage: any dest OK.
         (Capability::Storage(_), Capability::Storage(_)) => Ok(()),
         // SnapshotStorage → SnapshotStorage: any dest OK (still RO).
