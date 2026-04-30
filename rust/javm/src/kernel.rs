@@ -75,13 +75,16 @@ use crate::vm_pool::WindowPool;
 use crate::vm_pool::{CallFrame, FrameId, MAX_CODE_CAPS, VmArena, VmId, VmInstance, VmState};
 
 /// ecalli immediate ranges.
-const CALL_RANGE_END: u32 = 0x100;
-const MGMT_MAP: u32 = 0x2;
-const MGMT_UNMAP: u32 = 0x3;
-const MGMT_SPLIT: u32 = 0x4;
-const MGMT_DROP: u32 = 0x5;
-const MGMT_MOVE: u32 = 0x6;
-const MGMT_COPY: u32 = 0x7;
+pub const CALL_RANGE_END: u32 = 0x100;
+/// Encoded as `ecalli ((MGMT_MAP << 8) | cap_idx)`. Maps the DATA cap at
+/// `cap_idx` into the active VM's window. Args: `φ[7] = base_page`,
+/// `φ[8] = access` (0 = RO, 1 = RW). All pages of the cap are mapped.
+pub const MGMT_MAP: u32 = 0x2;
+pub const MGMT_UNMAP: u32 = 0x3;
+pub const MGMT_SPLIT: u32 = 0x4;
+pub const MGMT_DROP: u32 = 0x5;
+pub const MGMT_MOVE: u32 = 0x6;
+pub const MGMT_COPY: u32 = 0x7;
 // 0x8 / 0x9 (legacy GRANT / REVOKE) deliberately unused — cross-cap-table
 // transfers happen via dynamic-ecall MOVE / COPY (`dispatch_ecall` 0x06 /
 // 0x07) with cap-ref indirection through HandleCaps.
@@ -188,13 +191,12 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
             init_code_id,
             untyped,
             backing,
-            data_caps_to_map,
         } = artifacts;
 
         let mut kernel = Self::build_kernel_skeleton_with(untyped, backing, backend)?;
         kernel.next_code_id = code_caps.len() as u16;
         kernel.code_caps = code_caps;
-        kernel.finalize_kernel(cap_table, init_code_id, gas, data_caps_to_map)
+        kernel.finalize_kernel(cap_table, init_code_id, gas)
     }
 
     /// Allocate the kernel's per-invocation infrastructure (mem_cycles,
@@ -243,29 +245,26 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
     /// Common tail of all `InvocationKernel` constructors. Takes the
     /// post-skeleton kernel plus a fully-populated `cap_table` for VM 0,
     /// the `init_code_id` (index in `self.code_caps` of the entry CODE
-    /// cap), the per-invocation gas budget, and an optional
-    /// `data_caps_to_map` listing `(base_page, backing_offset, page_count,
-    /// access)` for DATA caps that should be pre-mmapped into VM 0's
-    /// window. CapTable-driven callers (e.g. Vault.initialize) pass an
-    /// empty `data_caps_to_map`; the init program is then responsible for
-    /// `MGMT_MAP`-ing its own DATA caps at runtime.
+    /// cap), and the per-invocation gas budget.
     ///
-    /// Charges init-page gas, assigns window 0 to VM 0, maps DATA caps,
-    /// places UNTYPED at slot 254 if `memory_pages > 0`, inserts VM 0
-    /// and the bare Frame into the arena, and patches slot 0 of VM 0's
+    /// DATA caps in `cap_table` are always unmapped on entry; the init
+    /// prologue baked into the CodeCap (emitted by
+    /// `javm-transpiler::layout::emit_prologue`) issues `MGMT_MAP` for
+    /// each DATA cap before user code runs. The kernel does not pre-map.
+    ///
+    /// Charges init-page gas (per DATA cap page in `cap_table`), assigns
+    /// window 0 to VM 0, places UNTYPED at slot 254, inserts VM 0 and
+    /// the bare Frame into the arena, and patches slot 0 of VM 0's
     /// cap-table with the bare-Frame FrameRef.
     fn finalize_kernel(
         mut self,
         mut cap_table: CapTable<P>,
         init_code_id: u16,
         gas: u64,
-        data_caps_to_map: Vec<(u32, u32, u32, Access)>,
     ) -> Result<Self, KernelError> {
         // Charge init gas: sum the page count of every DATA cap currently
-        // in the cap table (mapped or not). This matches the legacy blob
-        // path's accounting; CapTable-driven callers pay the same per-page
-        // initialization cost, regardless of whether the init program will
-        // map the pages later via MGMT_MAP.
+        // in the cap table. Mapping happens later via MGMT_MAP from the
+        // init prologue, but the per-page allocation cost is paid here.
         let init_pages: u64 = (0u8..=255)
             .filter_map(|i| match cap_table.get(i) {
                 Some(Cap::Data(d)) => Some(d.page_count as u64),
@@ -278,31 +277,13 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         }
         let remaining_gas = gas - init_gas_cost;
 
-        // Assign window 0 to VM 0 and map DATA caps into it.
+        // Assign window 0 to VM 0. DATA caps are unmapped — the init
+        // prologue MGMT_MAPs them into this window once execution
+        // starts.
         #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
         {
             let assignment = self.window_pool.assign_window(0, 0);
             self.active_window = assignment.window_idx;
-            let window_base = self.window_pool.window(assignment.window_idx).base();
-            for (base_page, backing_offset, page_count, access) in &data_caps_to_map {
-                // SAFETY: window_base is from CodeWindow::base() (valid 4GB mmap region).
-                unsafe {
-                    if !self.backing.map_pages(
-                        window_base,
-                        *base_page,
-                        *backing_offset,
-                        *page_count,
-                        *access,
-                    ) {
-                        return Err(KernelError::MemoryError);
-                    }
-                }
-            }
-        }
-        // Non-recompiler platforms: DATA cap mapping is handled at interpreter run time.
-        #[cfg(not(all(feature = "std", target_os = "linux", target_arch = "x86_64")))]
-        {
-            let _ = &data_caps_to_map;
         }
 
         // Give VM 0 the UNTYPED cap at slot 254 (fixed slot, just below
@@ -350,33 +331,41 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
     }
 
     /// Write `bytes` into the backing pages of the DATA cap at `slot` of
-    /// VM 0's persistent Frame, and return the mapped byte address in
-    /// VM 0's window (so the host can pass it to the guest in a register
-    /// if it needs a raw pointer). Returns `Err` if the slot is empty,
-    /// holds a non-DATA cap, the cap has no recorded mapping for VM 0,
-    /// or `bytes.len()` exceeds the cap's allocated pages.
+    /// VM 0's persistent Frame. Returns the mapped byte address
+    /// (`base_page * PAGE_SIZE`) so the host can pass it to the guest in
+    /// a register.
     ///
-    /// Intended for invocation init: the host populates a DATA cap that
-    /// the manifest reserved (and pre-mapped via `mappings[VM_0]`) so the
-    /// guest can read the bytes through its mapped window. After
-    /// construction the host typically also MOVEs the cap to the
-    /// conventional cap-arg location (ephemeral sub-slot 4) before the
-    /// CALL.
-    pub fn write_data_cap_init(&mut self, slot: u8, bytes: &[u8]) -> Result<u64, KernelError> {
-        let (backing_offset, base_page) = match self.vm_arena.vm(0).cap_table.get(slot) {
+    /// The cap stays *unmapped*: the init prologue's `MGMT_MAP` (emitted
+    /// by [`javm-transpiler::layout::emit_prologue`]) installs the
+    /// window mapping at `base_page` with `access` before user code
+    /// reads the bytes. `base_page` and `access` are accepted here so
+    /// the host can compute the byte address, but they are not stored
+    /// on the cap. Use [`crate::program::data_cap_base_page`] to compute
+    /// `base_page` from a parsed blob's manifest.
+    ///
+    /// Returns `Err` if the slot is empty, holds a non-DATA cap, or
+    /// `bytes.len()` exceeds the cap's allocated pages.
+    pub fn write_data_cap_init(
+        &mut self,
+        slot: u8,
+        base_page: u32,
+        _access: Access,
+        bytes: &[u8],
+    ) -> Result<u64, KernelError> {
+        let backing_offset = match self.vm_arena.vm_mut(0).cap_table.get_mut(slot) {
             Some(Cap::Data(d)) => {
                 let cap_bytes = d.page_count as usize * crate::PVM_PAGE_SIZE as usize;
                 if bytes.len() > cap_bytes {
                     return Err(KernelError::InvalidBlob);
                 }
-                let base = d
-                    .mapping_for(crate::vm_pool::VmId::ROOT)
-                    .map(|(b, _)| b)
-                    .ok_or(KernelError::InvalidBlob)?;
-                (d.backing_offset, base)
+                d.backing_offset
             }
             _ => return Err(KernelError::InvalidBlob),
         };
+        // Write payload into the backing memfd. The cap stays unmapped:
+        // the init prologue's `MGMT_MAP` (emitted by the transpiler) is
+        // responsible for installing the window mapping at `base_page`
+        // before user code reads the bytes.
         self.backing.write_init_data(backing_offset, bytes);
         Ok(base_page as u64 * crate::PVM_PAGE_SIZE as u64)
     }
@@ -2990,35 +2979,36 @@ pub fn allocate_data_cap(
 
 /// Pre-built input to [`InvocationKernel::new_from_artifacts`]. Holds
 /// the CapTable for VM 0, the kernel's `code_caps` Vec, the entry
-/// CodeCap's index, the per-invocation backing/untyped (the host
+/// CodeCap's index, and the per-invocation backing/untyped (the host
 /// allocates these because it needs them to populate DataCap caps in
-/// the table), and the optional list of pre-mapped DATA caps. The
-/// kernel takes ownership of every field on construction.
+/// the table). The kernel takes ownership of every field on
+/// construction.
+///
+/// DATA caps in `cap_table` are always **unmapped**. The transpiler-
+/// emitted init prologue runs at PC=0 of every invocation and issues
+/// `MGMT_MAP` for each DATA cap before user code; the kernel does not
+/// pre-map (this changed when `base_page` / `init_access` were dropped
+/// from the JAR manifest format).
 ///
 /// Two production paths produce this struct today:
 /// - [`cap_table_from_blob`]: parses a JAR blob and runs the manifest
-///   walk to produce mapped DATA caps + compiled CODE caps.
+///   walk; the transpiler-emitted prologue inside the CodeCap handles
+///   the runtime mapping.
 /// - jar-kernel's `vault_init::build_init_cap_table` (separate crate):
-///   walks `vault.slots` and produces unmapped DATA caps + compiled
-///   CODE caps; `data_caps_to_map` is empty (the init program will
-///   `MGMT_MAP` at runtime).
+///   walks `vault.slots` and produces the same unmapped shape.
 pub struct InvocationArtifacts<P: ProtocolCapT> {
     pub cap_table: CapTable<P>,
     pub code_caps: Vec<Arc<CodeCap>>,
     pub init_code_id: u16,
     pub untyped: Arc<UntypedCap>,
     pub backing: BackingStore,
-    /// `(base_page, backing_offset, page_count, access)` per DATA cap
-    /// that should be pre-mmapped into VM 0's window before the init
-    /// program runs. Empty for CapTable-driven hosts that defer
-    /// mapping to the init program.
-    pub data_caps_to_map: Vec<(u32, u32, u32, Access)>,
 }
 
 /// Parse a JAR blob and produce the artifacts needed by
-/// [`InvocationKernel::new_from_artifacts`]. The artifacts include a
-/// pre-mapped DATA cap list so that legacy blob-driven invocations
-/// retain the same mmap-before-_start behavior.
+/// [`InvocationKernel::new_from_artifacts`]. DATA caps are allocated
+/// (content-copied from the blob's data section) but **not mapped** —
+/// the init prologue baked into the JAR's CODE cap is responsible for
+/// `MGMT_MAP`-ing each DATA cap before user code runs.
 ///
 /// `code_cache` is consulted for each CODE cap; on miss the cap is
 /// compiled and inserted into the cache.
@@ -3036,7 +3026,6 @@ pub fn cap_table_from_blob<P: ProtocolCapT>(
 
     let mut cap_table: CapTable<P> = CapTable::new();
     let mut code_caps: Vec<Arc<CodeCap>> = Vec::with_capacity(MAX_CODE_CAPS);
-    let mut data_caps_to_map: Vec<(u32, u32, u32, Access)> = Vec::new();
 
     for entry in &parsed.caps {
         match entry.cap_type {
@@ -3062,19 +3051,10 @@ pub fn cap_table_from_blob<P: ProtocolCapT>(
                 } else {
                     &[]
                 };
-                let mut data_cap =
+                let data_cap =
                     allocate_data_cap(initial, entry.page_count, &untyped, &mut backing)?;
-                data_cap.map(
-                    crate::vm_pool::VmId::ROOT,
-                    entry.base_page,
-                    entry.init_access,
-                );
-                data_caps_to_map.push((
-                    entry.base_page,
-                    data_cap.backing_offset,
-                    data_cap.page_count,
-                    entry.init_access,
-                ));
+                // Cap is unmapped on purpose — the init prologue calls
+                // MGMT_MAP at runtime.
                 cap_table.set(entry.cap_index, Cap::Data(data_cap));
             }
         }
@@ -3091,7 +3071,6 @@ pub fn cap_table_from_blob<P: ProtocolCapT>(
         init_code_id,
         untyped,
         backing,
-        data_caps_to_map,
     })
 }
 
@@ -3128,18 +3107,14 @@ mod tests {
             CapManifestEntry {
                 cap_index: 64,
                 cap_type: CapEntryType::Code,
-                base_page: 0,
                 page_count: 0,
-                init_access: Access::RO,
                 data_offset: 0,
                 data_len: code_data.len() as u32,
             },
             CapManifestEntry {
                 cap_index: 65,
                 cap_type: CapEntryType::Data,
-                base_page: 0,
                 page_count: 1,
-                init_access: Access::RW,
                 data_offset: 0, // doesn't reference data section
                 data_len: 0,
             },
@@ -3284,20 +3259,72 @@ mod tests {
     }
 
     #[test]
+    fn ecall_opcode_terminates_basic_block() {
+        // Regression: opcode 3 (Ecall) was missing from GAS_COST_LUT, so
+        // the recompiler's codegen treated it as a non-terminator. The
+        // post-ecall PC never got a dispatch_table entry, and after the
+        // ecall exited and the kernel re-entered the JIT, dispatch_table
+        // returned 0 → infinite re-dispatch loop. The fix sets the LUT
+        // entry with `F_TERM`. This test exercises an ecall followed by
+        // a trap (so the post-ecall PC is a valid instruction) and
+        // asserts the kernel reaches the trap (Panic) instead of
+        // hanging.
+        let mut sub = Vec::new();
+        sub.extend_from_slice(&0u32.to_le_bytes()); // jump_len = 0
+        sub.push(1); // entry_size = 1
+        sub.extend_from_slice(&2u32.to_le_bytes()); // code_len = 2
+        sub.push(3); // ecall (opcode 3, NoArgs)
+        sub.push(0); // trap (opcode 0, NoArgs)
+        sub.push(0b11); // packed bitmask: bits 0 and 1 set
+
+        let caps = vec![CapManifestEntry {
+            cap_index: 64,
+            cap_type: CapEntryType::Code,
+            page_count: 0,
+            data_offset: 0,
+            data_len: sub.len() as u32,
+        }];
+        let blob = build_blob(0, 64, &caps, &sub);
+
+        let artifacts =
+            cap_table_from_blob::<u8>(&blob, crate::backend::PvmBackend::Default, None).unwrap();
+        let mut kernel: InvocationKernel = InvocationKernel::new_from_artifacts(
+            artifacts,
+            100_000,
+            crate::backend::PvmBackend::Default,
+        )
+        .unwrap();
+        let _ = kernel.vm_arena.vm_mut(0).transition(VmState::Running);
+        let result = kernel.run();
+        // Expected: ecall returns Continue (op=0 → dynamic CALL on
+        // bare-Frame slot which lacks CALL right → RESULT_WHAT,
+        // continue), then trap → Panic. What we're really testing is
+        // that the kernel doesn't hang.
+        assert!(
+            matches!(result, KernelResult::Panic),
+            "expected Panic (from trap after ecall), got {:?}",
+            result
+        );
+    }
+
+    #[test]
     fn cap_table_from_blob_round_trip_to_kernel() {
         let blob = make_simple_blob(10);
         let artifacts: InvocationArtifacts<u8> =
             cap_table_from_blob(&blob, crate::backend::PvmBackend::Default, None)
                 .expect("cap_table_from_blob ok");
 
-        // Manifest had 1 CodeCap (slot 64) and 1 DataCap (slot 65) with
-        // a (base_page, _, page_count, access) entry recorded for the
-        // root VM.
+        // Manifest had 1 CodeCap (slot 64) and 1 DataCap (slot 65); the
+        // DataCap is allocated unmapped (init prologue does the mapping).
         assert_eq!(artifacts.code_caps.len(), 1);
         assert_eq!(artifacts.init_code_id, 0);
-        assert_eq!(artifacts.data_caps_to_map.len(), 1);
         assert!(matches!(artifacts.cap_table.get(64), Some(Cap::Code(_))));
-        assert!(matches!(artifacts.cap_table.get(65), Some(Cap::Data(_))));
+        match artifacts.cap_table.get(65) {
+            Some(Cap::Data(d)) => {
+                assert!(d.mappings.is_empty(), "DataCap should be unmapped");
+            }
+            other => panic!("expected unmapped Cap::Data at slot 65, got {:?}", other),
+        }
 
         let kernel: InvocationKernel = InvocationKernel::new_from_artifacts(
             artifacts,
@@ -3306,7 +3333,7 @@ mod tests {
         )
         .expect("new_from_artifacts ok");
 
-        // Same shape as `new_inner` produces from the same blob.
+        // Same shape as the legacy blob path produced from the same blob.
         assert_eq!(kernel.code_caps.len(), 1);
         assert_eq!(kernel.vm_arena.len(), 2); // VM 0 + bare Frame
     }
@@ -3855,18 +3882,14 @@ mod tests {
             CapManifestEntry {
                 cap_index: 64,
                 cap_type: CapEntryType::Code,
-                base_page: 0,
                 page_count: 0,
-                init_access: Access::RO,
                 data_offset: 0,
                 data_len: sub.len() as u32,
             },
             CapManifestEntry {
                 cap_index: 65,
                 cap_type: CapEntryType::Data,
-                base_page: 0,
                 page_count: 1,
-                init_access: Access::RW,
                 data_offset: 0,
                 data_len: 0,
             },

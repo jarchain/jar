@@ -79,7 +79,6 @@ pub fn build_init_cap_table(
 
     let mut cap_table: CapTable<KernelCap> = CapTable::new();
     let mut code_caps: Vec<Arc<javm::cap::CodeCap>> = Vec::new();
-    let data_caps_to_map: Vec<(u32, u32, u32, javm::cap::Access)> = Vec::new();
 
     for slot in 0u8..=255 {
         let cap_id = match vault.slots.get(slot) {
@@ -122,7 +121,6 @@ pub fn build_init_cap_table(
         init_code_id,
         untyped,
         backing,
-        data_caps_to_map,
     })
 }
 
@@ -261,7 +259,6 @@ mod tests {
         assert_eq!(artifacts.code_caps.len(), 1);
         assert_eq!(artifacts.init_code_id, 0);
         assert!(matches!(artifacts.cap_table.get(64), Some(Cap::Code(_))));
-        assert!(artifacts.data_caps_to_map.is_empty());
     }
 
     #[test]

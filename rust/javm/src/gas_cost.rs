@@ -1128,6 +1128,18 @@ pub fn fast_cost_from_raw(
             is_terminator: true,
             is_move_reg: false,
         },
+        // Ecall (opcode 3): no immediate; op in φ[11], refs in φ[12].
+        // Same cost shape as Ecalli — kernel does the work, the
+        // PVM-side cost is just the exit dispatch.
+        3 => FastCost {
+            cycles: 100,
+            decode_slots: 4,
+            exec_unit: EU_ALU,
+            src_mask: 0,
+            dst_mask: 0,
+            is_terminator: true,
+            is_move_reg: false,
+        },
         10 => FastCost {
             cycles: 100,
             decode_slots: 4,
@@ -1703,6 +1715,18 @@ pub fn fast_cost_from_decoded(
             is_terminator: true,
             is_move_reg: false,
         },
+        // Ecall (opcode 3): no immediate; op in φ[11], refs in φ[12].
+        // Same cost shape as Ecalli — kernel does the work, the
+        // PVM-side cost is just the exit dispatch.
+        3 => FastCost {
+            cycles: 100,
+            decode_slots: 4,
+            exec_unit: EU_ALU,
+            src_mask: 0,
+            dst_mask: 0,
+            is_terminator: true,
+            is_move_reg: false,
+        },
         10 => FastCost {
             cycles: 100,
             decode_slots: 4,
@@ -2270,6 +2294,10 @@ static GAS_COST_LUT: [GasCostEntry; 256] = {
     t[0] = gc(2, 1, EU_NONE, 0, 0, F_TERM);
     t[1] = gc(2, 1, EU_NONE, 0, 0, F_TERM);
     t[2] = gc(40, 1, EU_NONE, 0, 0, F_TERM);
+    // Ecall (opcode 3): no immediate; op in φ[11], refs in φ[12].
+    // Same fast-path cost shape as Ecalli — kernel handles the work, the
+    // PVM-side cost is just the exit dispatch.
+    t[3] = gc(100, 4, EU_ALU, 0, 0, F_TERM);
     t[10] = gc(100, 4, EU_ALU, 0, 0, F_TERM);
     // Control flow
     t[40] = gc(15, 1, EU_ALU, 0, 0, F_TERM);

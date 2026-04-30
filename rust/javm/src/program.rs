@@ -18,9 +18,7 @@
 //!   cap[i]: {
 //!     cap_index: u8         slot in VM's cap table
 //!     cap_type: u8          0 = CODE, 1 = DATA
-//!     base_page: u32        starting page in address space (DATA only)
 //!     page_count: u32       number of pages (DATA only)
-//!     init_access: u8       0 = RO, 1 = RW (DATA only)
 //!     data_offset: u32      offset into blob's data section
 //!     data_len: u32         bytes of initial data (0 = zero-filled)
 //!   }
@@ -28,10 +26,14 @@
 //! Data section:
 //!   (variable-length, referenced by capabilities)
 //! ```
+//!
+//! DATA caps are *not* pre-mapped by the kernel. The transpiler-emitted
+//! init prologue (see `javm-transpiler::layout::emit_prologue`) issues
+//! a stackless `MGMT_MAP` ecalli per DATA cap before user code runs;
+//! that's where `base_page` / `init_access` (which used to live in the
+//! manifest) get baked in.
 
 use alloc::{vec, vec::Vec};
-
-use crate::cap::Access;
 
 /// JAR magic: 'J','A','R', 0x02.
 pub const JAR_MAGIC: u32 = u32::from_le_bytes([b'J', b'A', b'R', 0x02]);
@@ -39,9 +41,9 @@ pub const JAR_MAGIC: u32 = u32::from_le_bytes([b'J', b'A', b'R', 0x02]);
 /// Header size: magic(4) + memory_pages(4) + cap_count(1) + init_cap(1) = 10.
 const HEADER_SIZE: usize = 10;
 
-/// Per-cap entry size: cap_index(1) + cap_type(1) + base_page(4) + page_count(4)
-///   + init_access(1) + data_offset(4) + data_len(4) = 19.
-const CAP_ENTRY_SIZE: usize = 19;
+/// Per-cap entry size: cap_index(1) + cap_type(1) + page_count(4)
+///   + data_offset(4) + data_len(4) = 14.
+const CAP_ENTRY_SIZE: usize = 14;
 
 /// Cap type discriminator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,19 +53,18 @@ pub enum CapEntryType {
     Data = 1,
 }
 
-/// A single capability entry in the manifest.
+/// A single capability entry in the manifest. DATA caps no longer carry
+/// `(base_page, init_access)`; those decisions live in the transpiler's
+/// init prologue (see `javm-transpiler::layout::emit_prologue`), which
+/// issues `MGMT_MAP` for each DATA cap before user code runs.
 #[derive(Debug, Clone)]
 pub struct CapManifestEntry {
     /// Slot in the VM's cap table.
     pub cap_index: u8,
     /// Capability type.
     pub cap_type: CapEntryType,
-    /// Starting page in address space (DATA only, ignored for CODE).
-    pub base_page: u32,
     /// Number of pages (DATA only, ignored for CODE).
     pub page_count: u32,
-    /// Initial access mode for MAP at program init (DATA only).
-    pub init_access: Access,
     /// Offset into the blob's data section (0 = no data).
     pub data_offset: u32,
     /// Bytes of initial data (0 = zero-filled for DATA, empty for CODE).
@@ -149,23 +150,14 @@ pub fn parse_blob(blob: &[u8]) -> Option<ParsedBlob<'_>> {
             1 => CapEntryType::Data,
             _ => return None,
         };
-        let base_page = read_u32_le(blob, &mut offset)?;
         let page_count = read_u32_le(blob, &mut offset)?;
-        let init_access_raw = read_u8(blob, &mut offset)?;
-        let init_access = match init_access_raw {
-            0 => Access::RO,
-            1 => Access::RW,
-            _ => return None,
-        };
         let data_offset = read_u32_le(blob, &mut offset)?;
         let data_len = read_u32_le(blob, &mut offset)?;
 
         caps.push(CapManifestEntry {
             cap_index,
             cap_type,
-            base_page,
             page_count,
-            init_access,
             data_offset,
             data_len,
         });
@@ -266,8 +258,6 @@ fn unpack_bitmask(packed: &[u8], code_len: usize) -> Vec<u8> {
 /// Build a minimal JAR blob with a single CODE cap from raw components.
 /// Useful for tests — no DATA caps, small memory budget.
 pub fn build_simple_blob(code: &[u8], bitmask: &[u8], jump_table: &[u32]) -> Vec<u8> {
-    use crate::cap::Access;
-
     // Build code sub-blob: jump_len(4) + entry_size(1) + code_len(4) + jt + code + packed_bitmask
     let entry_size = if jump_table.is_empty() { 1u8 } else { 4u8 };
     let mut code_data = Vec::new();
@@ -291,9 +281,7 @@ pub fn build_simple_blob(code: &[u8], bitmask: &[u8], jump_table: &[u32]) -> Vec
     let caps = vec![CapManifestEntry {
         cap_index: 64,
         cap_type: CapEntryType::Code,
-        base_page: 0,
         page_count: 0,
-        init_access: Access::RO,
         data_offset: 0,
         data_len: code_data.len() as u32,
     }];
@@ -322,9 +310,7 @@ pub fn build_blob(
     for cap in caps {
         write_u8(&mut blob, &mut offset, cap.cap_index);
         write_u8(&mut blob, &mut offset, cap.cap_type as u8);
-        write_u32_le(&mut blob, &mut offset, cap.base_page);
         write_u32_le(&mut blob, &mut offset, cap.page_count);
-        write_u8(&mut blob, &mut offset, cap.init_access as u8);
         write_u32_le(&mut blob, &mut offset, cap.data_offset);
         write_u32_le(&mut blob, &mut offset, cap.data_len);
     }
@@ -343,6 +329,31 @@ fn write_u8(buf: &mut [u8], offset: &mut usize, v: u8) {
 fn write_u32_le(buf: &mut [u8], offset: &mut usize, v: u32) {
     buf[*offset..*offset + 4].copy_from_slice(&v.to_le_bytes());
     *offset += 4;
+}
+
+/// Compute the in-window `base_page` of the DATA cap at `cap_index`,
+/// given the manifest's cap entries in declared order. Replicates the
+/// transpiler's `ProgramLayout::compute` linear-stack convention:
+/// every DATA cap occupies pages contiguously starting at page 0, in
+/// the order the manifest lists them. Returns `None` if no DATA cap
+/// with `cap_index` is present.
+///
+/// Hosts that need to populate a DATA cap before invocation (via
+/// [`crate::kernel::InvocationKernel::write_data_cap_init`]) call
+/// this on a parsed blob's `caps` slice to recover the address the
+/// init prologue will install.
+pub fn data_cap_base_page(caps: &[CapManifestEntry], cap_index: u8) -> Option<u32> {
+    let mut base = 0u32;
+    for cap in caps {
+        if cap.cap_type != CapEntryType::Data {
+            continue;
+        }
+        if cap.cap_index == cap_index {
+            return Some(base);
+        }
+        base = base.saturating_add(cap.page_count);
+    }
+    None
 }
 
 /// Get the data slice for a capability entry from the data section.
@@ -379,27 +390,21 @@ mod tests {
             CapManifestEntry {
                 cap_index: 64,
                 cap_type: CapEntryType::Code,
-                base_page: 0,
                 page_count: 0,
-                init_access: Access::RO,
                 data_offset: 0,
                 data_len: 4, // code blob
             },
             CapManifestEntry {
                 cap_index: 65,
                 cap_type: CapEntryType::Data,
-                base_page: 0,
                 page_count: 1,
-                init_access: Access::RW,
                 data_offset: 0,
                 data_len: 0, // zero-filled stack
             },
             CapManifestEntry {
                 cap_index: 66,
                 cap_type: CapEntryType::Data,
-                base_page: 1,
                 page_count: 1,
-                init_access: Access::RO,
                 data_offset: 4,
                 data_len: 8, // ro_data
             },
@@ -423,17 +428,13 @@ mod tests {
         // Stack DATA cap (zero-filled)
         assert_eq!(parsed.caps[1].cap_index, 65);
         assert_eq!(parsed.caps[1].cap_type, CapEntryType::Data);
-        assert_eq!(parsed.caps[1].base_page, 0);
         assert_eq!(parsed.caps[1].page_count, 1);
-        assert_eq!(parsed.caps[1].init_access, Access::RW);
         assert_eq!(parsed.caps[1].data_len, 0);
 
         // RO DATA cap
         assert_eq!(parsed.caps[2].cap_index, 66);
         assert_eq!(parsed.caps[2].cap_type, CapEntryType::Data);
-        assert_eq!(parsed.caps[2].base_page, 1);
         assert_eq!(parsed.caps[2].page_count, 1);
-        assert_eq!(parsed.caps[2].init_access, Access::RO);
         let ro = cap_data(&parsed.caps[2], parsed.data_section);
         assert_eq!(ro, &[0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE]);
     }
@@ -463,9 +464,7 @@ mod tests {
         let caps = vec![CapManifestEntry {
             cap_index: 64,
             cap_type: CapEntryType::Code,
-            base_page: 0,
             page_count: 0,
-            init_access: Access::RO,
             data_offset: 0,
             data_len: 100, // references 100 bytes but data section is empty
         }];

@@ -109,8 +109,14 @@ pub fn build_standard_program(
 
 /// Build a JAR capability manifest blob from components.
 ///
-/// It takes
-/// code/data as separate pieces and assembles a capability manifest.
+/// Takes raw user code/bitmask/jump_table plus optional ro/rw byte
+/// blobs and emits a JAR blob whose CodeCap contains:
+/// 1. The init prologue (`ProgramLayout::emit_prologue`): stackless
+///    `MGMT_MAP` ecallis for every DATA cap + `load_imm_64 SP, stack_top`.
+/// 2. The user's `code` bytes verbatim.
+///
+/// Jump-table entries are shifted by the prologue's byte length so
+/// they continue to point at the correct location in user code.
 ///
 /// The simplest blob has one CODE cap and one DATA cap (stack).
 /// More complex blobs have separate ro_data, rw_data, heap DATA caps.
@@ -125,28 +131,43 @@ pub fn build_service_program(
     heap_pages: u32,
     memory_pages: u32,
 ) -> Vec<u8> {
-    use javm::cap::Access;
+    use crate::layout::{CODE_CAP_INDEX, PVM_PAGE_SIZE, ProgramLayout, emit_prologue};
     use javm::program::{CapEntryType, CapManifestEntry, build_blob};
 
-    // Build the CODE blob (jump_table + code + packed_bitmask) as a sub-blob
-    // that will be the data for the CODE cap.
-    let entry_size = jump_table_entry_size(jump_table);
+    // Compute the shared layout so the prologue and the manifest agree
+    // on which slot each DATA cap lives at.
+    let ro_pages = (ro_data.len() as u32).div_ceil(PVM_PAGE_SIZE);
+    let rw_pages = (rw_data.len() as u32).div_ceil(PVM_PAGE_SIZE);
+    let layout = ProgramLayout::compute(stack_pages, ro_pages, rw_pages, heap_pages);
 
+    // Emit the init prologue. It must run at PC=0 of the CodeCap; user
+    // code follows immediately. Jump-table entries (which encode
+    // absolute byte offsets into the resulting code blob) shift by the
+    // prologue's length.
+    let (prologue_code, prologue_bitmask) = emit_prologue(&layout);
+    let prologue_len = prologue_code.len() as u32;
+
+    let mut full_code = prologue_code;
+    full_code.extend_from_slice(code);
+
+    let mut full_bitmask = prologue_bitmask;
+    full_bitmask.extend_from_slice(bitmask);
+
+    let shifted_jump_table: Vec<u32> = jump_table.iter().map(|&e| e + prologue_len).collect();
+
+    // Build the CODE sub-blob (jump_table + code + packed_bitmask).
+    let entry_size = jump_table_entry_size(&shifted_jump_table);
     let mut code_blob = Vec::new();
-    // Code sub-blob header: jump_len(4) + entry_size(1) + code_len(4) = 9 bytes
-    code_blob.extend_from_slice(&(jump_table.len() as u32).to_le_bytes());
+    code_blob.extend_from_slice(&(shifted_jump_table.len() as u32).to_le_bytes());
     code_blob.push(entry_size);
-    code_blob.extend_from_slice(&(code.len() as u32).to_le_bytes());
-    // Jump table entries
-    for &entry in jump_table {
+    code_blob.extend_from_slice(&(full_code.len() as u32).to_le_bytes());
+    for &entry in &shifted_jump_table {
         code_blob.extend_from_slice(&entry.to_le_bytes()[..entry_size as usize]);
     }
-    // Code bytes
-    code_blob.extend_from_slice(code);
-    // Packed bitmask
-    code_blob.extend_from_slice(&pack_bitmask(bitmask));
+    code_blob.extend_from_slice(&full_code);
+    code_blob.extend_from_slice(&pack_bitmask(&full_bitmask));
 
-    // Build data section: code_blob + ro_data + rw_data
+    // Build data section: code_blob + ro_data + rw_data.
     let mut data_section = Vec::new();
     let code_offset = 0u32;
     let code_len = code_blob.len() as u32;
@@ -160,97 +181,66 @@ pub fn build_service_program(
     let rw_len = rw_data.len() as u32;
     data_section.extend_from_slice(rw_data);
 
-    // Build cap manifest
-    // Layout: cap[64]=CODE, cap[65]=stack(RW), cap[66]=ro(RO), cap[67]=rw(RW)
+    // Build the manifest from `layout`. The manifest no longer carries
+    // (base_page, init_access); those come from the prologue.
     let mut caps = Vec::new();
-    let mut next_page = 0u32;
-
-    // CODE cap
     caps.push(CapManifestEntry {
-        cap_index: 64,
+        cap_index: CODE_CAP_INDEX,
         cap_type: CapEntryType::Code,
-        base_page: 0,
         page_count: 0,
-        init_access: Access::RO,
         data_offset: code_offset,
         data_len: code_len,
     });
-
-    // Stack DATA cap (zero-filled)
     caps.push(CapManifestEntry {
-        cap_index: 65,
+        cap_index: layout.stack.cap_index,
         cap_type: CapEntryType::Data,
-        base_page: next_page,
-        page_count: stack_pages,
-        init_access: Access::RW,
+        page_count: layout.stack.page_count,
         data_offset: 0,
         data_len: 0,
     });
-    next_page += stack_pages;
-
-    // RO DATA cap (if non-empty)
-    if !ro_data.is_empty() {
-        let ro_pages = (ro_data.len() as u32).div_ceil(4096);
+    if let Some(ro) = layout.ro {
         caps.push(CapManifestEntry {
-            cap_index: 66,
+            cap_index: ro.cap_index,
             cap_type: CapEntryType::Data,
-            base_page: next_page,
-            page_count: ro_pages,
-            init_access: Access::RO,
+            page_count: ro.page_count,
             data_offset: ro_offset,
             data_len: ro_len,
         });
-        next_page += ro_pages;
     }
-
-    // RW DATA cap (if non-empty)
-    if !rw_data.is_empty() {
-        let rw_pages = (rw_data.len() as u32).div_ceil(4096);
+    if let Some(rw) = layout.rw {
         caps.push(CapManifestEntry {
-            cap_index: 67,
+            cap_index: rw.cap_index,
             cap_type: CapEntryType::Data,
-            base_page: next_page,
-            page_count: rw_pages,
-            init_access: Access::RW,
+            page_count: rw.page_count,
             data_offset: rw_offset,
             data_len: rw_len,
         });
-        next_page += rw_pages;
     }
-
-    // Heap DATA cap (zero-filled)
-    if heap_pages > 0 {
+    if let Some(heap) = layout.heap {
         caps.push(CapManifestEntry {
-            cap_index: 68,
+            cap_index: heap.cap_index,
             cap_type: CapEntryType::Data,
-            base_page: next_page,
-            page_count: heap_pages,
-            init_access: Access::RW,
+            page_count: heap.page_count,
             data_offset: 0,
             data_len: 0,
         });
-        next_page += heap_pages;
     }
-
-    // Args DATA cap (slot 69). javm has no built-in args concept; the
-    // slot is a transpiler-host convention. Hosts populate it via
-    // `kernel.write_data_cap_init(ARGS_CAP_INDEX, bytes)` post-init and
-    // pass the resulting byte address to the guest in φ[8]. Slot 69
-    // sits above the kernel host-call selector range and the standard
-    // 64..=68 program caps (code/stack/ro/rw/heap).
+    // Args DATA cap (slot 69) — a transpiler-host convention. Hosts
+    // populate it via `kernel.write_data_cap_init(ARGS_CAP_INDEX, bytes)`
+    // post-init and pass the resulting byte address to the guest in φ[8].
     caps.push(CapManifestEntry {
-        cap_index: crate::ARGS_CAP_INDEX,
+        cap_index: layout.args.cap_index,
         cap_type: CapEntryType::Data,
-        base_page: next_page,
-        page_count: 1, // 4KB for args
-        init_access: Access::RW,
+        page_count: layout.args.page_count,
         data_offset: 0,
         data_len: 0,
     });
-    next_page += 1;
 
-    let total = memory_pages.max(next_page + heap_pages);
-    build_blob(total, 64, &caps, &data_section)
+    // Untyped budget: max of the caller's request and the layout's
+    // total reserved data pages plus an extra heap headroom (legacy
+    // behavior preserved).
+    let total = memory_pages.max(layout.total_data_pages() + heap_pages);
+    build_blob(total, CODE_CAP_INDEX, &caps, &data_section)
 }
 
 #[cfg(test)]

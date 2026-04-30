@@ -89,43 +89,23 @@ struct LinkedElf {
     entry_vaddr: u64,
 }
 
-/// Transpile an rv64em ELF with relocation processing.
-///
-/// Emit `load_imm_64 reg, value` (PVM opcode 20, 10 bytes).
-fn emit_load_imm_64(code: &mut Vec<u8>, bitmask: &mut Vec<u8>, reg: u8, value: u64) {
-    let start = code.len();
-    code.push(20); // load_imm_64 opcode
-    code.push(reg);
-    code.extend_from_slice(&value.to_le_bytes());
-    bitmask.push(1);
-    for _ in 0..9 {
-        bitmask.push(0);
-    }
-    assert_eq!(code.len() - start, 10);
-}
-
-/// Emit a `load_imm_64 SP, stack_top` preamble.
-fn emit_sp_preamble(code: &mut Vec<u8>, bitmask: &mut Vec<u8>, stack_top: u64) {
-    emit_load_imm_64(code, bitmask, 1, stack_top); // SP = φ[1]
-}
-
 /// Transpile an rv64em ELF into a JAR capability manifest PVM blob.
+///
+/// The init prologue (`MGMT_MAP` per DATA cap + SP setup) is emitted
+/// inside [`crate::emitter::build_service_program`] and prepended to
+/// the user code below; this function emits only an unconditional jump
+/// to ELF entry plus the translated user code.
 pub fn link_elf(elf_data: &[u8]) -> Result<Vec<u8>, TranspileError> {
     let elf = parse_linked_elf(elf_data)?;
     let mut ctx = TranslationContext::new(elf.is_64bit);
     ctx.code_ranges = elf.code_ranges.clone();
 
-    // Emit SP preamble: load_imm_64 SP, stack_top
-    let stack_pages = elf.stack_size / 4096;
-    let stack_top = stack_pages as u64 * 4096;
-    emit_sp_preamble(&mut ctx.code, &mut ctx.bitmask, stack_top);
-
     // Emit an unconditional jump to the ELF entry point (e_entry) so
-    // PC=0 enters at _start rather than whatever function LLD placed
-    // first in .text. The fixup is resolved after translation in
-    // apply_fixups() (which maps RISC-V vaddrs → PVM PCs via jump_table).
-    // A gas-block boundary is required before the jump so the first
-    // instruction lives in its own basic block.
+    // PC=0-of-user-code enters at _start rather than whatever function
+    // LLD placed first in .text. The fixup is resolved after
+    // translation in apply_fixups() (which maps RISC-V vaddrs → PVM
+    // PCs via jump_table). A gas-block boundary is required before
+    // the jump so the first instruction lives in its own basic block.
     if elf.entry_vaddr != 0 {
         ctx.emit_jump(elf.entry_vaddr);
     }
@@ -148,6 +128,7 @@ pub fn link_elf(elf_data: &[u8]) -> Result<Vec<u8>, TranspileError> {
         &mut ctx.jump_table,
     );
 
+    let stack_pages = elf.stack_size / 4096;
     Ok(emitter::build_service_program(
         &ctx.code,
         &ctx.bitmask,

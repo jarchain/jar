@@ -629,7 +629,6 @@ pub const FIB_RECUR_N: u64 = 20;
 ///
 /// memory_pages=0: no UNTYPED, no stack, no heap. Pure register computation.
 pub fn javm_fib_recur_blob() -> Vec<u8> {
-    use javm::cap::Access;
     use javm::program::{CapEntryType, CapManifestEntry, build_blob};
 
     // Build PVM code using raw byte emission (need precise control over offsets)
@@ -810,9 +809,7 @@ pub fn javm_fib_recur_blob() -> Vec<u8> {
     let caps = vec![CapManifestEntry {
         cap_index: 32,
         cap_type: CapEntryType::Code,
-        base_page: 0,
         page_count: 0,
-        init_access: Access::RO,
         data_offset: 0,
         data_len: code_data.len() as u32,
     }];
