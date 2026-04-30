@@ -42,6 +42,33 @@ pub const INVOCATION_GAS_BUDGET: u64 = 100_000_000;
 /// kernel's protocol-cap payload.
 pub type Vm = javm::kernel::InvocationKernel<KernelCap>;
 
+/// Construct a fresh `Vm` ready to run `Vault.initialize` on the given
+/// home Vault. Walks `vault.slots` via [`crate::state::vault_init::build_init_cap_table`],
+/// then hands the resulting artifacts to javm's `new_from_artifacts`.
+///
+/// The host typically follows up with `populate_host_call_slots`,
+/// `populate_home_vault_ref`, and `populate_ephemeral_kernel_caps` to
+/// layer kernel-managed slots on top of the persistent CapTable.
+///
+/// `code_cache` is consulted for each persistent CodeCap; pass
+/// `Some(&mut node.code_cache)` from the dispatch / transact entry
+/// points so re-runs of the same blob hit the JIT cache.
+pub fn new_vm_from_vault(
+    state: &State,
+    vault_id: VaultId,
+    gas: u64,
+    code_cache: Option<&mut javm::CodeCache>,
+) -> KResult<Vm> {
+    let artifacts = crate::state::vault_init::build_init_cap_table(
+        state,
+        vault_id,
+        code_cache,
+        javm::PvmBackend::Default,
+    )?;
+    javm::kernel::InvocationKernel::new_from_artifacts(artifacts, gas, javm::PvmBackend::Default)
+        .map_err(|e| KernelError::Internal(format!("javm init: {:?}", e)))
+}
+
 /// Per-invocation kernel-side context. Carried by reference into every
 /// host-call handler.
 ///
