@@ -99,6 +99,14 @@ pub struct InvocationCtx<'a, H: Hardware> {
 pub struct InvocationResult {
     pub halt_value: Option<u64>,
     pub fault: Option<String>,
+    /// Public Callable produced by `Vault.initialize`: the FrameRef at
+    /// bare-Frame slot 4 after the init program halts. `None` if the
+    /// invocation faulted, slot 4 was empty, or the cap there was not
+    /// a `Cap::FrameRef`. Today's transact and dispatch consume
+    /// `halt_value` and ignore this field; it exists for a future
+    /// `vault_initialize` host call (or external `Vault.initialize`
+    /// API) to read the post-init Callable from.
+    pub initialize_callable: Option<javm::vm_pool::VmId>,
 }
 
 impl InvocationResult {
@@ -106,18 +114,27 @@ impl InvocationResult {
         Self {
             halt_value: Some(rv),
             fault: None,
+            initialize_callable: None,
         }
     }
     pub fn fault(reason: impl Into<String>) -> Self {
         Self {
             halt_value: None,
             fault: Some(reason.into()),
+            initialize_callable: None,
         }
     }
     pub fn is_ok(&self) -> bool {
         self.fault.is_none()
     }
 }
+
+/// Slot in the per-invocation bare Frame where `Vault.initialize`
+/// programs are expected to place a `Cap::FrameRef` representing the
+/// public Callable produced by initialization. Read by the driver
+/// after a successful Halt; surfaced via
+/// `InvocationResult.initialize_callable`.
+pub const INITIALIZE_CALLABLE_SLOT: u8 = 4;
 
 /// What a host-call handler tells the driver to do next.
 #[derive(Debug)]
@@ -149,7 +166,20 @@ pub fn drive_invocation<H: Hardware>(
             vm.run_with_host(&mut view)
         };
         match outcome {
-            javm::kernel::KernelResult::Halt(rv) => return Ok(InvocationResult::ok(rv)),
+            javm::kernel::KernelResult::Halt(rv) => {
+                // After the init program halts, recover any public
+                // Callable it placed at bare-Frame slot 4. Empty /
+                // non-FrameRef ⇒ `None`; not a fault.
+                let initialize_callable = match vm.read_bare_frame_slot(INITIALIZE_CALLABLE_SLOT) {
+                    Some(javm::cap::Cap::FrameRef(f)) => Some(f.vm_id),
+                    _ => None,
+                };
+                return Ok(InvocationResult {
+                    halt_value: Some(rv),
+                    fault: None,
+                    initialize_callable,
+                });
+            }
             javm::kernel::KernelResult::Panic => return Ok(InvocationResult::fault("guest panic")),
             javm::kernel::KernelResult::OutOfGas => return Err(KernelError::OutOfGas),
             javm::kernel::KernelResult::PageFault(addr) => {

@@ -2157,6 +2157,19 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         self.vm_arena.vm(self.active_vm).cap_table.get(slot)
     }
 
+    /// Read a cap from the per-invocation **bare Frame**'s cap-table.
+    /// Used by hosts implementing the `Vault.initialize` protocol: the
+    /// init program is conventionally responsible for placing a
+    /// callable-shaped `Cap::FrameRef` at bare-Frame slot 4 before
+    /// halting; the kernel reads that slot after the init Halt to
+    /// recover the public Callable produced by initialization.
+    pub fn read_bare_frame_slot(&self, slot: u8) -> Option<&Cap<P>> {
+        self.vm_arena
+            .vm(self.bare_frame_id.index())
+            .cap_table
+            .get(slot)
+    }
+
     /// Set a cap at `slot` in the active VM's cap table, returning any
     /// previous cap.
     pub fn cap_table_set(&mut self, slot: u8, cap: Cap<P>) -> Option<Cap<P>> {

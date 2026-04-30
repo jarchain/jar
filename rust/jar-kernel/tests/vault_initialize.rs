@@ -74,6 +74,40 @@ fn new_vm_from_vault_smoke_test() {
 }
 
 #[test]
+fn initialize_callable_slot_read_returns_some_when_present() {
+    // Drop a FrameRef into bare-Frame slot 4 directly, then read it
+    // back via the new public helper. Mirrors what an init program
+    // would do at runtime via MGMT_MOVE before halting.
+    let (state, vault_id) = vault_with_init_code();
+    let mut vm = new_vm_from_vault(&state, vault_id, INVOCATION_GAS, None).unwrap();
+    let bare_idx = vm.bare_frame_id.index();
+    let bare_id = vm.bare_frame_id;
+    let frame_ref = javm::cap::FrameRefCap {
+        vm_id: bare_id,
+        rights: javm::cap::FrameRefRights::CALLABLE,
+    };
+    vm.vm_arena.vm_mut(bare_idx).cap_table.set(
+        jar_kernel::vm::INITIALIZE_CALLABLE_SLOT,
+        javm::cap::Cap::FrameRef(frame_ref),
+    );
+    let read = vm.read_bare_frame_slot(jar_kernel::vm::INITIALIZE_CALLABLE_SLOT);
+    match read {
+        Some(javm::cap::Cap::FrameRef(f)) => assert_eq!(f.vm_id, bare_id),
+        other => panic!("expected FrameRef at slot 4, got {:?}", other),
+    }
+}
+
+#[test]
+fn initialize_callable_none_when_slot_4_empty() {
+    let (state, vault_id) = vault_with_init_code();
+    let vm = new_vm_from_vault(&state, vault_id, INVOCATION_GAS, None).unwrap();
+    assert!(
+        vm.read_bare_frame_slot(jar_kernel::vm::INITIALIZE_CALLABLE_SLOT)
+            .is_none()
+    );
+}
+
+#[test]
 fn new_vm_from_vault_extra_persistent_cap_propagates() {
     let (mut state, vault_id) = vault_with_init_code();
 
