@@ -22,6 +22,7 @@ use crate::types::{
     State, VaultId,
 };
 
+pub mod foreign_cnode;
 pub mod host_abi;
 pub mod host_calls;
 
@@ -102,12 +103,25 @@ pub enum HostCallOutcome {
 
 /// Drive a real javm VM to a terminal state, routing each ProtocolCall to
 /// the kernel's host-call dispatcher.
+///
+/// On every iteration of the run loop, we construct a fresh
+/// [`foreign_cnode::VaultCnodeView`] borrowing `ctx.state`. javm
+/// consults this adapter for slot operations on `FrameRef::Foreign`
+/// frames produced by its resolve walk (i.e. when the guest does
+/// `MGMT_MOVE` / `MGMT_COPY` / `MGMT_DROP` against a cap-ref that
+/// crosses through a `VaultRef`). The adapter is rebuilt each
+/// iteration because borrowing `&mut State` consumes the borrow until
+/// the view drops.
 pub fn drive_invocation<H: Hardware>(
     vm: &mut Vm,
     ctx: &mut InvocationCtx<'_, H>,
 ) -> KResult<InvocationResult> {
     loop {
-        match vm.run() {
+        let outcome = {
+            let mut view = foreign_cnode::VaultCnodeView::new(&mut *ctx.state);
+            vm.run_with_host(&mut view)
+        };
+        match outcome {
             javm::kernel::KernelResult::Halt(rv) => return Ok(InvocationResult::ok(rv)),
             javm::kernel::KernelResult::Panic => return Ok(InvocationResult::fault("guest panic")),
             javm::kernel::KernelResult::OutOfGas => return Err(KernelError::OutOfGas),

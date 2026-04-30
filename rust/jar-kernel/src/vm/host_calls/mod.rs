@@ -14,7 +14,6 @@ pub mod attest;
 pub mod slot;
 pub mod storage;
 
-use crate::cap::KernelCap;
 use crate::runtime::Hardware;
 use crate::types::{Capability, KResult};
 use crate::vm::host_abi::*;
@@ -23,9 +22,11 @@ use crate::vm::{HostCallOutcome, InvocationCtx, Vm};
 /// Fetch the kernel `Capability` value held at `slot` in the running
 /// VM's cap-table, if any. Returns `None` for empty slots, host-call
 /// selector slots (`KernelCap::HostCall`), or non-Protocol caps.
+/// Both `Ephemeral` and `Registered` arms surface the underlying
+/// `Capability` — the host-call handlers don't care which.
 pub(crate) fn fetch_kernel_cap(vm: &Vm, slot: u8) -> Option<&Capability> {
     match vm.cap_table_get(slot) {
-        Some(javm::cap::Cap::Protocol(KernelCap::Cap(c))) => Some(c),
+        Some(javm::cap::Cap::Protocol(kc)) => kc.as_capability(),
         _ => None,
     }
 }

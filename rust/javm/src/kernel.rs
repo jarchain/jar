@@ -66,8 +66,8 @@ macro_rules! resolve {
 }
 use crate::backing::BackingStore;
 use crate::cap::{
-    Access, CallableCap, Cap, CapTable, CodeCap, DataCap, EPHEMERAL_TABLE_SLOT, HandleCap,
-    UntypedCap,
+    Access, CallableCap, Cap, CapTable, CodeCap, DataCap, EPHEMERAL_TABLE_SLOT, ForeignCnode,
+    HandleCap, NoForeignCnode, ProtocolCapT, UntypedCap,
 };
 use crate::program::{self, CapEntryType, CapManifestEntry, ParsedBlob};
 #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
@@ -739,7 +739,7 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
 
         // Caller-picks: destination slot from φ[12] with indirection
         let dst_ref = self.active_reg(12) as u32;
-        let (dst_frame, dst_slot) = match self.resolve_cap_ref(dst_ref) {
+        let (dst_frame, dst_slot, _dst_rights) = match self.resolve_cap_ref(dst_ref) {
             Some(r) => r,
             None => {
                 self.set_active_reg(7, RESULT_WHAT);
@@ -824,7 +824,7 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         let handle = HandleCap { vm_id: child_vm_id };
 
         let dst_ref = self.active_reg(12) as u32;
-        let (dst_frame, dst_slot) = match self.resolve_cap_ref(dst_ref) {
+        let (dst_frame, dst_slot, _dst_rights) = match self.resolve_cap_ref(dst_ref) {
             Some(r) => r,
             None => {
                 self.set_active_reg(7, RESULT_WHAT);
@@ -980,14 +980,22 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
     /// Crossings consume `Cap::Handle` (cross to that VM's persistent
     /// Frame) or `Cap::EphemeralTable` (enter the ephemeral table). Any
     /// other cap shape fails.
-    fn resolve_cap_ref(&self, cap_ref: u32) -> Option<(FrameRef, u8)> {
-        let mut current = FrameRef::Vm(self.active_vm);
+    fn resolve_cap_ref(
+        &self,
+        cap_ref: u32,
+    ) -> Option<(FrameRef<P::ForeignFrameId>, u8, P::FinalStepRights)> {
+        let mut current: FrameRef<P::ForeignFrameId> = FrameRef::Vm(self.active_vm);
+        let mut final_rights = P::FinalStepRights::default();
         let mut r = cap_ref;
 
         // Slot-0 redirect: while target byte == 0 but cap_ref still has bits
         // to consume, cross through slot 0 of the current frame.
         while (r & 0xFF) == 0 && r != 0 {
-            current = self.cross_through(current, 0)?;
+            let (next, rights) = self.cross_through(current, 0)?;
+            current = next;
+            if let Some(rt) = rights {
+                final_rights = rt;
+            }
             r >>= 8;
         }
 
@@ -1000,17 +1008,32 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
             if slot == 0 {
                 continue;
             }
-            current = self.cross_through(current, slot)?;
+            let (next, rights) = self.cross_through(current, slot)?;
+            current = next;
+            if let Some(rt) = rights {
+                final_rights = rt;
+            }
         }
 
-        Some((current, target))
+        Some((current, target, final_rights))
     }
 
     /// Cross through `slot` of `frame` to the next frame in a cap-ref walk.
-    /// Slot must hold either `Cap::Handle` (→ that VM's persistent Frame)
-    /// or `Cap::EphemeralTable` (→ the ephemeral table). Any other cap
-    /// shape fails.
-    fn cross_through(&self, frame: FrameRef, slot: u8) -> Option<FrameRef> {
+    /// Slot must hold either `Cap::Handle` (→ that VM's persistent Frame),
+    /// `Cap::EphemeralTable` (→ the ephemeral table), or a `Cap::Protocol`
+    /// whose `as_foreign_frame()` reports a host-managed frame id (→ the
+    /// foreign frame). Any other cap shape fails.
+    ///
+    /// Returns the next `FrameRef` plus an optional rights bag captured at
+    /// this step. The bag is `Some(_)` only for foreign-frame crossings —
+    /// the resolve walk threads it through so the final step's
+    /// rights are available to the host adapter.
+    #[allow(clippy::type_complexity)]
+    fn cross_through(
+        &self,
+        frame: FrameRef<P::ForeignFrameId>,
+        slot: u8,
+    ) -> Option<(FrameRef<P::ForeignFrameId>, Option<P::FinalStepRights>)> {
         let table = self.frame_table(frame)?;
         match table.get(slot)? {
             Cap::Handle(h) => {
@@ -1018,27 +1041,105 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
                 if target.state == VmState::Running || target.state == VmState::WaitingForReply {
                     return None;
                 }
-                Some(FrameRef::Vm(h.vm_id.index()))
+                Some((FrameRef::Vm(h.vm_id.index()), None))
             }
-            Cap::EphemeralTable(c) => Some(FrameRef::Ephemeral(c.table_id)),
+            Cap::EphemeralTable(c) => Some((FrameRef::Ephemeral(c.table_id), None)),
+            Cap::Protocol(p) => p
+                .as_foreign_frame()
+                .map(|(id, rights)| (FrameRef::Foreign(id), Some(rights))),
             _ => None,
         }
     }
 
-    /// Borrow the cap-table backing a `FrameRef`. Returns `None` if the
-    /// frame is an ephemeral-table id with no live entry (stale generation).
-    fn frame_table(&self, fref: FrameRef) -> Option<&CapTable<P>> {
+    /// Borrow the cap-table backing a `FrameRef`. Returns `None` for a
+    /// `Foreign` frame (those are not stored in javm — operations route
+    /// through the host's `ForeignCnode`) or an ephemeral-table id with
+    /// no live entry (stale generation).
+    fn frame_table(&self, fref: FrameRef<P::ForeignFrameId>) -> Option<&CapTable<P>> {
         match fref {
             FrameRef::Vm(idx) => Some(&self.vm_arena.vm(idx).cap_table),
             FrameRef::Ephemeral(id) => self.ephemeral_arena.get(id),
+            FrameRef::Foreign(_) => None,
         }
     }
 
-    /// Mutably borrow the cap-table backing a `FrameRef`.
-    fn frame_table_mut(&mut self, fref: FrameRef) -> Option<&mut CapTable<P>> {
+    /// Mutably borrow the cap-table backing a `FrameRef`. Returns `None`
+    /// for a `Foreign` frame (host-managed).
+    fn frame_table_mut(&mut self, fref: FrameRef<P::ForeignFrameId>) -> Option<&mut CapTable<P>> {
         match fref {
             FrameRef::Vm(idx) => Some(&mut self.vm_arena.vm_mut(idx).cap_table),
             FrameRef::Ephemeral(id) => self.ephemeral_arena.get_mut(id),
+            FrameRef::Foreign(_) => None,
+        }
+    }
+
+    /// Whether `slot` of `frame` is empty. Routes to the host for
+    /// `Foreign` frames; uses the in-process cap-table otherwise.
+    fn frame_is_empty<H: ForeignCnode<P>>(
+        &self,
+        host: &H,
+        frame: FrameRef<P::ForeignFrameId>,
+        slot: u8,
+    ) -> bool {
+        match frame {
+            FrameRef::Foreign(id) => host.fc_is_empty(id, slot),
+            _ => self
+                .frame_table(frame)
+                .map(|t| t.is_empty(slot))
+                .unwrap_or(false),
+        }
+    }
+
+    /// Take the cap at `(frame, slot)`. Routes to the host for `Foreign`.
+    fn frame_take<H: ForeignCnode<P>>(
+        &mut self,
+        host: &mut H,
+        frame: FrameRef<P::ForeignFrameId>,
+        slot: u8,
+        rights: P::FinalStepRights,
+    ) -> Option<Cap<P>> {
+        match frame {
+            FrameRef::Foreign(id) => host.fc_take(id, slot, rights),
+            _ => self.frame_table_mut(frame).and_then(|t| t.take(slot)),
+        }
+    }
+
+    /// Place `cap` at `(frame, slot)`. Returns `Err(cap)` on rejection.
+    fn frame_set<H: ForeignCnode<P>>(
+        &mut self,
+        host: &mut H,
+        frame: FrameRef<P::ForeignFrameId>,
+        slot: u8,
+        rights: P::FinalStepRights,
+        cap: Cap<P>,
+    ) -> Result<(), Cap<P>> {
+        match frame {
+            FrameRef::Foreign(id) => host.fc_set(id, slot, rights, cap),
+            _ => match self.frame_table_mut(frame) {
+                Some(t) => {
+                    t.set(slot, cap);
+                    Ok(())
+                }
+                None => Err(cap),
+            },
+        }
+    }
+
+    /// Clone the cap at `(frame, slot)`. Routes to the host for
+    /// `Foreign` (which performs a host-side derive).
+    fn frame_clone<H: ForeignCnode<P>>(
+        &mut self,
+        host: &mut H,
+        frame: FrameRef<P::ForeignFrameId>,
+        slot: u8,
+        rights: P::FinalStepRights,
+    ) -> Option<Cap<P>> {
+        match frame {
+            FrameRef::Foreign(id) => host.fc_clone(id, slot, rights),
+            _ => self
+                .frame_table(frame)
+                .and_then(|t| t.get(slot))
+                .and_then(|c| c.try_copy()),
         }
     }
 
@@ -1096,7 +1197,10 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
     }
 
     /// Resolve a cap ref, returning None and setting WHAT if resolution fails.
-    fn resolve_or_what(&mut self, cap_ref: u32) -> Option<(FrameRef, u8)> {
+    fn resolve_or_what(
+        &mut self,
+        cap_ref: u32,
+    ) -> Option<(FrameRef<P::ForeignFrameId>, u8, P::FinalStepRights)> {
         match self.resolve_cap_ref(cap_ref) {
             Some(r) => Some(r),
             None => {
@@ -1108,7 +1212,11 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
 
     /// Dispatch an ecall (management ops + dynamic CALL).
     /// φ\[11\] = op code, φ\[12\] = subject (low u32) | object (high u32).
-    pub fn dispatch_ecall(&mut self, op: u32) -> DispatchResult {
+    ///
+    /// `host` is consulted whenever the resolve walk lands on a
+    /// `FrameRef::Foreign` (host-managed cap-table). For tests / benches
+    /// without foreign frames, pass `&mut NoForeignCnode`.
+    pub fn dispatch_ecall<H: ForeignCnode<P>>(&mut self, host: &mut H, op: u32) -> DispatchResult {
         // Charge ecall gas (same as ecalli)
         let ecall_gas: u64 = 10;
         let current_gas = self.active_gas();
@@ -1125,7 +1233,7 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         match op {
             0x00 => {
                 // Dynamic CALL — resolve subject with indirection
-                let (frame, slot) = match self.resolve_or_what(subject_ref) {
+                let (frame, slot, _rights) = match self.resolve_or_what(subject_ref) {
                     Some(r) => r,
                     None => return DispatchResult::Continue,
                 };
@@ -1134,6 +1242,9 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
                     self.handle_call(slot)
                 } else {
                     // Remote cap — look up the cap in the resolved frame.
+                    // Foreign frames don't expose Cap<P> values directly; CALL
+                    // through them isn't supported (foreign caps are persistent
+                    // CNode entries, not callable workers).
                     let is_protocol = matches!(
                         self.frame_table(frame).and_then(|t| t.get(slot)),
                         Some(Cap::Protocol(_))
@@ -1148,41 +1259,41 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
             }
             0x02 => {
                 // MAP — resolve subject (DATA cap)
-                let (frame, slot) = resolve!(self, subject_ref);
+                let (frame, slot, _rights) = resolve!(self, subject_ref);
                 self.ecall_map(frame, slot)
             }
             0x03 => {
                 // UNMAP — resolve subject (DATA cap)
-                let (frame, slot) = resolve!(self, subject_ref);
+                let (frame, slot, _rights) = resolve!(self, subject_ref);
                 self.ecall_unmap(frame, slot)
             }
             0x04 => {
                 // SPLIT — resolve subject + object dst
-                let (s_frame, s_slot) = resolve!(self, subject_ref);
-                let (o_frame, o_slot) = resolve!(self, object_ref);
+                let (s_frame, s_slot, _s_rights) = resolve!(self, subject_ref);
+                let (o_frame, o_slot, _o_rights) = resolve!(self, object_ref);
                 self.ecall_split(s_frame, s_slot, o_frame, o_slot)
             }
             0x05 => {
                 // DROP — resolve subject
-                let (frame, slot) = resolve!(self, subject_ref);
-                self.ecall_drop(frame, slot)
+                let (frame, slot, rights) = resolve!(self, subject_ref);
+                self.ecall_drop(host, frame, slot, rights)
             }
             0x06 => {
                 // MOVE — resolve subject + object dst
-                let (s_frame, s_slot) = resolve!(self, subject_ref);
-                let (o_frame, o_slot) = resolve!(self, object_ref);
-                self.ecall_move(s_frame, s_slot, o_frame, o_slot)
+                let (s_frame, s_slot, s_rights) = resolve!(self, subject_ref);
+                let (o_frame, o_slot, o_rights) = resolve!(self, object_ref);
+                self.ecall_move(host, s_frame, s_slot, s_rights, o_frame, o_slot, o_rights)
             }
             0x07 => {
                 // COPY — resolve subject + object dst
-                let (s_frame, s_slot) = resolve!(self, subject_ref);
-                let (o_frame, o_slot) = resolve!(self, object_ref);
-                self.ecall_copy(s_frame, s_slot, o_frame, o_slot)
+                let (s_frame, s_slot, s_rights) = resolve!(self, subject_ref);
+                let (o_frame, o_slot, o_rights) = resolve!(self, object_ref);
+                self.ecall_copy(host, s_frame, s_slot, s_rights, o_frame, o_slot, o_rights)
             }
             0x0A => {
                 // DOWNGRADE — resolve subject HANDLE + object dst
-                let (s_frame, s_slot) = resolve!(self, subject_ref);
-                let (o_frame, o_slot) = resolve!(self, object_ref);
+                let (s_frame, s_slot, _s_rights) = resolve!(self, subject_ref);
+                let (o_frame, o_slot, _o_rights) = resolve!(self, object_ref);
                 self.ecall_downgrade(s_frame, s_slot, o_frame, o_slot)
             }
             0x0C => {
@@ -1192,7 +1303,7 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
             }
             0x0D => {
                 // RESUME — resolve subject HANDLE
-                let (frame, slot) = resolve!(self, subject_ref);
+                let (frame, slot, _rights) = resolve!(self, subject_ref);
                 // RESUME uses the HANDLE in the resolved VM's cap table
                 if frame != FrameRef::Vm(self.active_vm) {
                     self.set_active_reg(7, RESULT_WHAT);
@@ -1571,7 +1682,7 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
     /// MAP is only meaningful on a cap held in a VM's persistent Frame —
     /// it associates the cap with that VM's window. Caps sitting in the
     /// ephemeral table cannot be MAPped.
-    fn ecall_map(&mut self, frame: FrameRef, slot: u8) -> DispatchResult {
+    fn ecall_map(&mut self, frame: FrameRef<P::ForeignFrameId>, slot: u8) -> DispatchResult {
         let base_offset = self.active_reg(7) as u32;
         let page_offset = self.active_reg(8) as u32;
         let page_count = self.active_reg(9) as u32;
@@ -1587,7 +1698,8 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
 
         let vm_idx = match frame {
             FrameRef::Vm(idx) => idx,
-            FrameRef::Ephemeral(_) => {
+            FrameRef::Ephemeral(_) | FrameRef::Foreign(_) => {
+                // DATA caps don't live in ephemeral / foreign frames.
                 self.set_active_reg(7, RESULT_WHAT);
                 return DispatchResult::Continue;
             }
@@ -1628,14 +1740,15 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
 
     /// UNMAP pages of a DATA cap in its Frame.
     /// φ[7]=page_offset, φ[8]=page_count.
-    fn ecall_unmap(&mut self, frame: FrameRef, slot: u8) -> DispatchResult {
+    fn ecall_unmap(&mut self, frame: FrameRef<P::ForeignFrameId>, slot: u8) -> DispatchResult {
         let page_offset = self.active_reg(7) as u32;
         let page_count = self.active_reg(8) as u32;
 
         let vm_idx = match frame {
             FrameRef::Vm(idx) => idx,
-            FrameRef::Ephemeral(_) => {
-                // Caps in the ephemeral table aren't mapped; UNMAP is a no-op.
+            FrameRef::Ephemeral(_) | FrameRef::Foreign(_) => {
+                // Caps in the ephemeral / foreign frames aren't mapped;
+                // UNMAP is a no-op.
                 return DispatchResult::Continue;
             }
         };
@@ -1671,13 +1784,19 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
 
     /// SPLIT a DATA cap. Must be fully unmapped.
     /// φ[7]=page_offset. Subject = DATA cap, object = dst slot for high half.
+    /// Foreign frames don't hold DATA caps, so a Foreign source or
+    /// destination always reports `RESULT_WHAT`.
     fn ecall_split(
         &mut self,
-        s_frame: FrameRef,
+        s_frame: FrameRef<P::ForeignFrameId>,
         s_slot: u8,
-        o_frame: FrameRef,
+        o_frame: FrameRef<P::ForeignFrameId>,
         o_slot: u8,
     ) -> DispatchResult {
+        if matches!(s_frame, FrameRef::Foreign(_)) || matches!(o_frame, FrameRef::Foreign(_)) {
+            self.set_active_reg(7, RESULT_WHAT);
+            return DispatchResult::Continue;
+        }
         let page_off = self.active_reg(7) as u32;
 
         // Validate
@@ -1708,8 +1827,25 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         DispatchResult::Continue
     }
 
-    /// DROP a cap. Auto-unmaps DATA. Reclaims VM on HANDLE drop.
-    fn ecall_drop(&mut self, frame: FrameRef, slot: u8) -> DispatchResult {
+    /// DROP a cap. Auto-unmaps DATA. Reclaims VM on HANDLE drop. For
+    /// `Foreign` slots the operation routes through the host's
+    /// `fc_drop` (host-side revoke).
+    fn ecall_drop<H: ForeignCnode<P>>(
+        &mut self,
+        host: &mut H,
+        frame: FrameRef<P::ForeignFrameId>,
+        slot: u8,
+        rights: P::FinalStepRights,
+    ) -> DispatchResult {
+        // Foreign drop: host handles revoke + bookkeeping. No DATA / HANDLE
+        // path applies (host-managed CNodes hold persistent caps only).
+        if let FrameRef::Foreign(id) = frame {
+            if !host.fc_drop(id, slot, rights) {
+                self.set_active_reg(7, RESULT_WHAT);
+            }
+            return DispatchResult::Continue;
+        }
+
         // DROP HANDLE → reclaim VM (only meaningful for caps in a VM frame).
         if let FrameRef::Vm(vm_idx) = frame
             && let Some(Cap::Handle(h)) = self.vm_arena.vm(vm_idx).cap_table.get(slot)
@@ -1745,26 +1881,28 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
 
     /// MOVE a cap between Frames. Auto-unmaps DATA from source if cross-frame;
     /// auto-remaps in destination if `mappings[dst_vm]` is recorded.
-    fn ecall_move(
+    /// `Foreign` participation routes the take/set through the host's
+    /// `ForeignCnode`. Set rejection rolls back by restoring at source.
+    #[allow(clippy::too_many_arguments)]
+    fn ecall_move<H: ForeignCnode<P>>(
         &mut self,
-        s_frame: FrameRef,
+        host: &mut H,
+        s_frame: FrameRef<P::ForeignFrameId>,
         s_slot: u8,
-        o_frame: FrameRef,
+        s_rights: P::FinalStepRights,
+        o_frame: FrameRef<P::ForeignFrameId>,
         o_slot: u8,
+        o_rights: P::FinalStepRights,
     ) -> DispatchResult {
         if s_frame == o_frame && s_slot == o_slot {
             return DispatchResult::Continue;
         }
-        let dst_empty = self
-            .frame_table(o_frame)
-            .map(|t| t.is_empty(o_slot))
-            .unwrap_or(false);
-        if !dst_empty {
+        if !self.frame_is_empty(host, o_frame, o_slot) {
             self.set_active_reg(7, RESULT_WHAT);
             return DispatchResult::Continue;
         }
 
-        let mut cap = match self.frame_table_mut(s_frame).and_then(|t| t.take(s_slot)) {
+        let mut cap = match self.frame_take(host, s_frame, s_slot, s_rights) {
             Some(c) => c,
             None => {
                 self.set_active_reg(7, RESULT_WHAT);
@@ -1779,16 +1917,35 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
             // auto-remap in destination's window if it's a VM frame and
             // `mappings[dst_vm]` is recorded. Moves into the ephemeral
             // table preserve `mappings` but never remap (no window).
+            // Foreign destinations don't accept DATA caps (host rejects on
+            // fc_set), so the remap is correct-by-omission for that case.
             self.cross_frame_unmap(d);
             if let FrameRef::Vm(o_idx) = o_frame {
                 self.cross_frame_remap(d, o_idx);
             }
         }
 
-        if let Some(t) = self.frame_table_mut(o_frame) {
-            t.set(o_slot, cap);
+        match self.frame_set(host, o_frame, o_slot, o_rights, cap) {
+            Ok(()) => DispatchResult::Continue,
+            Err(mut cap) => {
+                // Roll back: undo any cross-frame DATA remap we did, then
+                // restore the cap at the source slot. Source was just taken,
+                // so it's empty — set always succeeds for non-Foreign sources.
+                if s_frame != o_frame
+                    && let Cap::Data(ref mut d) = cap
+                {
+                    // Reverse the dest-side remap (if any) and the source-side
+                    // unmap so the cap returns to its pre-take state.
+                    self.cross_frame_unmap(d);
+                    if let FrameRef::Vm(s_idx) = s_frame {
+                        self.cross_frame_remap(d, s_idx);
+                    }
+                }
+                let _ = self.frame_set(host, s_frame, s_slot, s_rights, cap);
+                self.set_active_reg(7, RESULT_WHAT);
+                DispatchResult::Continue
+            }
         }
-        DispatchResult::Continue
     }
 
     /// Unmap a DATA cap from its currently-active VM's window. Mapping
@@ -1825,49 +1982,58 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         }
     }
 
-    /// COPY a cap between CNodes (copyable types only).
-    fn ecall_copy(
+    /// COPY a cap between CNodes (copyable types only). `Foreign` source
+    /// performs a host-side derive (allocating a fresh registry entry);
+    /// `Foreign` destination places via the host adapter.
+    #[allow(clippy::too_many_arguments)]
+    fn ecall_copy<H: ForeignCnode<P>>(
         &mut self,
-        s_frame: FrameRef,
+        host: &mut H,
+        s_frame: FrameRef<P::ForeignFrameId>,
         s_slot: u8,
-        o_frame: FrameRef,
+        s_rights: P::FinalStepRights,
+        o_frame: FrameRef<P::ForeignFrameId>,
         o_slot: u8,
+        o_rights: P::FinalStepRights,
     ) -> DispatchResult {
-        let dst_empty = self
-            .frame_table(o_frame)
-            .map(|t| t.is_empty(o_slot))
-            .unwrap_or(false);
-        if !dst_empty {
+        if !self.frame_is_empty(host, o_frame, o_slot) {
             self.set_active_reg(7, RESULT_WHAT);
             return DispatchResult::Continue;
         }
-        let copy = match self.frame_table(s_frame).and_then(|t| t.get(s_slot)) {
-            Some(c) => match c.try_copy() {
-                Some(copy) => copy,
-                None => {
-                    self.set_active_reg(7, RESULT_WHAT);
-                    return DispatchResult::Continue;
-                }
-            },
+        let copy = match self.frame_clone(host, s_frame, s_slot, s_rights) {
+            Some(c) => c,
             None => {
                 self.set_active_reg(7, RESULT_WHAT);
                 return DispatchResult::Continue;
             }
         };
-        if let Some(t) = self.frame_table_mut(o_frame) {
-            t.set(o_slot, copy);
+        if self
+            .frame_set(host, o_frame, o_slot, o_rights, copy)
+            .is_err()
+        {
+            // Destination rejected the placement; the COPY produces no
+            // visible side effect (host's fc_clone may have allocated a
+            // child registry entry that's now orphan, but the host can
+            // garbage-collect at its discretion).
+            self.set_active_reg(7, RESULT_WHAT);
         }
         DispatchResult::Continue
     }
 
-    /// DOWNGRADE a HANDLE to CALLABLE. Places CALLABLE at dst.
+    /// DOWNGRADE a HANDLE to CALLABLE. Places CALLABLE at dst. HANDLE
+    /// caps don't live in foreign frames, and CALLABLE caps aren't
+    /// persistable to a Vault — so Foreign on either side fails.
     fn ecall_downgrade(
         &mut self,
-        s_frame: FrameRef,
+        s_frame: FrameRef<P::ForeignFrameId>,
         s_slot: u8,
-        o_frame: FrameRef,
+        o_frame: FrameRef<P::ForeignFrameId>,
         o_slot: u8,
     ) -> DispatchResult {
+        if matches!(s_frame, FrameRef::Foreign(_)) || matches!(o_frame, FrameRef::Foreign(_)) {
+            self.set_active_reg(7, RESULT_WHAT);
+            return DispatchResult::Continue;
+        }
         let vm_id = match self.frame_table(s_frame).and_then(|t| t.get(s_slot)) {
             Some(Cap::Handle(h)) => h.vm_id,
             _ => {
@@ -2376,7 +2542,23 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
     }
 
     /// Run the kernel until it needs host interaction or terminates.
-    pub fn run(&mut self) -> KernelResult {
+    ///
+    /// Convenience shim that uses [`NoForeignCnode`] — for callers
+    /// (tests, benches, hosts with no foreign cap-tables) that don't
+    /// expose any `FrameRef::Foreign` frames. Hosts that do should call
+    /// [`Self::run_with_host`].
+    #[inline]
+    pub fn run(&mut self) -> KernelResult
+    where
+        P: ProtocolCapT<ForeignFrameId = (), FinalStepRights = ()>,
+    {
+        self.run_with_host(&mut NoForeignCnode)
+    }
+
+    /// Run the kernel until it needs host interaction or terminates.
+    /// `host` is consulted for slot-level operations on `FrameRef::Foreign`
+    /// frames produced by the resolve walk.
+    pub fn run_with_host<H: ForeignCnode<P>>(&mut self, host: &mut H) -> KernelResult {
         loop {
             // Ensure active VM has a window assigned (handles eviction + DATA cap mapping).
             #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
@@ -2517,7 +2699,7 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
                     let op = self.active_reg(11) as u32;
                     #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
                     self.flush_live_ctx();
-                    match self.dispatch_ecall(op) {
+                    match self.dispatch_ecall(host, op) {
                         DispatchResult::Continue => continue,
                         DispatchResult::ProtocolCall { slot } => {
                             return KernelResult::ProtocolCall { slot };
@@ -2946,7 +3128,7 @@ mod tests {
         kernel.set_active_reg(12, 66 | ((untyped_slot as u64) << 32));
         #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
         kernel.flush_live_ctx();
-        let result = kernel.dispatch_ecall(0);
+        let result = kernel.dispatch_ecall(&mut NoForeignCnode, 0);
         assert!(matches!(result, DispatchResult::Continue));
 
         // φ[7] should be the dst_slot
@@ -3149,7 +3331,7 @@ mod tests {
         kernel.set_active_reg(12, 67 | ((handle_idx as u64) << 32));
         #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
         kernel.flush_live_ctx();
-        kernel.dispatch_ecall(0x0A);
+        kernel.dispatch_ecall(&mut NoForeignCnode, 0x0A);
         let callable_idx = 67u8;
 
         // Handle still exists

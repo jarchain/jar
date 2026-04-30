@@ -122,6 +122,7 @@ pub fn run_one_invocation<H: Hardware>(
     let mut vm: Vm = Vm::new(&blob, INVOCATION_GAS_BUDGET)
         .map_err(|e| KernelError::Internal(format!("javm init: {:?}", e)))?;
     populate_host_call_slots(&mut vm);
+    populate_home_vault_ref(&mut vm, target);
     populate_storage_slot(
         &mut vm, target, /* writable */ true, /* snapshot */ None,
     );
@@ -225,29 +226,52 @@ pub(crate) fn populate_ephemeral_kernel_caps(
         None => return,
     };
 
-    // Sub-slot 1: Caller cap.
+    // Sub-slot 1: Caller cap. Ephemeral — kernel-injected per-frame.
     let caller_cap = match caller {
         crate::types::Caller::Vault(vid) => {
             Capability::CallerVault(CallerVaultCap { vault_id: vid })
         }
         crate::types::Caller::Kernel(role) => Capability::CallerKernel(CallerKernelCap { role }),
     };
-    table.set(1, javm::cap::Cap::Protocol(KernelCap::Cap(caller_cap)));
+    table.set(
+        1,
+        javm::cap::Cap::Protocol(KernelCap::Ephemeral(caller_cap)),
+    );
 
-    // Sub-slot 2: Self cap.
+    // Sub-slot 2: Self cap. Ephemeral.
     table.set(
         2,
-        javm::cap::Cap::Protocol(KernelCap::Cap(Capability::SelfId(SelfCap {
+        javm::cap::Cap::Protocol(KernelCap::Ephemeral(Capability::SelfId(SelfCap {
             vault_id: self_vault,
             code_hash: self_code_hash,
         }))),
     );
 
-    // Sub-slot 3: Gas cap.
+    // Sub-slot 3: Gas cap. Ephemeral.
     table.set(
         3,
-        javm::cap::Cap::Protocol(KernelCap::Cap(Capability::Gas(GasCap {
+        javm::cap::Cap::Protocol(KernelCap::Ephemeral(Capability::Gas(GasCap {
             remaining: invocation_gas,
+        }))),
+    );
+}
+
+/// Place the per-invocation home `VaultRef` at slot 1 of the active
+/// VM's persistent Frame. javm's resolve walk crosses through this
+/// cap (its `as_foreign_frame()` reports the home Vault's id) so a
+/// guest cap-ref like `0x000100AA` reaches `home_vault.slots[0xAA]`.
+///
+/// Stored as `KernelCap::Ephemeral` — the cap has no σ presence; it
+/// vanishes at invocation teardown when the Frame is discarded.
+/// Sub-VaultRefs reachable from the home Vault's slots are real
+/// `Registered` caps (held in σ.cap_registry).
+pub(crate) fn populate_home_vault_ref(vm: &mut Vm, home: VaultId) {
+    use crate::cap::{Capability, KernelCap, VaultRefCap, VaultRights};
+    vm.cap_table_set(
+        1,
+        javm::cap::Cap::Protocol(KernelCap::Ephemeral(Capability::VaultRef(VaultRefCap {
+            vault_id: home,
+            rights: VaultRights::ALL,
         }))),
     );
 }
@@ -280,9 +304,13 @@ pub(crate) fn populate_storage_slot(
             },
         })
     };
+    // The per-invocation Storage / SnapshotStorage cap is Ephemeral —
+    // it's kernel-injected for the duration of the invocation and not
+    // tracked in σ.cap_registry. Vault-side derived Storage caps
+    // granted explicitly will be Registered.
     vm.cap_table_set(
         KERNEL_CAP_SLOT,
-        javm::cap::Cap::Protocol(KernelCap::Cap(cap)),
+        javm::cap::Cap::Protocol(KernelCap::Ephemeral(cap)),
     );
 }
 

@@ -364,7 +364,27 @@ pub struct EphemeralTableCap {
 /// management ecallis (COPY / MOVE / DROP). The default impls allow
 /// every operation; consumers that want stricter rules (e.g. jar-kernel
 /// rejecting copy of pinned caps) override the relevant method.
+///
+/// ## Foreign frames
+///
+/// Beyond the per-VM persistent Frame and the per-invocation ephemeral
+/// table, hosts may expose a third frame kind: a "foreign" cap-table
+/// the host (jar-kernel) backs with its own σ-resident structure
+/// (Vault CNodes). A protocol cap can announce itself as a handle into
+/// such a foreign frame by overriding [`ProtocolCapT::as_foreign_frame`];
+/// when javm's resolve walk crosses through that cap, the resulting
+/// `FrameRef::Foreign(id)` is fed to a host-provided
+/// [`ForeignCnode`] implementation for slot-level operations.
 pub trait ProtocolCapT: Clone + core::fmt::Debug {
+    /// Identifier the host uses to address one of its foreign frames.
+    /// Implementors with no foreign frames use `()`.
+    type ForeignFrameId: Copy + Eq + core::fmt::Debug;
+    /// Operation-rights bag carried alongside a foreign-frame handle.
+    /// The host adapter's slot-level methods consult this for policy
+    /// (e.g. VaultRef rights). Implementors with no foreign frames
+    /// use `()`.
+    type FinalStepRights: Copy + Eq + core::fmt::Debug + Default;
+
     /// May the guest COPY this cap to another cap-table slot?
     fn is_copyable(&self) -> bool {
         true
@@ -390,13 +410,113 @@ pub trait ProtocolCapT: Clone + core::fmt::Debug {
     fn gas_merge(&mut self, _donor: &Self) -> bool {
         false
     }
+    /// If this cap is a handle into a foreign cap-table (e.g. a Vault
+    /// CNode in jar-kernel), return the host's id for that frame plus
+    /// the operation-rights bag the resolve walk should record at this
+    /// step. javm's `cross_through` consults this on its fall-through
+    /// arm so that hosts can extend the resolve walk without javm
+    /// learning about Vaults / CNodes / etc.
+    #[inline]
+    fn as_foreign_frame(&self) -> Option<(Self::ForeignFrameId, Self::FinalStepRights)> {
+        None
+    }
 }
 
 /// `u8` is the default protocol-cap payload type used by tests, benches,
 /// and javm-bench guests. The byte typically encodes the host-call
 /// selector (1..=N), and `ecalli N` on slot N yields
 /// `KernelResult::ProtocolCall { slot: N }`.
-impl ProtocolCapT for u8 {}
+impl ProtocolCapT for u8 {
+    type ForeignFrameId = ();
+    type FinalStepRights = ();
+}
+
+// =============================================================================
+// Foreign cnode trait — host-side hook for slot-level operations on a frame
+// kind javm doesn't own (e.g. jar-kernel Vault CNodes).
+// =============================================================================
+
+/// Host adapter for foreign cap-tables. A type implementing this trait
+/// translates between javm's `Cap<P>` value model and the host's own
+/// slot storage (which may indirect through a registry, enforce rights,
+/// etc.). javm calls these methods from `MGMT_MOVE` / `MGMT_COPY` /
+/// `MGMT_DROP` ecallis when the resolve walk lands on a
+/// `FrameRef::Foreign`.
+///
+/// `id` identifies the host frame; `rights` carries the
+/// operation-rights bag captured at the final crossing step, so the
+/// host can enforce op-specific authority (e.g. VaultRef Grant /
+/// Revoke / Derive). All methods may fail (return `None` / `Err`) and
+/// javm reports `RESULT_WHAT` to the guest when they do.
+pub trait ForeignCnode<P: ProtocolCapT> {
+    /// Take the cap at `(id, slot)`. Empty slots return `None`. On
+    /// `Some(_)` the host must have removed the cap from its frame
+    /// (and updated any registry bookkeeping).
+    fn fc_take(
+        &mut self,
+        id: P::ForeignFrameId,
+        slot: u8,
+        rights: P::FinalStepRights,
+    ) -> Option<Cap<P>>;
+
+    /// Place `cap` at `(id, slot)`. Returns `Err(cap)` if the host
+    /// rejects placement (slot occupied, pinning violation, missing
+    /// rights, non-persistable cap shape) — javm uses the returned
+    /// cap to roll back the source slot.
+    fn fc_set(
+        &mut self,
+        id: P::ForeignFrameId,
+        slot: u8,
+        rights: P::FinalStepRights,
+        cap: Cap<P>,
+    ) -> Result<(), Cap<P>>;
+
+    /// Produce a copy (host-side derive) of the cap at `(id, slot)`.
+    /// Empty slots / non-copyable caps return `None`.
+    fn fc_clone(
+        &mut self,
+        id: P::ForeignFrameId,
+        slot: u8,
+        rights: P::FinalStepRights,
+    ) -> Option<Cap<P>>;
+
+    /// Drop the cap at `(id, slot)` (host-side revoke). Returns
+    /// `false` if the slot is empty or the host refused (pinning,
+    /// rights). Used for `MGMT_DROP` against a foreign slot, where
+    /// the cap is destroyed rather than handed back to the guest.
+    fn fc_drop(&mut self, id: P::ForeignFrameId, slot: u8, rights: P::FinalStepRights) -> bool;
+
+    /// Whether the slot is empty (no cap held).
+    fn fc_is_empty(&self, id: P::ForeignFrameId, slot: u8) -> bool;
+}
+
+/// Zero-sized default `ForeignCnode` for hosts (and tests / benches)
+/// that don't expose any foreign frames. All methods fail silently —
+/// `MGMT_MOVE` / etc. against a `FrameRef::Foreign` simply report
+/// `RESULT_WHAT` to the guest, since `as_foreign_frame()` defaults to
+/// `None` and so no `Foreign` ref will ever be produced.
+pub struct NoForeignCnode;
+
+impl<P> ForeignCnode<P> for NoForeignCnode
+where
+    P: ProtocolCapT<ForeignFrameId = (), FinalStepRights = ()>,
+{
+    fn fc_take(&mut self, _id: (), _slot: u8, _rights: ()) -> Option<Cap<P>> {
+        None
+    }
+    fn fc_set(&mut self, _id: (), _slot: u8, _rights: (), cap: Cap<P>) -> Result<(), Cap<P>> {
+        Err(cap)
+    }
+    fn fc_clone(&mut self, _id: (), _slot: u8, _rights: ()) -> Option<Cap<P>> {
+        None
+    }
+    fn fc_drop(&mut self, _id: (), _slot: u8, _rights: ()) -> bool {
+        false
+    }
+    fn fc_is_empty(&self, _id: (), _slot: u8) -> bool {
+        true
+    }
+}
 
 /// A capability in the cap table.
 ///

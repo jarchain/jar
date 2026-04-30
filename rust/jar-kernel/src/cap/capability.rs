@@ -228,8 +228,20 @@ impl Capability {
 // -----------------------------------------------------------------------------
 
 /// VaultRef rights. A bag of bits; uses a small struct rather than bitflags.
+///
+/// `read` gates *traversal* — a VaultRef without `read` cannot be used as a
+/// cap-ref crossing point in javm's resolve walk (javm only crosses through
+/// caps whose `as_foreign_frame()` returns `Some`, and for `KernelCap` that
+/// requires `rights.read`). The other bits gate the operation at the
+/// final-step VaultRef:
+///
+/// - `initialize` — `cap_call`-equivalent: spawn a VM running the Vault's manager.
+/// - `grant`      — place a cap into a target slot (Frame → Vault MOVE / COPY destination).
+/// - `revoke`     — remove a cap from a slot (Vault → Frame MOVE source, MGMT_DROP).
+/// - `derive`     — produce a narrowed copy (MGMT_COPY source from a Vault).
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
 pub struct VaultRights {
+    pub read: bool,
     pub initialize: bool,
     pub grant: bool,
     pub revoke: bool,
@@ -238,13 +250,24 @@ pub struct VaultRights {
 
 impl VaultRights {
     pub const ALL: VaultRights = VaultRights {
+        read: true,
         initialize: true,
         grant: true,
         revoke: true,
         derive: true,
     };
     pub const INITIALIZE: VaultRights = VaultRights {
+        read: false,
         initialize: true,
+        grant: false,
+        revoke: false,
+        derive: false,
+    };
+    /// Read-only traversal: lets a Vault's slots be reached for inspection
+    /// or chaining onward, but no slot mutation.
+    pub const READ: VaultRights = VaultRights {
+        read: true,
+        initialize: false,
         grant: false,
         revoke: false,
         derive: false,

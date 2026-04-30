@@ -30,7 +30,7 @@ use crate::reach::ReachSet;
 use crate::runtime::{Hardware, NodeOffchain};
 use crate::state::cap_registry;
 use crate::state::code_blobs;
-use crate::transact::{populate_host_call_slots, populate_storage_slot};
+use crate::transact::{populate_home_vault_ref, populate_host_call_slots, populate_storage_slot};
 use crate::vm::{INVOCATION_GAS_BUDGET, InvocationCtx, Vm, drive_invocation};
 
 #[derive(Debug, Default)]
@@ -119,6 +119,7 @@ pub fn handle_inbound_dispatch<H: Hardware>(
         let mut vm: Vm = Vm::new_cached(&blob, INVOCATION_GAS_BUDGET, &mut node.code_cache)
             .map_err(|e| KernelError::Internal(format!("javm init step-2: {:?}", e)))?;
         populate_host_call_slots(&mut vm);
+        populate_home_vault_ref(&mut vm, entrypoint);
         populate_storage_slot(&mut vm, entrypoint, false, Some(prior_root));
         crate::transact::populate_ephemeral_kernel_caps(
             &mut vm,
@@ -158,6 +159,7 @@ pub fn handle_inbound_dispatch<H: Hardware>(
         let mut vm: Vm = Vm::new_cached(&blob, INVOCATION_GAS_BUDGET, &mut node.code_cache)
             .map_err(|e| KernelError::Internal(format!("javm init step-3: {:?}", e)))?;
         populate_host_call_slots(&mut vm);
+        populate_home_vault_ref(&mut vm, entrypoint);
         populate_storage_slot(&mut vm, entrypoint, false, Some(prior_root));
         crate::transact::populate_ephemeral_kernel_caps(
             &mut vm,

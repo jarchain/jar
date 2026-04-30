@@ -355,13 +355,22 @@ impl<P: ProtocolCapT> VmArena<P> {
 //   4..127  reserved kernel-managed
 //   128..255 guest cap-args
 
-/// Identifies a frame referenced by a cap-ref walk: either a VM's
-/// persistent Frame (the VM's own cap-table) or the per-invocation
-/// ephemeral table.
+/// Identifies a frame referenced by a cap-ref walk:
+/// - `Vm(idx)` — a VM's persistent Frame (its own cap-table).
+/// - `Ephemeral(id)` — the per-invocation ephemeral table.
+/// - `Foreign(id)` — a host-managed cap-table outside javm (e.g. a
+///   jar-kernel Vault CNode). javm doesn't own these; slot operations
+///   route through a [`crate::cap::ForeignCnode`] adapter the host
+///   threads in.
+///
+/// `F` is the host's foreign-frame id type (`ProtocolCapT::ForeignFrameId`).
+/// Hosts with no foreign frames use `()` and the `Foreign(())` arm is
+/// unreachable in practice (because `as_foreign_frame` returns `None`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FrameRef {
+pub enum FrameRef<F = ()> {
     Vm(u16),
     Ephemeral(EphemeralTableId),
+    Foreign(F),
 }
 
 /// Packed ephemeral-table ID: low 16 bits = arena index, high 16 bits = generation.
