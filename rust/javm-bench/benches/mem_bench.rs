@@ -41,8 +41,9 @@ const SIZES: &[(&str, u64)] = &[
 
 /// Initialize a kernel for the given blob.
 fn init_kernel(blob: &[u8], gas: u64) -> javm::kernel::InvocationKernel {
-    javm::kernel::InvocationKernel::new_with_backend(blob, gas, javm::PvmBackend::ForceRecompiler)
-        .unwrap()
+    let backend = javm::PvmBackend::ForceRecompiler;
+    let artifacts = javm::kernel::cap_table_from_blob::<u8>(blob, backend, None).unwrap();
+    javm::kernel::InvocationKernel::new_from_artifacts(artifacts, gas, backend).unwrap()
 }
 
 fn bench_mem_seq(c: &mut Criterion) {

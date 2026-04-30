@@ -876,8 +876,16 @@ mod tests {
     fn test_sample_service_runs_via_kernel() {
         let blob = build_sample_service();
         // Kernel runs single entrypoint at PC=0.
+        let artifacts =
+            javm::kernel::cap_table_from_blob::<u8>(&blob, javm::PvmBackend::Default, None)
+                .expect("cap_table_from_blob ok");
         let mut kernel: javm::kernel::InvocationKernel =
-            javm::kernel::InvocationKernel::new(&blob, 1_000_000).expect("should initialize");
+            javm::kernel::InvocationKernel::new_from_artifacts(
+                artifacts,
+                1_000_000,
+                javm::PvmBackend::Default,
+            )
+            .expect("should initialize");
         let result = kernel.run();
         // The sample service executes and
         // should either halt or panic (depending on the dispatch stub).

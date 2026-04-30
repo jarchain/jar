@@ -19,13 +19,11 @@ fn main() {
     let mut exec_us = Vec::new();
     for _ in 0..ITERS {
         let t0 = Instant::now();
+        let backend = javm::PvmBackend::ForceRecompiler;
+        let artifacts = javm::kernel::cap_table_from_blob::<u8>(&sort_blob, backend, None).unwrap();
         let mut kernel: javm::kernel::InvocationKernel =
-            javm::kernel::InvocationKernel::new_with_backend(
-                &sort_blob,
-                GAS_LIMIT,
-                javm::PvmBackend::ForceRecompiler,
-            )
-            .unwrap();
+            javm::kernel::InvocationKernel::new_from_artifacts(artifacts, GAS_LIMIT, backend)
+                .unwrap();
         compile_us.push(t0.elapsed().as_micros());
 
         let t1 = Instant::now();

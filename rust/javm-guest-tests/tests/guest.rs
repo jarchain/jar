@@ -15,12 +15,14 @@ struct KernelRun {
 
 /// Run the kernel with a specific backend, return output bytes and gas consumed.
 fn run_kernel(backend: javm::PvmBackend, input: &[u8], test_id: u32) -> KernelRun {
-    use javm::kernel::{InvocationKernel, KernelResult};
+    use javm::kernel::{cap_table_from_blob, InvocationKernel, KernelResult};
     use javm::vm_pool::VmState;
 
     let gas = 100_000_000_000u64;
+    let artifacts =
+        cap_table_from_blob::<u8>(GUEST_TESTS_BLOB, backend, None).expect("cap_table_from_blob ok");
     let mut kernel: InvocationKernel =
-        InvocationKernel::new_with_backend(GUEST_TESTS_BLOB, gas, backend)
+        InvocationKernel::new_from_artifacts(artifacts, gas, backend)
             .expect("kernel should initialize");
     // Populate the transpiler-reserved args DATA cap and pass the byte
     // address + length to the guest in φ[8]/φ[9]. javm has no built-in

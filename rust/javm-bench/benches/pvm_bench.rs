@@ -18,6 +18,19 @@
 //! across invocations is a separate optimization.
 
 use criterion::{Criterion, criterion_group, criterion_main};
+
+/// Bench-local helper: build an InvocationKernel from a self-contained
+/// JAR blob via the public two-step API (cap_table_from_blob +
+/// new_from_artifacts). Replaces the retired
+/// `InvocationKernel::new_with_backend(blob, gas, backend)`.
+fn kernel_from_blob(
+    blob: &[u8],
+    gas: u64,
+    backend: javm::PvmBackend,
+) -> javm::kernel::InvocationKernel<u8> {
+    let artifacts = javm::kernel::cap_table_from_blob::<u8>(blob, backend, None).unwrap();
+    javm::kernel::InvocationKernel::new_from_artifacts(artifacts, gas, backend).unwrap()
+}
 use javm_bench::*;
 
 // ---------------------------------------------------------------------------
@@ -131,14 +144,7 @@ fn bench_standard(c: &mut Criterion, name: &str, javm_blob: &[u8], pvm_blob: &[u
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     group.bench_function("javm-recompiler-exec", |b| {
         b.iter_batched(
-            || {
-                javm::kernel::InvocationKernel::<u8>::new_with_backend(
-                    javm_blob,
-                    GAS_LIMIT,
-                    javm::PvmBackend::ForceRecompiler,
-                )
-                .unwrap()
-            },
+            || kernel_from_blob(javm_blob, GAS_LIMIT, javm::PvmBackend::ForceRecompiler),
             |mut kernel| {
                 loop {
                     match kernel.run() {
@@ -250,28 +256,18 @@ fn bench_ecrecover(c: &mut Criterion) {
     // Compile-only: measure only kernel init (includes JIT compilation).
     group.bench_function("javm-recompiler-compile", |b| {
         b.iter(|| {
-            std::hint::black_box(
-                javm::kernel::InvocationKernel::<u8>::new_with_backend(
-                    javm_blob,
-                    ecrecover_gas,
-                    javm::PvmBackend::ForceRecompiler,
-                )
-                .unwrap(),
-            );
+            std::hint::black_box(kernel_from_blob(
+                javm_blob,
+                ecrecover_gas,
+                javm::PvmBackend::ForceRecompiler,
+            ));
         })
     });
 
     // Execution-only: compile in setup, measure only execution.
     group.bench_function("javm-recompiler-exec", |b| {
         b.iter_batched(
-            || {
-                javm::kernel::InvocationKernel::<u8>::new_with_backend(
-                    javm_blob,
-                    ecrecover_gas,
-                    javm::PvmBackend::ForceRecompiler,
-                )
-                .unwrap()
-            },
+            || kernel_from_blob(javm_blob, ecrecover_gas, javm::PvmBackend::ForceRecompiler),
             |mut kernel| {
                 loop {
                     match kernel.run() {
