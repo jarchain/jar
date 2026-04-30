@@ -205,21 +205,65 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
     ) -> Result<Self, KernelError> {
         let parsed = program::parse_blob(blob).ok_or(KernelError::InvalidBlob)?;
 
-        let backing =
-            BackingStore::new(parsed.header.memory_pages).ok_or(KernelError::MemoryError)?;
+        let mut kernel = Self::build_kernel_skeleton(parsed.header.memory_pages, backend)?;
 
-        let mem_cycles = crate::compute_mem_cycles(parsed.header.memory_pages);
-        let untyped = Arc::new(UntypedCap::new(parsed.header.memory_pages));
+        // Build VM 0's cap table from the manifest. Slot 0 (the bare-Frame
+        // FrameRef) is patched in `finalize_kernel` after both VMs are
+        // inserted into the arena. Protocol caps are NOT auto-populated
+        // — the caller (kernel host) is responsible for setting up
+        // whatever protocol slots it intends to expose, via
+        // `cap_table_set` / `set_original`. This avoids baking JAR's old
+        // 1..=28 host-call layout into javm itself.
+        let mut cap_table: CapTable<P> = CapTable::new();
+        let mut data_caps_to_map: Vec<(u32, u32, u32, Access)> = Vec::new(); // (base_page, backing_offset, page_count, access)
+
+        for entry in &parsed.caps {
+            let cap = kernel.create_cap_from_manifest(entry, &parsed, &mut code_cache)?;
+            if let Cap::Data(ref d) = cap {
+                // Record DATA caps that need mapping into the CODE window
+                if let Some((base_page, access)) = d.mapping_for(crate::vm_pool::VmId::ROOT) {
+                    data_caps_to_map.push((base_page, d.backing_offset, d.page_count, access));
+                }
+            }
+            cap_table.set(entry.cap_index, cap);
+        }
+
+        // Resolve the init CODE cap (the program run by Vault.initialize)
+        // to find its code_caps index.
+        let invoke_code_id = match cap_table.get(parsed.header.init_cap) {
+            Some(Cap::Code(c)) => c.id,
+            _ => return Err(KernelError::InvalidBlob),
+        };
+
+        kernel.finalize_kernel(cap_table, invoke_code_id, gas, data_caps_to_map)
+    }
+
+    /// Allocate the kernel's per-invocation infrastructure (BackingStore,
+    /// UntypedCap, WindowPool) and return a partially-initialized
+    /// `Self` with empty `code_caps`, an empty `vm_arena`, and
+    /// `bare_frame_id = VmId::ROOT` as a placeholder. `finalize_kernel`
+    /// fills in the rest.
+    ///
+    /// `memory_pages` sizes the backing memfd and the UntypedCap budget;
+    /// for `Vault.initialize`-driven invocations this is the home Vault's
+    /// `quota_pages` capped at `u32::MAX`.
+    fn build_kernel_skeleton(
+        memory_pages: u32,
+        backend: crate::backend::PvmBackend,
+    ) -> Result<Self, KernelError> {
+        let backing = BackingStore::new(memory_pages).ok_or(KernelError::MemoryError)?;
+        let mem_cycles = crate::compute_mem_cycles(memory_pages);
+        let untyped = Arc::new(UntypedCap::new(memory_pages));
 
         #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
         let window_pool =
             WindowPool::new(crate::vm_pool::WINDOW_POOL_SIZE).ok_or(KernelError::MemoryError)?;
 
-        let mut kernel = Self {
+        Ok(Self {
             backing,
             code_caps: Vec::with_capacity(MAX_CODE_CAPS),
             vm_arena: VmArena::new(),
-            // Placeholder; reassigned below once the bare Frame is allocated.
+            // Placeholder; reassigned in `finalize_kernel`.
             bare_frame_id: VmId::ROOT,
             untyped,
             active_vm: 0,
@@ -234,55 +278,57 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
             window_pool,
             #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
             active_window: 0,
-        };
+        })
+    }
 
-        // Build VM 0's cap table from the manifest. Slot 0 (the bare-Frame
-        // FrameRef) is patched in after both VMs are inserted into the
-        // arena, so we know the bare Frame's `VmId`. Protocol caps are NOT
-        // auto-populated — the caller (kernel host) is responsible for
-        // setting up whatever protocol slots it intends to expose, via
-        // `cap_table_set` / `set_original`. This avoids baking JAR's old
-        // 1..=28 host-call layout into javm itself.
-        let mut cap_table: CapTable<P> = CapTable::new();
-        let mut init_pages: u32 = 0;
-        let mut data_caps_to_map: Vec<(u32, u32, u32, Access)> = Vec::new(); // (base_page, backing_offset, page_count, access)
-
-        for entry in &parsed.caps {
-            let cap = kernel.create_cap_from_manifest(entry, &parsed, &mut code_cache)?;
-            if let Cap::Data(ref d) = cap {
-                init_pages += d.page_count;
-                // Record DATA caps that need mapping into the CODE window
-                if let Some((base_page, access)) = d.mapping_for(crate::vm_pool::VmId::ROOT) {
-                    data_caps_to_map.push((base_page, d.backing_offset, d.page_count, access));
-                }
-            }
-            cap_table.set(entry.cap_index, cap);
-        }
-
-        // Charge init gas
-        let init_gas_cost = init_pages as u64 * GAS_PER_PAGE;
+    /// Common tail of all `InvocationKernel` constructors. Takes the
+    /// post-skeleton kernel plus a fully-populated `cap_table` for VM 0,
+    /// the `init_code_id` (index in `self.code_caps` of the entry CODE
+    /// cap), the per-invocation gas budget, and an optional
+    /// `data_caps_to_map` listing `(base_page, backing_offset, page_count,
+    /// access)` for DATA caps that should be pre-mmapped into VM 0's
+    /// window. CapTable-driven callers (e.g. Vault.initialize) pass an
+    /// empty `data_caps_to_map`; the init program is then responsible for
+    /// `MGMT_MAP`-ing its own DATA caps at runtime.
+    ///
+    /// Charges init-page gas, assigns window 0 to VM 0, maps DATA caps,
+    /// places UNTYPED at slot 254 if `memory_pages > 0`, inserts VM 0
+    /// and the bare Frame into the arena, and patches slot 0 of VM 0's
+    /// cap-table with the bare-Frame FrameRef.
+    fn finalize_kernel(
+        mut self,
+        mut cap_table: CapTable<P>,
+        init_code_id: u16,
+        gas: u64,
+        data_caps_to_map: Vec<(u32, u32, u32, Access)>,
+    ) -> Result<Self, KernelError> {
+        // Charge init gas: sum the page count of every DATA cap currently
+        // in the cap table (mapped or not). This matches the legacy blob
+        // path's accounting; CapTable-driven callers pay the same per-page
+        // initialization cost, regardless of whether the init program will
+        // map the pages later via MGMT_MAP.
+        let init_pages: u64 = (0u8..=255)
+            .filter_map(|i| match cap_table.get(i) {
+                Some(Cap::Data(d)) => Some(d.page_count as u64),
+                _ => None,
+            })
+            .sum();
+        let init_gas_cost = init_pages * GAS_PER_PAGE;
         if gas < init_gas_cost {
             return Err(KernelError::OutOfGas);
         }
         let remaining_gas = gas - init_gas_cost;
 
-        // Resolve the init CODE cap (the program run by Vault.initialize)
-        // to find its code_caps index.
-        let invoke_code_id = match cap_table.get(parsed.header.init_cap) {
-            Some(Cap::Code(c)) => c.id,
-            _ => return Err(KernelError::InvalidBlob),
-        };
-
         // Assign window 0 to VM 0 and map DATA caps into it.
         #[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64"))]
         {
-            let assignment = kernel.window_pool.assign_window(0, 0);
-            kernel.active_window = assignment.window_idx;
-            let window_base = kernel.window_pool.window(assignment.window_idx).base();
+            let assignment = self.window_pool.assign_window(0, 0);
+            self.active_window = assignment.window_idx;
+            let window_base = self.window_pool.window(assignment.window_idx).base();
             for (base_page, backing_offset, page_count, access) in &data_caps_to_map {
                 // SAFETY: window_base is from CodeWindow::base() (valid 4GB mmap region).
                 unsafe {
-                    if !kernel.backing.map_pages(
+                    if !self.backing.map_pages(
                         window_base,
                         *base_page,
                         *backing_offset,
@@ -300,10 +346,11 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
             let _ = &data_caps_to_map;
         }
 
-        // Give VM 0 the UNTYPED cap at slot 254 (fixed slot, just below IPC).
-        // Skip when memory_pages == 0 — no point creating an empty allocator.
-        if parsed.header.memory_pages > 0 {
-            cap_table.set(254, Cap::Untyped(Arc::clone(&kernel.untyped)));
+        // Give VM 0 the UNTYPED cap at slot 254 (fixed slot, just below
+        // IPC). Skip when the page budget is zero — no point exposing an
+        // empty allocator.
+        if self.untyped.total > 0 {
+            cap_table.set(254, Cap::Untyped(Arc::clone(&self.untyped)));
         }
 
         // Create VM 0. Registers start zeroed; the host sets whatever
@@ -312,30 +359,27 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         // `write_data_cap_init` (typically placed at ephemeral sub-slot 4
         // by the conventional cap-arg pattern).
         let vm0 = VmInstance::new(
-            invoke_code_id,
+            init_code_id,
             0, // entry_index (set by caller via CALL)
             cap_table,
             remaining_gas,
         );
-        kernel.vm_arena.insert(vm0); // VM 0 gets VmId(0, 0)
+        self.vm_arena.insert(vm0); // VM 0 gets VmId(0, 0)
 
         // Allocate the per-invocation bare Frame: a VmInstance whose code
         // is never executed. Its CapTable is the shared cap-table the
         // call tree reaches via slot 0 of every VM. We pass `code_cap_id`
-        // = `invoke_code_id` purely as a placeholder; CALL on the
+        // = `init_code_id` purely as a placeholder; CALL on the
         // bare-Frame FrameRef is gated off (no CALL right) so it's never
         // dispatched. After insertion the bare Frame sits at the next
         // free arena slot (idx 1 on a fresh kernel).
-        let bare = VmInstance::new(invoke_code_id, 0, CapTable::new(), 0);
-        let bare_id = kernel
-            .vm_arena
-            .insert(bare)
-            .ok_or(KernelError::InvalidBlob)?;
-        kernel.bare_frame_id = bare_id;
+        let bare = VmInstance::new(init_code_id, 0, CapTable::new(), 0);
+        let bare_id = self.vm_arena.insert(bare).ok_or(KernelError::InvalidBlob)?;
+        self.bare_frame_id = bare_id;
 
         // Patch slot 0 of VM 0's cap-table now that we know the bare
         // Frame's VmId.
-        kernel.vm_arena.vm_mut(0).cap_table.set(
+        self.vm_arena.vm_mut(0).cap_table.set(
             BARE_FRAME_SLOT,
             Cap::FrameRef(FrameRefCap {
                 vm_id: bare_id,
@@ -343,7 +387,7 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
             }),
         );
 
-        Ok(kernel)
+        Ok(self)
     }
 
     /// Write `bytes` into the backing pages of the DATA cap at `slot` of
