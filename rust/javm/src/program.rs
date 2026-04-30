@@ -9,7 +9,10 @@
 //!   magic: u32              'JAR\x02'
 //!   memory_pages: u32       total Untyped budget
 //!   cap_count: u8           number of initial capabilities
-//!   invoke_cap: u8          cap_index of CODE cap to execute first
+//!   init_cap: u8            cap_index of the **initialize CODE cap**
+//!                            run by Vault.initialize. The init program
+//!                            is responsible for placing a callable-shaped
+//!                            FrameRef at bare-Frame slot 4 before halting.
 //!   args_cap: u8            cap_index of DATA cap for arguments (0xFF = none)
 //!
 //! Capabilities[cap_count]:
@@ -34,7 +37,7 @@ use crate::cap::Access;
 /// JAR magic: 'J','A','R', 0x02.
 pub const JAR_MAGIC: u32 = u32::from_le_bytes([b'J', b'A', b'R', 0x02]);
 
-/// Header size: magic(4) + memory_pages(4) + cap_count(1) + invoke_cap(1) = 10.
+/// Header size: magic(4) + memory_pages(4) + cap_count(1) + init_cap(1) = 10.
 const HEADER_SIZE: usize = 10;
 
 /// Per-cap entry size: cap_index(1) + cap_type(1) + base_page(4) + page_count(4)
@@ -75,8 +78,10 @@ pub struct ProgramHeader {
     pub memory_pages: u32,
     /// Number of capabilities in the manifest.
     pub cap_count: u8,
-    /// Cap index of the CODE cap to execute first.
-    pub invoke_cap: u8,
+    /// Cap index of the **initialize CODE cap** — the program run by
+    /// `Vault.initialize`. The init program decides what becomes the
+    /// public Callable (placed at bare-Frame slot 4 before halting).
+    pub init_cap: u8,
 }
 
 /// Parsed JAR blob.
@@ -128,7 +133,7 @@ pub fn parse_blob(blob: &[u8]) -> Option<ParsedBlob<'_>> {
     }
     let memory_pages = read_u32_le(blob, &mut offset)?;
     let cap_count = read_u8(blob, &mut offset)?;
-    let invoke_cap = read_u8(blob, &mut offset)?;
+    let init_cap = read_u8(blob, &mut offset)?;
 
     // Capability entries
     let entries_size = cap_count as usize * CAP_ENTRY_SIZE;
@@ -184,7 +189,7 @@ pub fn parse_blob(blob: &[u8]) -> Option<ParsedBlob<'_>> {
         header: ProgramHeader {
             memory_pages,
             cap_count,
-            invoke_cap,
+            init_cap,
         },
         caps,
         data_section,
@@ -299,7 +304,7 @@ pub fn build_simple_blob(code: &[u8], bitmask: &[u8], jump_table: &[u32]) -> Vec
 /// Build a JAR blob from components.
 pub fn build_blob(
     memory_pages: u32,
-    invoke_cap: u8,
+    init_cap: u8,
     caps: &[CapManifestEntry],
     data_section: &[u8],
 ) -> Vec<u8> {
@@ -308,11 +313,11 @@ pub fn build_blob(
     let mut blob = vec![0u8; total_size];
     let mut offset = 0;
 
-    // Header (10 bytes: magic + memory_pages + cap_count + invoke_cap)
+    // Header (10 bytes: magic + memory_pages + cap_count + init_cap)
     write_u32_le(&mut blob, &mut offset, JAR_MAGIC);
     write_u32_le(&mut blob, &mut offset, memory_pages);
     write_u8(&mut blob, &mut offset, cap_count);
-    write_u8(&mut blob, &mut offset, invoke_cap);
+    write_u8(&mut blob, &mut offset, init_cap);
 
     // Cap entries
     for cap in caps {
@@ -406,7 +411,7 @@ mod tests {
 
         assert_eq!(parsed.header.memory_pages, 10);
         assert_eq!(parsed.header.cap_count, 3);
-        assert_eq!(parsed.header.invoke_cap, 64);
+        assert_eq!(parsed.header.init_cap, 64);
         assert_eq!(parsed.caps.len(), 3);
 
         // CODE cap

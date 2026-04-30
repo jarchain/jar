@@ -6,7 +6,7 @@
 //! shape for kernel-mechanics tests; real chains add many more slots.
 //!
 //! Each entrypoint Vault gets a `Capability::Code(CodeCap)` placed at
-//! `CODE_CAP_SLOT` of its CNode — the kernel reads the blob from there
+//! the Vault's `init_cap` slot — the kernel reads the blob from there
 //! at invocation time. There is no separate per-Vault `code_hash` field
 //! and no kernel-internal `code_vault`; code is just another cap.
 
@@ -17,10 +17,13 @@ use crate::types::{
     VaultId,
 };
 
-use crate::state::CODE_CAP_SLOT;
 use crate::state::cap_registry;
 use crate::state::cnode;
 use crate::state::code_blobs;
+
+/// Default slot for the init CodeCap when genesis Vaults are constructed.
+/// Real chains may pick any slot per Vault; this is a fixture convention.
+const DEFAULT_INIT_CAP_SLOT: u8 = 0;
 
 /// Build a minimal σ for testing.
 pub struct GenesisBuilder {
@@ -28,8 +31,7 @@ pub struct GenesisBuilder {
     pub transact_blob: Vec<u8>,
     pub block_final_blob: Vec<u8>,
     pub dispatch_blob: Vec<u8>,
-    pub default_quota_items: u64,
-    pub default_quota_bytes: u64,
+    pub default_quota_pages: u64,
 }
 
 impl Default for GenesisBuilder {
@@ -39,8 +41,7 @@ impl Default for GenesisBuilder {
             transact_blob: code_blobs::halt_blob().to_vec(),
             block_final_blob: code_blobs::halt_blob().to_vec(),
             dispatch_blob: code_blobs::slot_clear_blob().to_vec(),
-            default_quota_items: 1024,
-            default_quota_bytes: 1 << 20,
+            default_quota_pages: 256,
         }
     }
 }
@@ -64,8 +65,7 @@ impl GenesisBuilder {
             transact_blob,
             block_final_blob,
             dispatch_blob,
-            default_quota_items,
-            default_quota_bytes,
+            default_quota_pages,
         } = self;
         let mut state = State::empty();
 
@@ -98,12 +98,7 @@ impl GenesisBuilder {
         state.dispatch_space_cnode = dcn_cap;
 
         // Slot 0: Schedule(block_init).
-        let bi_vault = alloc_vault_with_code(
-            &mut state,
-            block_init_blob,
-            default_quota_items,
-            default_quota_bytes,
-        );
+        let bi_vault = alloc_vault_with_code(&mut state, block_init_blob, default_quota_pages);
         let bi_cap = cnode::mint_and_place(
             &mut state,
             Capability::Schedule(ScheduleCap {
@@ -116,12 +111,7 @@ impl GenesisBuilder {
         )?;
 
         // Slot 1: Transact(...).
-        let t_vault = alloc_vault_with_code(
-            &mut state,
-            transact_blob,
-            default_quota_items,
-            default_quota_bytes,
-        );
+        let t_vault = alloc_vault_with_code(&mut state, transact_blob, default_quota_pages);
         let t_cap = cnode::mint_and_place(
             &mut state,
             Capability::Transact(TransactCap {
@@ -134,12 +124,7 @@ impl GenesisBuilder {
         )?;
 
         // Slot 2: Schedule(block_final).
-        let bf_vault = alloc_vault_with_code(
-            &mut state,
-            block_final_blob,
-            default_quota_items,
-            default_quota_bytes,
-        );
+        let bf_vault = alloc_vault_with_code(&mut state, block_final_blob, default_quota_pages);
         let bf_cap = cnode::mint_and_place(
             &mut state,
             Capability::Schedule(ScheduleCap {
@@ -152,12 +137,7 @@ impl GenesisBuilder {
         )?;
 
         // Dispatch entrypoint Vault and its registered Dispatch cap, born_in dispatch_cnode.
-        let d_vault = alloc_vault_with_code(
-            &mut state,
-            dispatch_blob,
-            default_quota_items,
-            default_quota_bytes,
-        );
+        let d_vault = alloc_vault_with_code(&mut state, dispatch_blob, default_quota_pages);
         let d_cap = cnode::mint_and_place(
             &mut state,
             Capability::Dispatch(DispatchCap {
@@ -183,23 +163,20 @@ impl GenesisBuilder {
     }
 }
 
-/// Allocate a Vault, register a CodeCap with the given blob, and place it
-/// at `CODE_CAP_SLOT` of the Vault's CNode. Returns the new VaultId.
-fn alloc_vault_with_code(
-    state: &mut State,
-    blob: Vec<u8>,
-    quota_items: u64,
-    quota_bytes: u64,
-) -> VaultId {
+/// Allocate a Vault, register a CodeCap with the given blob, and place
+/// it at `DEFAULT_INIT_CAP_SLOT` of the Vault's CNode. The Vault's
+/// `init_cap` is set to that slot so `Vault.initialize` finds the blob.
+/// Returns the new VaultId.
+fn alloc_vault_with_code(state: &mut State, blob: Vec<u8>, quota_pages: u64) -> VaultId {
     use crate::state::cap_registry as reg;
     use crate::types::CapRecord;
 
     let vault_id = state.next_vault_id();
     let mut v = crate::types::Vault::new();
-    v.quota_items = quota_items;
-    v.quota_bytes = quota_bytes;
+    v.init_cap = DEFAULT_INIT_CAP_SLOT;
+    v.quota_pages = quota_pages;
 
-    // Register the CodeCap and place it at CODE_CAP_SLOT.
+    // Register the CodeCap and place it at the init slot.
     let code_cap_id = reg::alloc(
         state,
         CapRecord {
@@ -210,7 +187,7 @@ fn alloc_vault_with_code(
             narrowing: Vec::new(),
         },
     );
-    v.slots.set(CODE_CAP_SLOT, Some(code_cap_id));
+    v.slots.set(DEFAULT_INIT_CAP_SLOT, Some(code_cap_id));
     state.vaults.insert(vault_id, Arc::new(v));
     vault_id
 }

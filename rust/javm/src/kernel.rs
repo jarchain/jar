@@ -266,8 +266,9 @@ impl<P: crate::cap::ProtocolCapT> InvocationKernel<P> {
         }
         let remaining_gas = gas - init_gas_cost;
 
-        // Resolve the invoke CODE cap to find its code_caps index
-        let invoke_code_id = match cap_table.get(parsed.header.invoke_cap) {
+        // Resolve the init CODE cap (the program run by Vault.initialize)
+        // to find its code_caps index.
+        let invoke_code_id = match cap_table.get(parsed.header.init_cap) {
             Some(Cap::Code(c)) => c.id,
             _ => return Err(KernelError::InvalidBlob),
         };

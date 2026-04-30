@@ -28,11 +28,6 @@ pub fn check_grant_or_move(cap: &Capability, target_cnode: CNodeId) -> KResult<(
                     .into(),
             ));
         }
-        Capability::Vault(_) => {
-            return Err(KernelError::Pinning(
-                "Vault owner cap is immovable to a CNode slot".into(),
-            ));
-        }
         _ => return Ok(()),
     };
     if born_in != target_cnode {

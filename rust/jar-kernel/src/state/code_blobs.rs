@@ -13,34 +13,34 @@
 //! and is not done here.
 //!
 //! Resolution of a Vault's entry CodeCap is via [`resolve_init_blob`],
-//! which reads `vault.slots[CODE_CAP_SLOT]` and looks up the CapRecord.
+//! which reads `vault.slots[vault.init_cap]` and looks up the CapRecord.
 
 use std::sync::Arc;
 
 use crate::cap::Capability;
-use crate::state::CODE_CAP_SLOT;
 use crate::state::cap_registry;
 use crate::types::{KResult, KernelError, State, VaultId};
 
-/// Resolve the init CodeCap blob for a Vault. Reads `slots[CODE_CAP_SLOT]`,
-/// looks up the CapRecord, and returns a clone of the `Arc<Vec<u8>>`
-/// blob. Cheap (just an Arc bump). Errors if the slot is empty or holds
-/// a non-Code cap.
+/// Resolve the init CodeCap blob for a Vault. Reads `slots[vault.init_cap]`,
+/// looks up the CapRecord, and returns a clone of the `Arc<Vec<u8>>` blob.
+/// Cheap (just an Arc bump). Errors if the slot is empty or holds a
+/// non-Code cap.
 pub fn resolve_init_blob(state: &State, vault_id: VaultId) -> KResult<Arc<Vec<u8>>> {
     let vault = state.vault(vault_id)?;
-    let cap_id = vault.slots.get(CODE_CAP_SLOT).ok_or_else(|| {
+    let init_slot = vault.init_cap;
+    let cap_id = vault.slots.get(init_slot).ok_or_else(|| {
         KernelError::Internal(format!(
-            "vault {:?} has no CodeCap at slot {}",
-            vault_id, CODE_CAP_SLOT
+            "vault {:?} has no CodeCap at init slot {}",
+            vault_id, init_slot
         ))
     })?;
     let record = cap_registry::lookup(state, cap_id)?;
     match &record.cap {
         Capability::Code(c) => Ok(Arc::clone(&c.blob)),
         other => Err(KernelError::Internal(format!(
-            "vault {:?} slot {} holds {:?}, expected Code",
+            "vault {:?} init slot {} holds {:?}, expected Code",
             vault_id,
-            CODE_CAP_SLOT,
+            init_slot,
             std::mem::discriminant(other)
         ))),
     }

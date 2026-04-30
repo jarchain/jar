@@ -18,12 +18,6 @@ use crate::types::{CNodeId, CapId, KernelRole, KeyId, VaultId};
 // Per-variant structs
 // -----------------------------------------------------------------------------
 
-/// Owner cap; immovable to a Frame; may not be granted to another CNode.
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
-pub struct VaultCap {
-    pub vault_id: VaultId,
-}
-
 /// Callable handle for `vault_initialize`; may also gate slot mutation
 /// (Grant / Revoke) on the target Vault.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -183,9 +177,13 @@ pub struct CallerKernelCap {
 
 /// All capability variants. Persistent variants live in CNodes (and σ); the
 /// two `*Ref` variants are ephemeral and live only in Frames.
+///
+/// Vault lifetime is tracked by reachability — a Vault is alive iff its
+/// VaultId appears in `state.vaults` and at least one VaultRef in some
+/// reachable CNode references it. There is no separate `Vault(owner)`
+/// cap; reachability-GC (deferred) reclaims unreferenced Vaults.
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub enum Capability {
-    Vault(VaultCap),
     VaultRef(VaultRefCap),
     Code(CodeCap),
     Data(DataCap),
@@ -231,7 +229,6 @@ impl Capability {
 
     pub fn vault_id(&self) -> Option<VaultId> {
         match self {
-            Capability::Vault(c) => Some(c.vault_id),
             Capability::VaultRef(c) => Some(c.vault_id),
             Capability::Dispatch(c) => Some(c.vault_id),
             Capability::Transact(c) => Some(c.vault_id),
@@ -297,12 +294,12 @@ impl VaultRights {
 /// Resource cap kinds. Quotas are kernel-tracked; placement/use is gated.
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub enum ResourceKind {
-    /// Authorizes creating a fresh Vault, with the given storage budget.
-    CreateVault { quota_items: u64, quota_bytes: u64 },
+    /// Authorizes creating a fresh Vault, with the given page budget.
+    CreateVault { quota_pages: u64 },
     /// Authorizes setting quotas on the named Vault.
     SetQuota { target: VaultId },
-    /// Authorizes preimage-store for the given budget.
-    PreimageStore { items: u64, bytes: u64 },
+    /// Authorizes preimage-store for the given page budget.
+    PreimageStore { pages: u64 },
 }
 
 /// Meta-op categories. Used for Meta caps that manage other caps.

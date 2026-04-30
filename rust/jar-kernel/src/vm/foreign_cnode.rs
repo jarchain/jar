@@ -115,8 +115,7 @@ impl ForeignCnode<KernelCap> for VaultCnodeView<'_> {
         // reject any pinned-or-ref placement to a Vault slot.
         if matches!(
             &capability,
-            Capability::Vault(_)
-                | Capability::Dispatch(_)
+            Capability::Dispatch(_)
                 | Capability::Transact(_)
                 | Capability::Schedule(_)
                 | Capability::DispatchRef(_)
@@ -184,5 +183,5 @@ impl ForeignCnode<KernelCap> for VaultCnodeView<'_> {
 /// variant. Pinning is enforced separately on `fc_set`; this is a
 /// pre-flight check on the source.
 fn is_clone_eligible(cap: &Capability) -> bool {
-    !cap.is_pinned_or_ref() && !matches!(cap, Capability::Vault(_))
+    !cap.is_pinned_or_ref()
 }

@@ -24,9 +24,9 @@ pub fn state_root(state: &State) -> Hash {
     push_u64(&mut buf, state.vaults.len() as u64);
     for (vid, vault) in &state.vaults {
         push_u64(&mut buf, vid.0);
-        push_u64(&mut buf, vault.quota_items);
-        push_u64(&mut buf, vault.quota_bytes);
-        push_u64(&mut buf, vault.total_footprint);
+        buf.push(vault.init_cap);
+        push_u64(&mut buf, vault.quota_pages);
+        push_u64(&mut buf, vault.total_pages);
         for (i, slot) in vault.slots.slots.iter().enumerate() {
             buf.push(i as u8);
             push_u64(&mut buf, slot.map(|c| c.0).unwrap_or(0));

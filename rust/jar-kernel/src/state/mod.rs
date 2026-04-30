@@ -14,30 +14,30 @@ pub mod cnode;
 pub mod code_blobs;
 pub mod state_root;
 
-/// Persistent Vault unit. After the unified-persistence refactor, a
-/// Vault is a 256-slot CNode plus quotas. All persistent state — code,
-/// byte data, references to other Vaults — lives as caps in the CNode.
-/// There is no separate `code_hash` field, no `code_vault`, and no KV
-/// `storage` map.
+/// Persistent Vault unit. After the unified-persistence refactor a Vault
+/// is `{ slots, init_cap, quota_pages, total_pages }`. All persistent
+/// state — code, byte data, references to other Vaults — lives as caps
+/// in `slots`. There is no separate `code_hash` field, no `code_vault`,
+/// and no KV `storage` map.
 ///
 /// Wrapped in `Arc` inside σ so that copy-on-write of the outer
 /// `BTreeMap` is cheap; only the modified Vault is deep-cloned on a
 /// `make_mut` write.
-///
-/// `quota_items` / `quota_bytes` will be unified into `quota_pages` in
-/// Step 8; for now they remain as legacy bookkeeping that no operation
-/// increments since the storage path is gone.
 #[derive(Clone, Eq, PartialEq, Debug, Default)]
 pub struct Vault {
-    pub slots: CNode, // 256 cap slots — the persistent CNode
-    pub quota_items: u64,
-    pub quota_bytes: u64,
-    pub total_footprint: u64,
+    /// 256 cap slots — the persistent CNode.
+    pub slots: CNode,
+    /// Slot in `slots` whose CodeCap is the **initialize program**.
+    /// `Vault.initialize` runs the CodeCap at this slot to bootstrap a
+    /// fresh Frame; the init program decides what becomes the public
+    /// Callable (returned via bare-Frame slot 4).
+    pub init_cap: u8,
+    /// Maximum total page footprint allowed for caps stored in `slots`.
+    /// Counts pages of every CodeCap and DataCap reachable from `slots`.
+    pub quota_pages: u64,
+    /// Currently consumed page footprint. `total_pages ≤ quota_pages`.
+    pub total_pages: u64,
 }
-
-/// Slot in `Vault.slots` that holds the Vault's entry CodeCap.
-/// Step 8 will replace this with a per-Vault `init_cap: u8` field.
-pub const CODE_CAP_SLOT: u8 = 0;
 
 impl Vault {
     pub fn new() -> Self {

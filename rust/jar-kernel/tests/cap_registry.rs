@@ -4,8 +4,8 @@ use jar_kernel::cap::pinning;
 use jar_kernel::state::cap_registry;
 use jar_kernel::state::cnode;
 use jar_kernel::{
-    CapRecord, Capability, DispatchCap, DispatchRefCap, KernelError, State, VaultCap, VaultId,
-    VaultRefCap, VaultRights,
+    CapRecord, Capability, DispatchCap, DispatchRefCap, KernelError, State, VaultId, VaultRefCap,
+    VaultRights,
 };
 
 fn empty_state() -> State {
@@ -18,8 +18,9 @@ fn alloc_assigns_monotonic_ids() {
     let a = cap_registry::alloc(
         &mut s,
         CapRecord {
-            cap: Capability::Vault(VaultCap {
+            cap: Capability::VaultRef(VaultRefCap {
                 vault_id: VaultId(0),
+                rights: VaultRights::ALL,
             }),
             issuer: None,
             narrowing: vec![],
@@ -28,8 +29,9 @@ fn alloc_assigns_monotonic_ids() {
     let b = cap_registry::alloc(
         &mut s,
         CapRecord {
-            cap: Capability::Vault(VaultCap {
+            cap: Capability::VaultRef(VaultRefCap {
                 vault_id: VaultId(1),
+                rights: VaultRights::ALL,
             }),
             issuer: None,
             narrowing: vec![],
