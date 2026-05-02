@@ -48,3 +48,8 @@ doc = false
 name = "fuzz_pvm_differential"
 path = "fuzz_targets/fuzz_pvm_differential.rs"
 doc = false
+
+[[bin]]
+name = "fuzz_store_decode"
+path = "fuzz_targets/fuzz_store_decode.rs"
+doc = false
